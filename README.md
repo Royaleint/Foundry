@@ -6,18 +6,18 @@ By BawrLabs.
 
 ## What it is
 
-Foundry exists to give authors a smaller, more focused alternative to Ace3 and older community libraries, built on Blizzard's modern API surface where one is available.
+Foundry exists to give addon authors a smaller, more focused alternative to Ace3 and older community libraries, built on Blizzard's modern API surface.
 
 Foundry is:
 
-- **Smaller surface.** Pull in slash commands without pulling in a framework. Each module is self-contained; use the ones you need.
+- **Smaller surface.** Each module is self-contained. Only need slash commands? Pull that in without pulling in a full framework.
 - **Bridges where bridges are missing.** Foundry covers modern Blizzard APIs that don't have actively maintained community wrappers (the new menu system, modern tooltip hooks, ScrollBox).
-- **Adopt incrementally.** You don't have to migrate your whole addon. Drop one Ace3 library at a time as the corresponding Foundry module ships.
+- **Adopt incrementally.** You don't have to migrate your whole addon. Hook into the module you need one at a time as the corresponding Foundry module ships.
 - **Escape hatch built in.** `:GetNativeHandles()` hands back the raw Blizzard objects whenever you need more than the wrapper gives you.
 
 ## Why
 
-Foundry started as a refactor of my own addons (Homestead and BawrSpam) to use more of the in-game toolkit. Once that work was happening anyway, making it available to other authors was a no-brainer. The goal isn't to replace Ace3 because it isn't going anywhere. It's just to offer a smaller option for authors who want one.
+Foundry started as a refactor of my own addons (Homestead and BawrSpam) to use more of the in-game toolkit. Since that was happening anyway, making it available to other authors was a no-brainer. The goal isn't to replace Ace3 because it isn't going anywhere. It's just to offer a smaller option for authors who want one.
 
 Ace3 is great, widely used, and still actively maintained. But it was designed against an earlier API surface than what's available today. Blizzard has shipped years of new addon APIs since: the Settings API, the new menu system, ScrollBox, modern tooltip hooks. Authors who only need a few of Ace3's libraries can end up carrying a lot of compatibility code they don't use.
 
