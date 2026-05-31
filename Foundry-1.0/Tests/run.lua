@@ -40,6 +40,64 @@ function T.installMocks(tocVersion)
             return nil
         end,
     }
+
+    -- CreateFrame("Frame") stub (additive; Commands never calls CreateFrame).
+    -- Returns a recorder frame whose event/script methods log calls so Events
+    -- tests can assert what the controller drove on the native frame, and a
+    -- T.Fire(frame, event, ...) helper synthesizes an OnEvent delivery by
+    -- invoking the captured OnEvent script as onEvent(frame, event, ...).
+    T.frames = {}
+    _G.CreateFrame = function(kind)
+        local frame = {}
+        frame._kind = kind
+        frame._shown = true
+        -- Call logs: each native method appends a record so a test can count
+        -- and inspect the exact args (including unit2 presence/order).
+        frame.calls = {
+            RegisterEvent = {},
+            RegisterUnitEvent = {},
+            UnregisterEvent = {},
+            UnregisterAllEvents = {},
+            SetScript = {},
+            Hide = {},
+            Show = {},
+        }
+        function frame:RegisterEvent(event)
+            self.calls.RegisterEvent[#self.calls.RegisterEvent + 1] = { event }
+        end
+        function frame:RegisterUnitEvent(...)
+            -- Capture the true passed-arg count via varargs: a fixed parameter
+            -- list would make select("#") always report 3, hiding whether the
+            -- controller forwarded unit2 or omitted it.
+            local n = select("#", ...)
+            local event, unit1, unit2 = ...
+            self.calls.RegisterUnitEvent[#self.calls.RegisterUnitEvent + 1] =
+                { event = event, unit1 = unit1, unit2 = unit2, n = n }
+        end
+        function frame:UnregisterEvent(event)
+            self.calls.UnregisterEvent[#self.calls.UnregisterEvent + 1] = { event }
+        end
+        function frame:UnregisterAllEvents()
+            self.calls.UnregisterAllEvents[#self.calls.UnregisterAllEvents + 1] = {}
+        end
+        function frame:SetScript(name, fn)
+            self.calls.SetScript[#self.calls.SetScript + 1] = { name, fn }
+            if name == "OnEvent" then self._onEvent = fn end
+        end
+        function frame:Hide()
+            self._shown = false
+            self.calls.Hide[#self.calls.Hide + 1] = {}
+        end
+        function frame:Show()
+            self._shown = true
+            self.calls.Show[#self.calls.Show + 1] = {}
+        end
+        function frame:IsShown()
+            return self._shown
+        end
+        T.frames[#T.frames + 1] = frame
+        return frame
+    end
     _G.print = function(...)
         local n = select("#", ...)
         local parts = {}
@@ -50,12 +108,24 @@ function T.installMocks(tocVersion)
     _G.FOUNDRY_DEV_BUILD_OVERRIDE = nil
 end
 
--- Load the bootstrap + Commands module fresh; returns the Foundry table.
+-- Synthesize a native OnEvent delivery: invoke the frame's captured OnEvent
+-- script exactly as WoW would, onEvent(frame, event, ...). A no-op if the
+-- frame has no OnEvent script (e.g. after Destroy detaches it).
+function T.Fire(frame, event, ...)
+    local onEvent = frame and frame._onEvent
+    if onEvent then return onEvent(frame, event, ...) end
+end
+
+-- Load the bootstrap + the Commands and Events modules fresh; returns the
+-- Foundry table. Loading Events is additive: Commands tests reference only
+-- F.Commands and are unaffected by the extra module being present.
 function T.loadFoundry()
     local boot = assert(loadfile(foundryRoot .. "/Foundry.lua"))
     boot("Foundry-1.0")
     local cmds = assert(loadfile(foundryRoot .. "/Modules/Commands.lua"))
     cmds("Foundry-1.0")
+    local events = assert(loadfile(foundryRoot .. "/Modules/Events.lua"))
+    events("Foundry-1.0")
     return _G.Foundry_1_0
 end
 
@@ -94,22 +164,30 @@ function T.outputContains(substr, msg)
         .. "' (output: " .. table.concat(T.output, " | ") .. ")", 2)
 end
 
-local tests = assert(loadfile(testsDir .. "/Commands/commands_spec.lua"))(T)
+-- Each suite: a label and the cases list its spec returns when called with T.
+local suites = {
+    { label = "Foundry.Commands", cases = assert(loadfile(testsDir .. "/Commands/commands_spec.lua"))(T) },
+    { label = "Foundry.Events",   cases = assert(loadfile(testsDir .. "/Events/events_spec.lua"))(T) },
+}
 
-local passed, failed, failures = 0, 0, {}
-for _, case in ipairs(tests) do
-    local ok, err = pcall(case.fn)
-    if ok then
-        passed = passed + 1
-    else
-        failed = failed + 1
-        failures[#failures + 1] = case.name .. "  ->  " .. tostring(err)
+local anyFailed = false
+for _, suite in ipairs(suites) do
+    local passed, failed, failures = 0, 0, {}
+    for _, case in ipairs(suite.cases) do
+        local ok, err = pcall(case.fn)
+        if ok then
+            passed = passed + 1
+        else
+            failed = failed + 1
+            failures[#failures + 1] = case.name .. "  ->  " .. tostring(err)
+        end
     end
+    realPrint(string.format("%s: %d passed, %d failed (%d total)",
+        suite.label, passed, failed, passed + failed))
+    for _, f in ipairs(failures) do
+        realPrint("  FAIL: " .. f)
+    end
+    if failed > 0 then anyFailed = true end
 end
 
-realPrint(string.format("Foundry.Commands: %d passed, %d failed (%d total)",
-    passed, failed, passed + failed))
-for _, f in ipairs(failures) do
-    realPrint("  FAIL: " .. f)
-end
-os.exit(failed == 0 and 0 or 1)
+os.exit(anyFailed and 1 or 0)
