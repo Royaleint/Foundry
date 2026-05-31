@@ -1,0 +1,28 @@
+# Foundry release guard (DORMANT).
+#
+# Manual-trigger-only on purpose. Foundry is published via CurseForge server-side
+# packaging (a GitHub webhook), not by a GitHub Action, so there is no automatic
+# release pipeline here yet. This stub wires up the dev-token sanity check so it
+# is ready: point it at a PACKAGED Foundry artifact (post-packager) and it calls
+# the self-contained script, Foundry-1.0/Tests/ci/check-dev-token.sh.
+#
+# Note: running this against the source tree will correctly FAIL, because source
+# legitimately carries the @project-version@ token in the TOC before packaging.
+# It becomes meaningful only once a packaging step produces a substituted
+# artifact to point `artifact_path` at.
+name: foundry-release-guard
+
+on:
+  workflow_dispatch:
+    inputs:
+      artifact_path:
+        description: "Path to the PACKAGED Foundry-1.0 artifact (post-packager). NOT the source tree."
+        required: true
+
+jobs:
+  no-dev-token:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fail if the packaged artifact still contains @project-version@
+        run: bash Foundry-1.0/Tests/ci/check-dev-token.sh "${{ inputs.artifact_path }}"

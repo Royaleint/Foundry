@@ -1,0 +1,13 @@
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Packager output
+.release/
+
+# Wiki staging. The GitHub wiki is a SEPARATE repo (Foundry.wiki.git).
+# Drafts live here for review, then publish to the wiki repo — they are not
+# part of the code repo's history.
+.wiki/

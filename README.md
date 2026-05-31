@@ -6,20 +6,20 @@ By BawrLabs.
 
 ## What it is
 
-Foundry exists to give addon authors a smaller, more focused alternative to Ace3 and older community libraries, built on Blizzard's modern API surface.
+Foundry exists to give addon authors a focused, modular toolkit built on Blizzard's modern API surface.
 
 Foundry is:
 
-- **Smaller surface.** Each module is self-contained. Only need slash commands? Pull that in without pulling in a full framework.
 - **Bridges where bridges are missing.** Foundry covers modern Blizzard APIs that don't have actively maintained community wrappers (the new menu system, modern tooltip hooks, ScrollBox).
-- **Adopt incrementally.** You don't have to migrate your whole addon. Hook into the module you need one at a time as the corresponding Foundry module ships.
-- **Escape hatch built in.** `:GetNativeHandles()` hands back the raw Blizzard objects whenever you need more than the wrapper gives you.
+- **Less boilerplate, never less control.** Each module collapses a verbose native pattern into a few readable lines — and `:GetNativeHandles()` always hands back the raw Blizzard objects, so you trade typing, not control.
+- **Adopt incrementally.** Start with a single module, keep using Ace3 (or anything else) right alongside it, and add more as they ship — no all-or-nothing commitment.
+- **Grows by demand.** Modules ship when a real addon actually needs them, proven against real use before they land — and you can propose the next one.
 
 ## Why
 
 Foundry started as a refactor of my own addons (Homestead and BawrSpam) to use more of the in-game toolkit. Since that was happening anyway, making it available to other authors was a no-brainer. The goal isn't to replace Ace3 because it isn't going anywhere. It's just to offer a smaller option for authors who want one.
 
-Ace3 is great, widely used, and still actively maintained. But it was designed against an earlier API surface than what's available today. Blizzard has shipped years of new addon APIs since: the Settings API, the new menu system, ScrollBox, modern tooltip hooks. Authors who only need a few of Ace3's libraries can end up carrying a lot of compatibility code they don't use.
+Ace3 is great, widely used, and still actively maintained. But it was designed against an earlier API surface than what's available today. Blizzard has shipped years of new addon APIs since: the Settings API, the new menu system, ScrollBox, modern tooltip hooks. Foundry is for authors who want a toolkit built on those newer APIs from the start.
 
 ## Modules
 
@@ -27,7 +27,7 @@ Foundry-1.0 delivers a focused set of modules covering what most addons reach fo
 
 | Module | What it does | Blizzard surface | Ace3 equivalent | Status |
 |---|---|---|---|---|
-| **Commands** | Slash command registration with a per-consumer controller, auto-help, guard checks, and longest-prefix dispatch for multi-word names. | `SlashCmdList`, `SLASH_*` globals | AceConsole-3.0 | Shipped |
+| **Commands** | Slash command registration with a per-consumer controller, auto-help, guard checks, and longest-prefix dispatch for multi-word names. | `SlashCmdList`, `SLASH_*` globals | AceConsole-3.0 | Planned |
 | **Events** | Owned event registration with automatic cleanup, scoped to the consuming addon. | `CreateFrame` event frames, `RegisterEvent` | AceEvent-3.0 | Planned |
 | **Lifecycle** | Honest hooks over the game's load and login signals, with a "saved settings ready" guarantee that fires when data is loaded and migrations have run. | `ADDON_LOADED`, `PLAYER_LOGIN`, `PLAYER_LOGOUT` | AceAddon-3.0 (lifecycle portion) | Planned |
 | **DB** | SavedVariables management with defaults, profiles, and per-character data. Reads existing AceDB save files unchanged. | `SavedVariables`, `SavedVariablesPerCharacter` | AceDB-3.0 | Planned |
@@ -36,6 +36,8 @@ Foundry-1.0 delivers a focused set of modules covering what most addons reach fo
 | **Menu** | Bridge over Blizzard's modern menu system, which replaced the deprecated `UIDropDownMenu` in Patch 11.0.0. | `Blizzard_Menu`, `MenuUtil` | LibUIDropDownMenu (community library, now unmaintained for current retail) | Planned |
 
 The last three modules (List, Tooltip, Menu) exist to give authors an easy path away from older community UI libraries. Blizzard has shipped modern native equivalents, but the raw APIs are verbose enough that most authors stuck with the older libraries. Foundry's job here is to make the native path the easy path.
+
+**Next up** are the bridges authors reach for most: **Menu** over Blizzard's 11.0 menu system (the successor to the now-unmaintained LibUIDropDownMenu), **Tooltip** over TooltipDataProcessor, and **List** over ScrollBox — with **Events**, **Lifecycle**, and **DB** rounding out the everyday essentials.
 
 ## Using Foundry
 
@@ -62,7 +64,7 @@ local commands = F.Commands:New({
 commands:Register({
     name = "scan",
     help = "Scan the current zone.",
-    handler = function(args) MyAddon:Scan(args) end,
+    handler = function(rest) MyAddon:Scan(rest) end,
 })
 ```
 
