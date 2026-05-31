@@ -27,7 +27,7 @@ Foundry-1.0 delivers a focused set of modules covering what most addons reach fo
 
 | Module | What it does | Blizzard surface | Ace3 equivalent | Status |
 |---|---|---|---|---|
-| **Commands** | Slash command registration with a per-consumer controller, auto-help, guard checks, and longest-prefix dispatch for multi-word names. | `SlashCmdList`, `SLASH_*` globals | AceConsole-3.0 | Planned |
+| **Commands** | Slash command registration with a per-consumer controller, auto-help, guard checks, and longest-prefix dispatch for multi-word names. | `SlashCmdList`, `SLASH_*` globals | AceConsole-3.0 | Available |
 | **Events** | Owned event registration with automatic cleanup, scoped to the consuming addon. | `CreateFrame` event frames, `RegisterEvent` | AceEvent-3.0 | Planned |
 | **Lifecycle** | Honest hooks over the game's load and login signals, with a "saved settings ready" guarantee that fires when data is loaded and migrations have run. | `ADDON_LOADED`, `PLAYER_LOGIN`, `PLAYER_LOGOUT` | AceAddon-3.0 (lifecycle portion) | Planned |
 | **DB** | SavedVariables management with defaults, profiles, and per-character data. Reads existing AceDB save files unchanged. | `SavedVariables`, `SavedVariablesPerCharacter` | AceDB-3.0 | Planned |
