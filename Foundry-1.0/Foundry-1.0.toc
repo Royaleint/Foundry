@@ -1,4 +1,4 @@
-## Interface: 120005
+## Interface: 11508, 20505, 120005
 ## Title: Foundry-1.0
 ## Notes: Foundry library, 1.0.x. Native-first toolkit bridge for WoW addons.
 ## Version: @project-version@
