@@ -11,3 +11,7 @@ Thumbs.db
 # Drafts live here for review, then publish to the wiki repo — they are not
 # part of the code repo's history.
 .wiki/
+
+# Private dev environment (separate repo: Royaleint/Foundry_Dev) — tracker,
+# plans, and dev notes. Never part of the public code repo's history.
+Foundry_Dev/
