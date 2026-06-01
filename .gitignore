@@ -7,6 +7,9 @@ Thumbs.db
 # Packager output
 .release/
 
+# Git worktrees (studio standard: feature branches live in .worktrees/)
+.worktrees/
+
 # Wiki staging. The GitHub wiki is a SEPARATE repo (Foundry.wiki.git).
 # Drafts live here for review, then publish to the wiki repo — they are not
 # part of the code repo's history.
