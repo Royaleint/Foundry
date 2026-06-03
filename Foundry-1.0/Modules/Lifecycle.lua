@@ -35,6 +35,17 @@ local ownedNames = {}         -- addonName -> controller  (PERSISTENT: lives unt
 local loginControllers = {}   -- controller -> true  (set: who wants login/logout phases)
 local loginFired = false      -- central "PLAYER_LOGIN already fired" flag
 
+-- Surface a captured hook error through F:RaiseDevError. The captured value may
+-- be ANY Lua value -- INCLUDING a falsy one (a hook that called error(nil),
+-- error(false), or bare error()). The dispatcher must NEVER decide whether to
+-- surface by testing the captured value's truthiness -- that silently swallows a
+-- falsy error (a Charter §3.4.1 fail-loud violation). The boolean "raised" flag
+-- returned by each _fire* is the sole gate; this helper normalizes the value into
+-- a non-empty diagnostic so a surfaced error is always meaningful.
+local function surfaceHookError(phase, err)
+    F:RaiseDevError("Lifecycle: a '" .. phase .. "' phase hook errored: " .. tostring(err))
+end
+
 -- Lazily create and wire the single shared dispatcher frame. Idempotent: every
 -- call after the first returns without touching the existing frame, so the
 -- three RegisterEvent calls happen exactly once for the whole library.
@@ -55,24 +66,36 @@ local function ensureDispatcher()
             local c = byAddonName[loadedName]   -- O(1) demux; nil for addons we don't track
             if c then
                 byAddonName[loadedName] = nil   -- one-shot demux clear (ownedNames KEPT)
-                local err = c:_fireAddonLoaded() -- single fire; err captured, never thrown inline
-                if err then F:RaiseDevError(err) end
+                local raised, err = c:_fireAddonLoaded() -- single fire; raised flag, never thrown inline
+                if raised then surfaceHookError("addon-loaded", err) end
             end
         elseif event == "PLAYER_LOGIN" then
             loginFired = true                   -- central flag, set once
-            local firstErr
-            for c in pairs(loginControllers) do
-                local e = c:_fireLogin()        -- each returns its captured error or nil; loop NEVER aborts
-                firstErr = firstErr or e
+            -- SNAPSHOT the subscriber set BEFORE the fan-out: a hook may New +
+            -- OnLogin a controller mid-loop, mutating loginControllers DURING the
+            -- traversal. In Lua 5.1, assigning a new key while iterating a table
+            -- with pairs() is undefined and can SKIP existing entries, starving
+            -- other consumers' phases. Iterating a pre-fan-out array copy fixes the
+            -- membership at fire time; a controller registered mid-fan-out is
+            -- intentionally NOT in this snapshot and catches up synchronously in
+            -- OnLogin (loginFired is already true).
+            local snapshot, n = {}, 0
+            for c in pairs(loginControllers) do n = n + 1; snapshot[n] = c end
+            local raised, firstErr = false, nil
+            for i = 1, n do
+                local r, e = snapshot[i]:_fireLogin() -- never aborts; returns (raised, err)
+                if r and not raised then raised, firstErr = true, e end
             end
-            if firstErr then F:RaiseDevError(firstErr) end  -- surface ONLY after the full fan-out
+            if raised then surfaceHookError("login", firstErr) end  -- surface ONLY after the full fan-out
         elseif event == "PLAYER_LOGOUT" then
-            local firstErr
-            for c in pairs(loginControllers) do
-                local e = c:_fireLogout()
-                firstErr = firstErr or e
+            local snapshot, n = {}, 0
+            for c in pairs(loginControllers) do n = n + 1; snapshot[n] = c end
+            local raised, firstErr = false, nil
+            for i = 1, n do
+                local r, e = snapshot[i]:_fireLogout()
+                if r and not raised then raised, firstErr = true, e end
             end
-            if firstErr then F:RaiseDevError(firstErr) end
+            if raised then surfaceHookError("logout", firstErr) end
         end
     end)
 
@@ -91,41 +114,45 @@ local Controller = {}
 Controller.__index = Controller
 
 -- Private fire wrappers the dispatcher calls. Each pcall-wraps the SUBSCRIBER's
--- handler and RETURNS the failure (never RaiseDevError here un-pcall'd: in a dev
--- build RaiseDevError error()s, which would abort the dispatcher's fan-out loop
--- and starve the remaining subscribers). The dispatcher surfaces the returned
--- error AFTER the fan-out. A controller unsubscribed mid-loop (Destroy) is
--- skipped. Each phase is one-shot: the hook is cleared before/at invocation so a
--- second signal does not re-fire it.
+-- handler and RETURNS (raised, err): a boolean RAISED flag plus the captured
+-- value -- which may itself be FALSY (a hook that called error(nil), error(false),
+-- or bare error()). The dispatcher gates surfacing on the RAISED flag, never the
+-- value's truthiness, so a falsy error is never silently swallowed. The wrapper
+-- never calls RaiseDevError itself un-pcall'd: in a dev build RaiseDevError
+-- error()s, which would abort the dispatcher's fan-out loop and starve the
+-- remaining subscribers. The dispatcher surfaces the captured error AFTER the
+-- fan-out. A controller unsubscribed mid-loop (Destroy) is skipped. Each phase is
+-- one-shot: the hook is cleared before invocation so a second signal does not
+-- re-fire it.
 
 function Controller:_fireAddonLoaded()
-    if self._destroyed then return nil end
+    if self._destroyed then return false end
     local fn = self._hooks.addonLoaded
-    if not fn then return nil end
+    if not fn then return false end
     self._hooks.addonLoaded = nil   -- one-shot: free the slot before invoking
     local ok, err = pcall(fn, self._owner)
-    if not ok then return err end
-    return nil
+    if not ok then return true, err end   -- RAISED (err may be nil/false); the flag is the gate
+    return false
 end
 
 function Controller:_fireLogin()
-    if self._destroyed then return nil end
+    if self._destroyed then return false end
     local fn = self._hooks.login
-    if not fn then return nil end
+    if not fn then return false end
     self._hooks.login = nil
     local ok, err = pcall(fn, self._owner)
-    if not ok then return err end
-    return nil
+    if not ok then return true, err end
+    return false
 end
 
 function Controller:_fireLogout()
-    if self._destroyed then return nil end
+    if self._destroyed then return false end
     local fn = self._hooks.logout
-    if not fn then return nil end
+    if not fn then return false end
     self._hooks.logout = nil
     local ok, err = pcall(fn, self._owner)
-    if not ok then return err end
-    return nil
+    if not ok then return true, err end
+    return false
 end
 
 -- Register the one-shot addon-loaded hook. Fires once when ADDON_LOADED matches
@@ -142,21 +169,33 @@ function Controller:OnAddonLoaded(handler)
         F:RaiseDevError("Lifecycle:OnAddonLoaded: handler must be a function")
         return
     end
-    if self._hooks.addonLoaded then
+    if self._registered.addonLoaded then
         F:RaiseDevError("Lifecycle:OnAddonLoaded: an addon-loaded hook is already "
             .. "registered for '" .. self._addonName .. "'; one hook per phase per controller")
         return
     end
 
+    self._registered.addonLoaded = true
     self._hooks.addonLoaded = handler
 
-    -- Load-on-Demand catch-up: if the addon is already loaded, fire now and do
-    -- NOT enrol in byAddonName (no future ADDON_LOADED will arrive for it). The
-    -- catch-up is synchronous inside this registration call.
-    if C_AddOns and C_AddOns.IsAddOnLoaded and C_AddOns.IsAddOnLoaded(self._addonName) then
+    -- Load-on-Demand catch-up: fire now ONLY if the addon has FINISHED loading.
+    -- C_AddOns.IsAddOnLoaded returns TWO booleans, (loadedOrLoading, loaded): the
+    -- FIRST is true while the addon is still LOADING. Gating on it would fire the
+    -- addon-loaded hook mid-load -- BEFORE SavedVariables are available -- which
+    -- defeats the hook's whole purpose (a consumer registering for its OWN addon
+    -- during that addon's own file load is exactly this case). Gate on the SECOND
+    -- value (finished loading). A still-loading or not-yet-loaded addon stays
+    -- enrolled in byAddonName and fires on the real ADDON_LOADED. The catch-up is
+    -- synchronous inside this registration call.
+    local alreadyLoaded = false
+    if C_AddOns and C_AddOns.IsAddOnLoaded then
+        local _, loaded = C_AddOns.IsAddOnLoaded(self._addonName)
+        alreadyLoaded = (loaded == true)
+    end
+    if alreadyLoaded then
         byAddonName[self._addonName] = nil
-        local err = self:_fireAddonLoaded()
-        if err then F:RaiseDevError(err) end
+        local raised, err = self:_fireAddonLoaded()
+        if raised then surfaceHookError("addon-loaded", err) end
     end
 end
 
@@ -172,12 +211,13 @@ function Controller:OnLogin(handler)
         F:RaiseDevError("Lifecycle:OnLogin: handler must be a function")
         return
     end
-    if self._hooks.login then
+    if self._registered.login then
         F:RaiseDevError("Lifecycle:OnLogin: a login hook is already registered for '"
             .. self._addonName .. "'; one hook per phase per controller")
         return
     end
 
+    self._registered.login = true
     self._hooks.login = handler
     loginControllers[self] = true
 
@@ -185,8 +225,8 @@ function Controller:OnLogin(handler)
     -- This is the central replacement for a consumer hand-rolling a post-login
     -- retry timer.
     if loginFired then
-        local err = self:_fireLogin()
-        if err then F:RaiseDevError(err) end
+        local raised, err = self:_fireLogin()
+        if raised then surfaceHookError("login", err) end
     end
 end
 
@@ -203,12 +243,13 @@ function Controller:OnLogout(handler)
         F:RaiseDevError("Lifecycle:OnLogout: handler must be a function")
         return
     end
-    if self._hooks.logout then
+    if self._registered.logout then
         F:RaiseDevError("Lifecycle:OnLogout: a logout hook is already registered for '"
             .. self._addonName .. "'; one hook per phase per controller")
         return
     end
 
+    self._registered.logout = true
     self._hooks.logout = handler
     loginControllers[self] = true
 end
@@ -251,6 +292,7 @@ function Controller:Destroy()
     ownedNames[self._addonName] = nil
     loginControllers[self] = nil
     self._hooks = {}
+    self._registered = {}
     self._owner = nil
     self._destroyed = true
 end
@@ -289,6 +331,11 @@ function Lifecycle:New(owner, addonName)
     c._owner = owner or {}
     c._addonName = addonName
     c._hooks = {}
+    -- _registered persists a phase's registration for the controller's whole life,
+    -- separate from _hooks (which the one-shot fire CLEARS). The re-register guard
+    -- checks _registered, so a SECOND OnX is rejected even AFTER its phase fired --
+    -- the cleared _hooks slot must not silently reopen registration.
+    c._registered = { addonLoaded = false, login = false, logout = false }
     c._destroyed = false
 
     -- Enrol for the PENDING ADDON_LOADED demux and the PERSISTENT re-register

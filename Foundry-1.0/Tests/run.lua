@@ -35,17 +35,27 @@ function T.installMocks(tocVersion)
 
     _G.SlashCmdList = {}
     -- Lifecycle's addon-loaded catch-up probes C_AddOns.IsAddOnLoaded(addonName).
-    -- T.loadedAddons is the per-test set of names the mock reports as already
-    -- loaded; empty by default, so the normal (not-yet-loaded) path runs and a
-    -- test opts a name in explicitly to exercise catch-up.
+    -- T.loadedAddons is the per-test set of names the mock reports on; empty by
+    -- default, so the normal (not-yet-loaded) path runs and a test opts a name in
+    -- explicitly to exercise catch-up.
     T.loadedAddons = {}
     _G.C_AddOns = {
         GetAddOnMetadata = function(_, key)
             if key == "Version" then return tocVersion end
             return nil
         end,
+        -- The REAL C_AddOns.IsAddOnLoaded returns TWO booleans: loadedOrLoading,
+        -- loaded. The catch-up's "finished loading" gate keys on the SECOND value,
+        -- so the mock must return both faithfully (a single-boolean mock would mask
+        -- a catch-up that fires mid-load). T.loadedAddons[name] models three states:
+        --   true       -> fully loaded   -> (true,  true)
+        --   "loading"  -> still loading  -> (true,  false)
+        --   nil/false  -> not loaded     -> (false, false)
         IsAddOnLoaded = function(name)
-            return T.loadedAddons[name] == true
+            local state = T.loadedAddons[name]
+            if state == true then return true, true end
+            if state == "loading" then return true, false end
+            return false, false
         end,
     }
 

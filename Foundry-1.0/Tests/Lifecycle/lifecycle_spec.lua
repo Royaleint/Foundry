@@ -762,4 +762,122 @@ test("owner key set is unchanged after EACH of addon-loaded -> login -> logout -
     T.eq(keySet(owner), before, "unchanged after Destroy")
 end)
 
+--------------------------------------------------------------------------------
+-- Hostile-review regression (findings 1-4, 2026-06-03)
+--
+-- These lock four bugs the out-of-game harness originally missed because its
+-- mocks/cases did not model the real semantics. Each FAILED against the first
+-- B+C implementation and PASSES against the fix.
+--   1. Premature addon-loaded fire: catch-up gated on IsAddOnLoaded's FIRST
+--      return (loadedOrLoading), firing mid-load before SavedVariables exist.
+--   2. Falsy hook-error silently swallowed: `if err then surface` dropped
+--      error(nil)/error(false)/error() (a §3.4.1 fail-loud violation).
+--   3. Re-entrancy skip: inserting into loginControllers during a pairs() fan-out
+--      (a hook that :New+:OnLogin a controller) skipped existing subscribers.
+--   4. Post-fire re-register accepted: the one-shot cleared the hook slot, so the
+--      "already registered" guard went blind and a second OnX after fire slipped.
+--------------------------------------------------------------------------------
+
+-- finding-1-no-premature-fire-while-loading
+test("finding-1: addon-loaded catch-up does NOT fire while the addon is merely LOADING (IsAddOnLoaded 2nd return)", function()
+    local F = T.fresh()
+    T.loadedAddons["A"] = "loading"   -- (loadedOrLoading=true, loaded=false)
+    local c = F.Lifecycle:New(nil, "A")
+    local fired = 0
+    c:OnAddonLoaded(function() fired = fired + 1 end)
+    T.eq(fired, 0, "NO premature fire mid-load (SavedVariables not yet available)")
+    -- the controller stays enrolled; the REAL ADDON_LOADED fires it once
+    T.Fire(dispatcherFrame(), "ADDON_LOADED", "A")
+    T.eq(fired, 1, "fires once on the real ADDON_LOADED")
+    T.Fire(dispatcherFrame(), "ADDON_LOADED", "A")
+    T.eq(fired, 1, "one-shot: a second real ADDON_LOADED does not re-fire")
+end)
+
+-- finding-1-catchup-when-finished
+test("finding-1: addon-loaded catch-up DOES fire when the addon has FINISHED loading (2nd return true)", function()
+    local F = T.fresh()
+    T.loadedAddons["A"] = true        -- (loadedOrLoading=true, loaded=true)
+    local c = F.Lifecycle:New(nil, "A")
+    local fired = 0
+    c:OnAddonLoaded(function() fired = fired + 1 end)
+    T.eq(fired, 1, "catch-up fires synchronously when finished loading")
+    T.Fire(dispatcherFrame(), "ADDON_LOADED", "A")
+    T.eq(fired, 1, "no double-fire from a later real ADDON_LOADED")
+end)
+
+-- finding-2-falsy-login-error-dev
+test("finding-2: (dev) a login hook that error(nil)s STILL surfaces AND the fan-out completes (no silent swallow)", function()
+    local F = T.fresh()
+    local aRan, bRan = false, false
+    local ca = F.Lifecycle:New(nil, "A"); ca:OnLogin(function() aRan = true; error(nil) end)
+    local cb = F.Lifecycle:New(nil, "B"); cb:OnLogin(function() bRan = true end)
+    -- dev: the captured FALSY error is surfaced AFTER the fan-out -> RaiseDevError raises
+    T.raises(function() T.Fire(dispatcherFrame(), "PLAYER_LOGIN") end, "falsy login error surfaces", "phase hook errored")
+    T.truthy(aRan, "controller A ran")
+    T.truthy(bRan, "controller B STILL ran (fan-out completed despite A's falsy error)")
+end)
+
+-- finding-2-falsy-login-error-release
+test("finding-2: (release) a login hook that error(false)s STILL prints a diagnostic (never swallowed)", function()
+    local F = T.fresh("1.0.0")
+    local bRan = false
+    local ca = F.Lifecycle:New(nil, "A"); ca:OnLogin(function() error(false) end)
+    local cb = F.Lifecycle:New(nil, "B"); cb:OnLogin(function() bRan = true end)
+    T.Fire(dispatcherFrame(), "PLAYER_LOGIN")   -- release: prints, never raises
+    T.truthy(bRan, "controller B ran")
+    T.outputContains("phase hook errored", "the falsy error was surfaced (printed), not swallowed")
+end)
+
+-- finding-2-falsy-addonloaded-error-dev
+test("finding-2: (dev) a bare error() in an addon-loaded hook surfaces on the single-fire path", function()
+    local F = T.fresh()
+    local c = F.Lifecycle:New(nil, "A")
+    c:OnAddonLoaded(function() error() end)   -- bare error -> pcall returns (false, nil)
+    T.raises(function() T.Fire(dispatcherFrame(), "ADDON_LOADED", "A") end,
+        "falsy addon-loaded error surfaces", "phase hook errored")
+end)
+
+-- finding-3-reentrant-newborn-no-skip
+test("finding-3: a hook that :New+:OnLogin a controller mid-fan-out skips NO existing subscriber (snapshot)", function()
+    local F = T.fresh()
+    local N = 32
+    local fired = {}
+    for i = 1, N do
+        local name = "C" .. i
+        fired[name] = 0
+        local c = F.Lifecycle:New(nil, name)
+        c:OnLogin(function()
+            fired[name] = fired[name] + 1
+            if i == N then
+                -- register a NEWBORN controller mid-fan-out (mutates loginControllers)
+                local nc = F.Lifecycle:New(nil, "Newborn")
+                nc:OnLogin(function() fired["Newborn"] = (fired["Newborn"] or 0) + 1 end)
+            end
+        end)
+    end
+    T.Fire(dispatcherFrame(), "PLAYER_LOGIN")
+    local missed = 0
+    for i = 1, N do if fired["C" .. i] ~= 1 then missed = missed + 1 end end
+    T.eq(missed, 0, "every existing controller's login hook fired exactly once (no skip)")
+    T.eq(fired["Newborn"], 1, "the mid-fan-out newborn fired exactly once via catch-up")
+end)
+
+-- finding-4-postfire-reregister-rejected-login
+test("finding-4: re-registering a login hook AFTER it fired is rejected (one hook per phase, even post-fire)", function()
+    local F = T.fresh()
+    local c = F.Lifecycle:New(nil, "A")
+    c:OnLogin(noop)
+    T.Fire(dispatcherFrame(), "PLAYER_LOGIN")   -- fires + one-shot clears the live hook slot
+    T.raises(function() c:OnLogin(noop) end, "post-fire login re-register rejected", "already registered")
+end)
+
+-- finding-4-postfire-reregister-rejected-addonloaded
+test("finding-4: re-registering an addon-loaded hook AFTER it fired is rejected", function()
+    local F = T.fresh()
+    local c = F.Lifecycle:New(nil, "A")
+    c:OnAddonLoaded(noop)
+    T.Fire(dispatcherFrame(), "ADDON_LOADED", "A")
+    T.raises(function() c:OnAddonLoaded(noop) end, "post-fire addon-loaded re-register rejected", "already registered")
+end)
+
 return tests
