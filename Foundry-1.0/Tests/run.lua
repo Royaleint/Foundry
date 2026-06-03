@@ -34,10 +34,18 @@ function T.installMocks(tocVersion)
     for _, k in ipairs(stale) do _G[k] = nil end
 
     _G.SlashCmdList = {}
+    -- Lifecycle's addon-loaded catch-up probes C_AddOns.IsAddOnLoaded(addonName).
+    -- T.loadedAddons is the per-test set of names the mock reports as already
+    -- loaded; empty by default, so the normal (not-yet-loaded) path runs and a
+    -- test opts a name in explicitly to exercise catch-up.
+    T.loadedAddons = {}
     _G.C_AddOns = {
         GetAddOnMetadata = function(_, key)
             if key == "Version" then return tocVersion end
             return nil
+        end,
+        IsAddOnLoaded = function(name)
+            return T.loadedAddons[name] == true
         end,
     }
 
@@ -126,6 +134,8 @@ function T.loadFoundry()
     cmds("Foundry-1.0")
     local events = assert(loadfile(foundryRoot .. "/Modules/Events.lua"))
     events("Foundry-1.0")
+    local lifecycle = assert(loadfile(foundryRoot .. "/Modules/Lifecycle.lua"))
+    lifecycle("Foundry-1.0")
     return _G.Foundry_1_0
 end
 
@@ -166,8 +176,9 @@ end
 
 -- Each suite: a label and the cases list its spec returns when called with T.
 local suites = {
-    { label = "Foundry.Commands", cases = assert(loadfile(testsDir .. "/Commands/commands_spec.lua"))(T) },
-    { label = "Foundry.Events",   cases = assert(loadfile(testsDir .. "/Events/events_spec.lua"))(T) },
+    { label = "Foundry.Commands",  cases = assert(loadfile(testsDir .. "/Commands/commands_spec.lua"))(T) },
+    { label = "Foundry.Events",    cases = assert(loadfile(testsDir .. "/Events/events_spec.lua"))(T) },
+    { label = "Foundry.Lifecycle", cases = assert(loadfile(testsDir .. "/Lifecycle/lifecycle_spec.lua"))(T) },
 }
 
 local anyFailed = false
