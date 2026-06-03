@@ -98,9 +98,16 @@ function T.installMocks(tocVersion)
         function frame:UnregisterAllEvents()
             self.calls.UnregisterAllEvents[#self.calls.UnregisterAllEvents + 1] = {}
         end
+        frame._scripts = {}
         function frame:SetScript(name, fn)
             self.calls.SetScript[#self.calls.SetScript + 1] = { name, fn }
+            self._scripts[name] = fn
             if name == "OnEvent" then self._onEvent = fn end
+        end
+        -- Lifecycle:_TestFire fetches the live OnEvent via GetScript to drive the
+        -- real dispatcher path without touching registration; mirror the real frame.
+        function frame:GetScript(name)
+            return self._scripts[name]
         end
         function frame:Hide()
             self._shown = false

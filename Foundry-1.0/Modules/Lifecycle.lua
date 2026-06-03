@@ -347,4 +347,51 @@ function Lifecycle:New(owner, addonName)
     return c
 end
 
+--------------------------------------------------------------------------------
+-- Dev-only test seam
+--------------------------------------------------------------------------------
+
+-- The in-game analogue of the out-of-game harness's T.Fire: drive a startup
+-- phase through the LIVE shared dispatcher's real OnEvent path WITHOUT touching
+-- the frame's event registration (no fake RegisterEvent, no second frame). This
+-- exists so the otherwise-unobservable phases (ADDON_LOADED cannot replay without
+-- a client restart; PLAYER_LOGOUT ends the session) can be exercised by the
+-- dev-gated Lifecycle self-test (Dev/LifecycleSelfTest.lua).
+--
+-- TRIPLE-GATED below the public surface and HARD-gated on F.IS_DEV_BUILD: in a
+-- release build it routes to F:RaiseDevError and does nothing, so it can never
+-- become a player-reachable phase injector. It also refuses if no :New has yet
+-- created the dispatcher (nothing to drive).
+--
+-- `phase` is one of "addon-loaded" | "login" | "logout"; for "addon-loaded",
+-- `addonName` is the demux key the dispatcher matches (mirrors the WoW payload).
+function Lifecycle:_TestFire(phase, addonName)
+    if not F.IS_DEV_BUILD then
+        F:RaiseDevError("Lifecycle:_TestFire is dev-build only and must never run in a "
+            .. "release build (it is a phase injector)")
+        return
+    end
+    if not dispatcher or not dispatcher:GetScript("OnEvent") then
+        F:RaiseDevError("Lifecycle:_TestFire: no dispatcher yet; create a controller "
+            .. "with :New before firing a phase")
+        return
+    end
+
+    local onEvent = dispatcher:GetScript("OnEvent")
+    if phase == "addon-loaded" then
+        if type(addonName) ~= "string" or addonName == "" then
+            F:RaiseDevError("Lifecycle:_TestFire: 'addon-loaded' requires a non-empty addonName")
+            return
+        end
+        onEvent(dispatcher, "ADDON_LOADED", addonName)
+    elseif phase == "login" then
+        onEvent(dispatcher, "PLAYER_LOGIN")
+    elseif phase == "logout" then
+        onEvent(dispatcher, "PLAYER_LOGOUT")
+    else
+        F:RaiseDevError("Lifecycle:_TestFire: unknown phase '" .. tostring(phase)
+            .. "'; expected 'addon-loaded', 'login', or 'logout'")
+    end
+end
+
 F:RegisterModule("Lifecycle", Lifecycle)

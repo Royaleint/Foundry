@@ -738,6 +738,85 @@ test("two controllers' GetNativeHandles().frame are the SAME shared identity (in
 end)
 
 --------------------------------------------------------------------------------
+-- Dev-only _TestFire seam (Phase F.2 release-axis coverage)
+--
+-- _TestFire is the in-game analogue of T.Fire: it drives a startup phase through
+-- the LIVE shared dispatcher's real OnEvent path WITHOUT touching the frame's
+-- event registration, so the dev-gated self-test can exercise phases the player
+-- cannot replay. It MUST be hard-gated on F.IS_DEV_BUILD so the instrument can
+-- never become a player-reachable phase injector in a release build.
+--------------------------------------------------------------------------------
+
+-- testfire-dev-drives-phase
+test("_TestFire (dev) drives a phase through the LIVE dispatcher without touching registration", function()
+    local F = T.fresh()
+    T.truthy(F.IS_DEV_BUILD, "dev build")
+    local c = F.Lifecycle:New(nil, "A")
+    local fr = dispatcherFrame()
+    local regBefore = #fr.calls.RegisterEvent
+    local al, lo, lg = 0, 0, 0
+    c:OnAddonLoaded(function() al = al + 1 end)
+    c:OnLogin(function() lo = lo + 1 end)
+    c:OnLogout(function() lg = lg + 1 end)
+    -- Each phase fires through the real demux/fan-out, exactly as T.Fire would.
+    F.Lifecycle:_TestFire("addon-loaded", "A")
+    F.Lifecycle:_TestFire("login")
+    F.Lifecycle:_TestFire("logout")
+    T.eq(al, 1, "addon-loaded fired via _TestFire")
+    T.eq(lo, 1, "login fired via _TestFire")
+    T.eq(lg, 1, "logout fired via _TestFire")
+    -- The seam NEVER registers events: the registration count is unchanged and no
+    -- second frame was created (it drives the existing live frame's OnEvent only).
+    T.eq(#fr.calls.RegisterEvent, regBefore, "_TestFire added NO event registration")
+    T.eq(#T.frames, 1, "_TestFire created no new frame")
+end)
+
+-- testfire-release-refuses
+test("_TestFire REFUSES in a release build (prints, fires nothing) — never a player phase injector", function()
+    local F = T.fresh("1.0.0")
+    T.falsy(F.IS_DEV_BUILD, "release build")
+    local c = F.Lifecycle:New(nil, "A")
+    local fired = 0
+    c:OnLogin(function() fired = fired + 1 end)
+    -- Release: the dev-only gate fires FIRST; it prints a diagnostic, returns, and
+    -- drives no phase. This is the guarantee that the seam cannot inject phases
+    -- into a player's session.
+    local ok = pcall(function() F.Lifecycle:_TestFire("login") end)
+    T.truthy(ok, "release _TestFire does not raise")
+    T.outputContains("dev-build only", "release _TestFire printed the dev-only refusal")
+    T.eq(fired, 0, "release _TestFire fired NO phase")
+    -- The real signal path is unaffected: a genuine PLAYER_LOGIN still works.
+    T.Fire(dispatcherFrame(), "PLAYER_LOGIN")
+    T.eq(fired, 1, "the real dispatcher path is untouched by the refused _TestFire")
+end)
+
+-- testfire-dev-raises-in-release-build-via-override
+test("_TestFire refusal is gated on IS_DEV_BUILD, not the build axis literal: override release stays usable", function()
+    -- A forced dev build on a real version string (override) is still a dev build,
+    -- so _TestFire works — proving the gate keys on IS_DEV_BUILD, the single source
+    -- of truth, not on the raw token.
+    T.installMocks("9.9.9"); _G.FOUNDRY_DEV_BUILD_OVERRIDE = true
+    local F = T.loadFoundry()
+    T.truthy(F.IS_DEV_BUILD, "override forces dev on a real version")
+    local c = F.Lifecycle:New(nil, "A")
+    local lo = 0
+    c:OnLogin(function() lo = lo + 1 end)
+    F.Lifecycle:_TestFire("login")
+    T.eq(lo, 1, "_TestFire drives the phase under a forced-dev override")
+end)
+
+-- testfire-guards
+test("_TestFire (dev) refuses before any dispatcher exists and rejects an unknown phase", function()
+    local F = T.fresh()
+    -- No :New yet -> no dispatcher -> refuse loudly (nothing to drive).
+    T.raises(function() F.Lifecycle:_TestFire("login") end, "no dispatcher", "no dispatcher yet")
+    -- With a dispatcher, an unknown phase is rejected; 'addon-loaded' needs a name.
+    F.Lifecycle:New(nil, "A")
+    T.raises(function() F.Lifecycle:_TestFire("bogus") end, "unknown phase", "unknown phase")
+    T.raises(function() F.Lifecycle:_TestFire("addon-loaded") end, "missing name", "requires a non-empty addonName")
+end)
+
+--------------------------------------------------------------------------------
 -- Owner-pollution net (consolidated)
 --------------------------------------------------------------------------------
 
