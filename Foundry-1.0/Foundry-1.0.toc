@@ -13,3 +13,4 @@
 Foundry.lua
 Modules/Commands.lua
 Modules/Events.lua
+Modules/Lifecycle.lua

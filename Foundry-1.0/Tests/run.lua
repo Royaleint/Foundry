@@ -34,10 +34,28 @@ function T.installMocks(tocVersion)
     for _, k in ipairs(stale) do _G[k] = nil end
 
     _G.SlashCmdList = {}
+    -- Lifecycle's addon-loaded catch-up probes C_AddOns.IsAddOnLoaded(addonName).
+    -- T.loadedAddons is the per-test set of names the mock reports on; empty by
+    -- default, so the normal (not-yet-loaded) path runs and a test opts a name in
+    -- explicitly to exercise catch-up.
+    T.loadedAddons = {}
     _G.C_AddOns = {
         GetAddOnMetadata = function(_, key)
             if key == "Version" then return tocVersion end
             return nil
+        end,
+        -- The REAL C_AddOns.IsAddOnLoaded returns TWO booleans: loadedOrLoading,
+        -- loaded. The catch-up's "finished loading" gate keys on the SECOND value,
+        -- so the mock must return both faithfully (a single-boolean mock would mask
+        -- a catch-up that fires mid-load). T.loadedAddons[name] models three states:
+        --   true       -> fully loaded   -> (true,  true)
+        --   "loading"  -> still loading  -> (true,  false)
+        --   nil/false  -> not loaded     -> (false, false)
+        IsAddOnLoaded = function(name)
+            local state = T.loadedAddons[name]
+            if state == true then return true, true end
+            if state == "loading" then return true, false end
+            return false, false
         end,
     }
 
@@ -80,9 +98,16 @@ function T.installMocks(tocVersion)
         function frame:UnregisterAllEvents()
             self.calls.UnregisterAllEvents[#self.calls.UnregisterAllEvents + 1] = {}
         end
+        frame._scripts = {}
         function frame:SetScript(name, fn)
             self.calls.SetScript[#self.calls.SetScript + 1] = { name, fn }
+            self._scripts[name] = fn
             if name == "OnEvent" then self._onEvent = fn end
+        end
+        -- Lifecycle:_TestFire fetches the live OnEvent via GetScript to drive the
+        -- real dispatcher path without touching registration; mirror the real frame.
+        function frame:GetScript(name)
+            return self._scripts[name]
         end
         function frame:Hide()
             self._shown = false
@@ -126,6 +151,8 @@ function T.loadFoundry()
     cmds("Foundry-1.0")
     local events = assert(loadfile(foundryRoot .. "/Modules/Events.lua"))
     events("Foundry-1.0")
+    local lifecycle = assert(loadfile(foundryRoot .. "/Modules/Lifecycle.lua"))
+    lifecycle("Foundry-1.0")
     return _G.Foundry_1_0
 end
 
@@ -166,8 +193,9 @@ end
 
 -- Each suite: a label and the cases list its spec returns when called with T.
 local suites = {
-    { label = "Foundry.Commands", cases = assert(loadfile(testsDir .. "/Commands/commands_spec.lua"))(T) },
-    { label = "Foundry.Events",   cases = assert(loadfile(testsDir .. "/Events/events_spec.lua"))(T) },
+    { label = "Foundry.Commands",  cases = assert(loadfile(testsDir .. "/Commands/commands_spec.lua"))(T) },
+    { label = "Foundry.Events",    cases = assert(loadfile(testsDir .. "/Events/events_spec.lua"))(T) },
+    { label = "Foundry.Lifecycle", cases = assert(loadfile(testsDir .. "/Lifecycle/lifecycle_spec.lua"))(T) },
 }
 
 local anyFailed = false
