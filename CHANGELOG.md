@@ -2,7 +2,14 @@
 
 All notable changes to Foundry-1.0 are recorded here.
 
-## [Unreleased]
+## [1.0.0] - 2026-06-04
+
+First public release. Foundry-1.0 ships three modules, each a thin bridge over a
+native Blizzard system and usable on its own by declaring
+`## Dependencies: Foundry-1.0`.
 
 ### Added
-- Initial Foundry-1.0 scaffold with the Commands module.
+- **Foundry.Commands** — slash command registration over `SlashCmdList` / `SLASH_*`, with optional dev-only subcommands hidden from players.
+- **Foundry.Events** — a per-addon controller over WoW's frame event system (`RegisterEvent`/`OnEvent`, `RegisterUnitEvent`): one handler per event, dispatch in one place, and one-call teardown.
+- **Foundry.Lifecycle** — addon startup: adopts your own addon table (it never writes into it) and runs correctly-timed hooks over `ADDON_LOADED`, `PLAYER_LOGIN`, and `PLAYER_LOGOUT`.
+- Multi-flavor support — Retail (12.x), Classic Era (1.15.x), and Burning Crusade Classic (2.5.x).

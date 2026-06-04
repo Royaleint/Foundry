@@ -50,3 +50,4 @@ ignore:
   - CHANGELOG.md
   - LICENSE
   - Foundry-1.0/Tests
+  - Foundry-1.0/Dev
