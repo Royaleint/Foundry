@@ -4,7 +4,7 @@
 # packaging (a GitHub webhook), not by a GitHub Action, so there is no automatic
 # release pipeline here yet. This stub wires up the dev-token sanity check so it
 # is ready: point it at a PACKAGED Foundry artifact (post-packager) and it calls
-# the self-contained script, Foundry-1.0/Tests/ci/check-dev-token.sh.
+# the self-contained script, Tests/ci/check-dev-token.sh.
 #
 # Note: running this against the source tree will correctly FAIL, because source
 # legitimately carries the @project-version@ token in the TOC before packaging.
@@ -25,4 +25,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Fail if the packaged artifact still contains @project-version@
-        run: bash Foundry-1.0/Tests/ci/check-dev-token.sh "${{ inputs.artifact_path }}"
+        run: bash Tests/ci/check-dev-token.sh "${{ inputs.artifact_path }}"

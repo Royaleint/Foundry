@@ -25,5 +25,5 @@ ignore = {
 
 -- The dev-only test suite mocks WoW globals and never ships; don't lint it as addon code.
 exclude_files = {
-    "Foundry-1.0/Tests/",
+    "Tests/",
 }

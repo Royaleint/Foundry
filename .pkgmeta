@@ -1,30 +1,13 @@
-# Foundry — CurseForge auto-packager (.pkgmeta) metadata.
+# Foundry — CurseForge packager metadata.
 #
-# Build path: CurseForge SERVER-SIDE automatic packaging (GitHub webhook ->
-# curseforge.com/api/projects/{id}/package). CF reads this file, substitutes
-# @project-version@, and uploads. No GitHub Action packages the addon.
-#
-# Layout: the addon lives in the Foundry-1.0/ subfolder
-# so future majors (Foundry-2.0/) can coexist in this repo. The packager's model
-# is "one main addon at the package root + optional sub-addons moved out", so a
-# single addon living only in a subfolder needs care:
-#
-#  - package-as is the WRAPPER name (the repo), deliberately NOT "Foundry-1.0".
-#    move-folders lifts the real addon to a top-level Foundry-1.0/ in the zip.
-#    If package-as were also "Foundry-1.0" it would COLLIDE with the move dest,
-#    since moved folders are created as siblings of the package-as folder.
-#  - Version is detected from the moved TOC (the packager parses move-folders
-#    TOCs), so no root TOC is required.
-#
-# VALIDATE before the first real release: once the GitHub repo is connected to
-# the CF project, manually trigger the CF auto-packager and inspect the produced
-# zip — confirm a single top-level Foundry-1.0/ (addon files at its root, no
-# double-nesting, no stray wrapper folder).
+# The addon lives at the repo root (Foundry-1.0.toc + Foundry.lua + Modules/) and
+# packages as Foundry-1.0/ — the same flat layout as the studio's other addons
+# (Homestead, Triage, BawrSpam). CurseForge's server-side packager reads the
+# version from a root <package-as>/<package-as>.toc, so the addon must be at the
+# repo root with a matching TOC (an earlier subfolder + move-folders layout failed
+# CF packaging with "could not extract api versions in TOC files").
 
-package-as: Foundry
-
-move-folders:
-  Foundry/Foundry-1.0: Foundry-1.0
+package-as: Foundry-1.0
 
 enable-nolib-creation: no
 
@@ -34,12 +17,8 @@ manual-changelog:
   filename: CHANGELOG.md
   markup-type: markdown
 
-# Dev-only / repo-meta files: keep out of the packaged zip. With the root copies
-# ignored, the leftover wrapper folder is empty and the packager drops it, leaving
-# a clean single top-level Foundry-1.0/. LICENSE ships INSIDE the addon via the
-# tracked copy at Foundry-1.0/LICENSE (keep it in sync with the root LICENSE).
-# README/CHANGELOG live on GitHub + the CF page; CHANGELOG also feeds
-# manual-changelog (release notes), which reads it regardless of this ignore.
+# Dev-only / repo-meta files: keep out of the packaged addon. LICENSE ships inside
+# the addon (root LICENSE -> Foundry-1.0/LICENSE in the zip).
 ignore:
   - .github
   - .gitignore
@@ -48,6 +27,5 @@ ignore:
   - .wiki
   - README.md
   - CHANGELOG.md
-  - LICENSE
-  - Foundry-1.0/Tests
-  - Foundry-1.0/Dev
+  - Tests
+  - Dev

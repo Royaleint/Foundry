@@ -1,7 +1,7 @@
 -- Foundry.Commands test runner (plain Lua 5.1, no external dependencies).
 --
 -- Run from the Foundry repo root or anywhere:
---   lua5.1 Foundry-1.0/Tests/run.lua
+--   lua5.1 Tests/run.lua
 --
 -- These tests are development-only: they are NOT listed in the shipped TOC.
 -- They mock the handful of WoW globals the module uses, load the bootstrap +
@@ -10,7 +10,7 @@
 
 local realPrint = print  -- preserve the real print; tests mock _G.print
 
-local scriptPath = (arg and arg[0]) or "Foundry-1.0/Tests/run.lua"
+local scriptPath = (arg and arg[0]) or "Tests/run.lua"
 local testsDir = scriptPath:match("^(.*)[/\\][^/\\]+$") or "."
 local foundryRoot = testsDir .. "/.."
 
