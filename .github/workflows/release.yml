@@ -1,0 +1,33 @@
+# Foundry release pipeline — the same BigWigs-packager Action the studio's other
+# addons (Homestead, Triage, BawrSpam) use to publish to CurseForge.
+#
+# On a pushed version tag, the BigWigs packager builds the addon from .pkgmeta
+# and uploads it to CurseForge. The CF project id is read from
+# `## X-Curse-Project-ID` in Foundry-1.0.toc (repo root); @project-version@ is
+# substituted from the tag. CurseForge's own server-side packaging webhook is
+# NOT the publish path here — this Action is.
+#
+# One-time setup: a repository secret CF_API_KEY = a CurseForge upload API token
+# (CurseForge account -> API tokens). CF-only for now; a GitHub release would
+# additionally need a GITHUB_OAUTH token.
+name: Release
+
+on:
+  push:
+    tags:
+      - '**'
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Package and upload to CurseForge
+        uses: BigWigsMods/packager@v2
+        env:
+          CF_API_KEY: ${{ secrets.CF_API_KEY }}
