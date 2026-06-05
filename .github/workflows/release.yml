@@ -1,0 +1,31 @@
+# Foundry release pipeline.
+#
+# On a pushed version tag, the BigWigs packager builds the addon from .pkgmeta
+# (the same packager the layout was validated against locally) and uploads it to
+# CurseForge. The CF project id is read from `## X-Curse-Project-ID` in
+# Foundry-1.0/Foundry-1.0.toc; @project-version@ is substituted from the tag.
+#
+# One-time setup: add a repository secret CF_API_KEY = a CurseForge upload API
+# token (CurseForge account -> API tokens). CF-only for now; a GitHub release
+# would additionally need a GITHUB_OAUTH token.
+name: Release
+
+on:
+  push:
+    tags:
+      - '**'
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Package and upload to CurseForge
+        uses: BigWigsMods/packager@v2
+        env:
+          CF_API_KEY: ${{ secrets.CF_API_KEY }}

@@ -5,6 +5,7 @@
 ## Author: BawrLabs
 ## X-License: MIT
 ## X-Category: Library
+## X-Curse-Project-ID: 1450714
 ## DefaultState: enabled
 ## LoadOnDemand: 0
 ## SavedVariables:
