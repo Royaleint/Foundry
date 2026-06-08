@@ -4,6 +4,7 @@
 ## Version: @project-version@
 ## Author: BawrLabs
 ## X-License: MIT
+## Category: Libraries
 ## X-Category: Library
 ## X-Curse-Project-ID: 1558554
 ## DefaultState: enabled
