@@ -2,6 +2,14 @@
 
 All notable changes to Foundry-1.0 are recorded here.
 
+## [1.0.2] - 2026-06-09
+
+Distribution only — no library code changes.
+
+### Changed
+- Now published on Wago alongside CurseForge.
+- Lists under the **Libraries** category in the in-game AddOns list.
+
 ## [1.0.0] - 2026-06-04
 
 First public release. Foundry-1.0 ships three modules, each a thin bridge over a
