@@ -2,6 +2,10 @@
 
 All notable changes to Foundry-1.0 are recorded here.
 
+## [1.0.3] - 2026-06-09
+
+Packaging only — Foundry now uploads to Wago automatically via CI (the v1.0.2 Wago build didn't land because the repo had no uploader workflow).
+
 ## [1.0.2] - 2026-06-09
 
 Distribution only — no library code changes.

@@ -1,0 +1,67 @@
+name: Publish to Wago
+
+# Foundry publishes to CurseForge via CF's server-side webhook (no Action needed
+# for CF). Wago has no equivalent server-side packager, so this Action runs the
+# BigWigs packager to build the addon and upload it to Wago using WAGO_API_TOKEN.
+# CF_API_KEY is deliberately omitted here so this never double-publishes to
+# CurseForge — CF is left entirely to its webhook. The multi-flavor TOC
+# (Interface: 11508, 20505, 120005) is handled by the packager from the TOC, so
+# no -g flag is set.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Bypass the newest-tag guard; publish from the chosen tag ref.'
+        required: false
+        type: boolean
+        default: false
+
+# Serialize releases so two in-flight runs can't race to be the last Wago upload.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      # Only the highest version tag may publish, so an old/bulk tag push can't
+      # overwrite a newer Wago build. Mirrors Homestead's release guard (HS-107).
+      - name: Guard — only the newest tag may publish
+        id: guard
+        run: |
+          TAG="${{ github.ref_name }}"
+          ALL_TAGS=$(git -c versionsort.suffix=-alpha \
+                         -c versionsort.suffix=-beta \
+                         -c versionsort.suffix=-rc \
+                         tag --sort=-v:refname --list 'v*')
+          NEWEST="${ALL_TAGS%%$'\n'*}"
+          echo "Triggering tag:     $TAG"
+          echo "Newest tag in repo: $NEWEST"
+          if [ "$TAG" = "$NEWEST" ] || [ "${{ inputs.force }}" = "true" ]; then
+            if [ "$TAG" != "$NEWEST" ]; then
+              echo "::warning::Publishing $TAG via force override even though $NEWEST is newer."
+            fi
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::$TAG is not the newest tag ($NEWEST); skipping the Wago upload. Re-run from the Actions tab with force=true to deliberately re-publish."
+          fi
+
+      - name: Package and upload to Wago
+        if: steps.guard.outputs.publish == 'true'
+        uses: BigWigsMods/packager@v2
+        env:
+          WAGO_API_TOKEN: ${{ secrets.WAGO_API_TOKEN }}
+          GITHUB_OAUTH: ${{ secrets.GITHUB_TOKEN }}
