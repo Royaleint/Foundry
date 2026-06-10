@@ -28,8 +28,8 @@ Foundry-1.0 delivers a focused set of modules covering what most addons reach fo
 | Module | What it does | Blizzard surface | Ace3 equivalent | Status |
 |---|---|---|---|---|
 | **Commands** | Slash command registration with a per-consumer controller, auto-help, guard checks, and longest-prefix dispatch for multi-word names. | `SlashCmdList`, `SLASH_*` globals | AceConsole-3.0 | Available |
-| **Events** | Owned event registration with automatic cleanup, scoped to the consuming addon. | `CreateFrame` event frames, `RegisterEvent` | AceEvent-3.0 | Planned |
-| **Lifecycle** | Honest hooks over the game's load and login signals, with a "saved settings ready" guarantee that fires when data is loaded and migrations have run. | `ADDON_LOADED`, `PLAYER_LOGIN`, `PLAYER_LOGOUT` | AceAddon-3.0 (lifecycle portion) | Planned |
+| **Events** | Owned event registration with automatic cleanup, scoped to the consuming addon. | `CreateFrame` event frames, `RegisterEvent` | AceEvent-3.0 | Available |
+| **Lifecycle** | Honest hooks over the game's load and login signals, with a "saved settings ready" guarantee that fires when data is loaded and migrations have run. | `ADDON_LOADED`, `PLAYER_LOGIN`, `PLAYER_LOGOUT` | AceAddon-3.0 (lifecycle portion) | Available |
 | **DB** | SavedVariables management with defaults, profiles, and per-character data. Reads existing AceDB save files unchanged. | `SavedVariables`, `SavedVariablesPerCharacter` | AceDB-3.0 | Planned |
 | **List** | Bridge over Blizzard's modern scrolling-list system, which is powerful but punishing to use directly. | `ScrollBox`, `ScrollBoxListView`, `DataProvider`, `ScrollUtil` | No direct Ace3 equivalent | Planned |
 | **Tooltip** | Bridge over Blizzard's modern tooltip-hook system. Current and supported, but under-documented for addon authors. | `TooltipDataProcessor` (added in Patch 10.0.2) | No direct Ace3 equivalent | Planned |
