@@ -141,6 +141,26 @@ function T.Fire(frame, event, ...)
     if onEvent then return onEvent(frame, event, ...) end
 end
 
+-- The Tests/ directory path, exposed so specs can build fixture paths
+-- (e.g. T.loadFixture(T.testsDir .. "/DB/fixtures/empty.lua")).
+T.testsDir = testsDir
+
+-- Load a SavedVariables-format fixture — a bare `NAME = { ... }` global
+-- assignment, exactly the on-disk WTF shape — into a fresh sandbox env and
+-- return that env (so the caller reads env.NAME). Path-parameterized on
+-- purpose: specs load the committed fixtures under Tests/DB/fixtures/, and
+-- the Gate-2 real-save-file proofs pass an absolute path to a live WTF file
+-- through this very same loader, so both modes exercise identical code.
+-- The sandbox env is fresh and empty per call: fixtures are pure data and
+-- never see (or pollute) the test mocks or real globals.
+function T.loadFixture(path)
+    local chunk = assert(loadfile(path))
+    local env = {}
+    setfenv(chunk, env)
+    chunk()
+    return env
+end
+
 -- Load the bootstrap + the Commands and Events modules fresh; returns the
 -- Foundry table. Loading Events is additive: Commands tests reference only
 -- F.Commands and are unaffected by the extra module being present.
