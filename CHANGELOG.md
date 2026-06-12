@@ -2,6 +2,11 @@
 
 All notable changes to Foundry-1.0 are recorded here.
 
+## [Unreleased]
+
+### Added
+- **Foundry.DB** — the AceDB-3.0 replacement (`F.DB:New({ name, sv, defaults, defaultProfile, schema })`). Loads a consumer's SavedVariables, applies its defaults, runs its registered migrations, exposes the live `profile` / `char` / `global` / `sv` section tables, and strips default-equal values back out at logout — for the two storage shapes the committed consumers have on disk. It changes the machinery behind existing save files, never their shape. `db:OnReady`, `db:GetNativeHandles`, and `db:Destroy` round out the controller; unsupported AceDB surfaces (profiles, namespaces, callbacks, wildcards) fail loudly rather than silently. Library API version bumps to 4.
+
 ## [1.0.3] - 2026-06-09
 
 Packaging only — Foundry now uploads to Wago automatically via CI (the v1.0.2 Wago build didn't land because the repo had no uploader workflow).
