@@ -83,7 +83,7 @@ test("HasModule / RequireModule behavior for Lifecycle; additive version markers
     -- Per-MODULE marker is 1 (matches Commands/Events precedent; does not change).
     T.eq(F.Lifecycle.API_VERSION, 1, "Lifecycle.API_VERSION == 1")
     -- Library-wide version bumped ADDITIVELY 2 -> 3 when Lifecycle ships.
-    T.eq(F.API_VERSION, 3, "library API_VERSION == 3 (additive bump)")
+    T.eq(F.API_VERSION, 4, "library API_VERSION == 4 (additive bump)")
     -- Sibling modules still register and keep their own markers.
     T.truthy(F:HasModule("Events"), "Events still registered")
     T.truthy(F:HasModule("Commands"), "Commands still registered")
@@ -957,6 +957,118 @@ test("finding-4: re-registering an addon-loaded hook AFTER it fired is rejected"
     c:OnAddonLoaded(noop)
     T.Fire(dispatcherFrame(), "ADDON_LOADED", "A")
     T.raises(function() c:OnAddonLoaded(noop) end, "post-fire addon-loaded re-register rejected", "already registered")
+end)
+
+--------------------------------------------------------------------------------
+-- Cycle-3 DB strip seam: _RegisterPostLogout (spec §6.4, plan R2)
+--
+-- The private post-logout-fan-out registration seam DB rides for its logout strip.
+-- Ordering is contractual: the seam's callbacks run AFTER the consumer logout
+-- fan-out completes (so a consumer's final writes are in place before the strip
+-- walks them) and BEFORE the deferred error surfacing (so a dev-build consumer
+-- logout hook that errors -- which surfaceHookError re-raises -- does NOT skip the
+-- strip). The seam calls ensureDispatcher() itself, so a DB-only consumer that
+-- never calls Lifecycle:New still gets PLAYER_LOGOUT delivery. Callback isolation
+-- is pcall-per-callback, raised-flag gated (falsy-error safe).
+--------------------------------------------------------------------------------
+
+-- seam-runs-after-consumer-fanout
+test("seam: _RegisterPostLogout callbacks run AFTER the consumer logout fan-out (shared log order)", function()
+    local F = T.fresh()
+    local log = {}
+    local c = F.Lifecycle:New(nil, "Consumer")
+    c:OnLogout(function() log[#log + 1] = "consumer-logout" end)
+    F.Lifecycle._RegisterPostLogout(function() log[#log + 1] = "post-logout" end)
+    T.Fire(dispatcherFrame(), "PLAYER_LOGOUT")
+    T.eq(log[1], "consumer-logout", "the consumer logout hook ran first")
+    T.eq(log[2], "post-logout", "the post-logout seam ran second (after the fan-out)")
+end)
+
+-- seam-runs-before-deferred-surfacing
+test("seam: a consumer logout hook that ERRORS does NOT prevent the post-logout callback (dev)", function()
+    local F = T.fresh()
+    local postRan = false
+    local c = F.Lifecycle:New(nil, "Consumer")
+    c:OnLogout(function() error("consumer logout boom") end)
+    F.Lifecycle._RegisterPostLogout(function() postRan = true end)
+    -- In dev the deferred surfacing re-raises AFTER the post-logout slot, so the
+    -- Fire raises -- but the post-logout callback must already have run.
+    T.raises(function() T.Fire(dispatcherFrame(), "PLAYER_LOGOUT") end,
+        "dev surfaces the consumer error after the seam", "consumer logout boom")
+    T.truthy(postRan, "the post-logout callback ran despite the consumer hook erroring (ran before surfacing)")
+end)
+
+-- seam-callback-isolation
+test("seam: one raising post-logout callback does not starve a second; surfaces once (dev)", function()
+    local F = T.fresh()
+    F.Lifecycle:New(nil, "Seed")   -- create the dispatcher
+    local secondRan = false
+    F.Lifecycle._RegisterPostLogout(function() error("post boom") end)
+    F.Lifecycle._RegisterPostLogout(function() secondRan = true end)
+    T.raises(function() T.Fire(dispatcherFrame(), "PLAYER_LOGOUT") end,
+        "the raising post-logout callback surfaces", "post-logout")
+    T.truthy(secondRan, "the second post-logout callback STILL ran despite the first raising")
+end)
+
+-- seam-callback-isolation-falsy
+test("seam: a post-logout callback raising a FALSY error still surfaces and does not starve a second", function()
+    local F = T.fresh()
+    F.Lifecycle:New(nil, "Seed")
+    local secondRan = false
+    F.Lifecycle._RegisterPostLogout(function() error(nil) end)   -- falsy error
+    F.Lifecycle._RegisterPostLogout(function() secondRan = true end)
+    T.raises(function() T.Fire(dispatcherFrame(), "PLAYER_LOGOUT") end,
+        "falsy post-logout error surfaces (raised-flag gated)", "post-logout")
+    T.truthy(secondRan, "the second callback ran despite the first's falsy error")
+end)
+
+-- seam-callback-isolation-release
+test("seam: post-logout callback errors PRINT in a release build, both still run, no raise", function()
+    local F = T.fresh("1.0.0")
+    T.falsy(F.IS_DEV_BUILD, "release build")
+    F.Lifecycle:New(nil, "Seed")
+    local secondRan = false
+    F.Lifecycle._RegisterPostLogout(function() error("post boom") end)
+    F.Lifecycle._RegisterPostLogout(function() secondRan = true end)
+    local ok = pcall(function() T.Fire(dispatcherFrame(), "PLAYER_LOGOUT") end)
+    T.truthy(ok, "release: no raise out of the post-logout fan-out")
+    T.truthy(secondRan, "the second callback ran")
+    T.outputContains("post-logout", "the post-logout error was surfaced (printed) in release")
+end)
+
+-- seam-ensuredispatcher-db-only-consumer
+test("seam: _RegisterPostLogout calls ensureDispatcher -- a DB-only consumer gets PLAYER_LOGOUT delivery", function()
+    local F = T.fresh()
+    -- No Lifecycle:New at all: register a post-logout callback as the FIRST action.
+    T.eq(#T.frames, 0, "no frame before any Lifecycle interaction")
+    local ran = false
+    F.Lifecycle._RegisterPostLogout(function() ran = true end)
+    -- The seam created the dispatcher itself.
+    T.eq(#T.frames, 1, "_RegisterPostLogout created the dispatcher frame (ensureDispatcher)")
+    -- The frame registered PLAYER_LOGOUT and the callback fires on it.
+    T.Fire(dispatcherFrame(), "PLAYER_LOGOUT")
+    T.truthy(ran, "the post-logout callback fired for a DB-only consumer (no Lifecycle:New)")
+end)
+
+-- seam-non-function-refused
+test("seam: _RegisterPostLogout refuses a non-function argument", function()
+    local F = T.fresh()
+    T.raises(function() F.Lifecycle._RegisterPostLogout("notfn") end, "string arg", "fn must be a function")
+    T.raises(function() F.Lifecycle._RegisterPostLogout(nil) end, "nil arg", "fn must be a function")
+    T.raises(function() F.Lifecycle._RegisterPostLogout({}) end, "table arg", "fn must be a function")
+end)
+
+-- seam-only-on-logout
+test("seam: post-logout callbacks fire ONLY on PLAYER_LOGOUT, not login or addon-loaded", function()
+    local F = T.fresh()
+    local count = 0
+    F.Lifecycle._RegisterPostLogout(function() count = count + 1 end)
+    local fr = dispatcherFrame()
+    T.Fire(fr, "ADDON_LOADED", "Whatever")
+    T.Fire(fr, "PLAYER_LOGIN")
+    T.eq(count, 0, "no post-logout fire on addon-loaded or login")
+    T.Fire(fr, "PLAYER_LOGOUT")
+    T.eq(count, 1, "fires exactly once on PLAYER_LOGOUT")
 end)
 
 return tests

@@ -34,6 +34,36 @@ function T.installMocks(tocVersion)
     for _, k in ipairs(stale) do _G[k] = nil end
 
     _G.SlashCmdList = {}
+
+    -- Player/realm identity for Foundry.DB (spec §3.4: charKey = "Name - Realm").
+    -- T-controllable per test via T.identity. The DEFAULT is a multi-word realm
+    -- with internal spaces ("Test Realm") so a charKey separator/space bug cannot
+    -- hide -- a wrong separator or a stripped space changes the key and orphans a
+    -- bucket. A test sets T.identity = { name = ..., realm = ... } before :New to
+    -- exercise the nil / "" / "Unknown" refuse-before-mutation paths, or to match a
+    -- fixture's bucket key. UnitName("player") returns (name, serverName-or-nil) on
+    -- the real client; the realm comes from GetRealmName(), so the mock returns
+    -- (name, nil) from UnitName and the realm from GetRealmName -- the real shape
+    -- AceDB and DB both consume (acedb-semantics.md §1).
+    T.identity = { name = "Tester", realm = "Test Realm" }
+    _G.UnitName = function(unit)
+        if unit == "player" then return T.identity.name, nil end
+        return T.identity.name, nil
+    end
+    _G.GetRealmName = function()
+        return T.identity.realm
+    end
+
+    -- Test SavedVariables globals are cleared so no state leaks across cases. DB
+    -- resolves/creates _G[sv]; a residual table from a prior test would mask a
+    -- fresh-save path. The set covers every sv name the DB specs construct.
+    for _, name in ipairs({
+        "HomesteadDB", "BawrSpamDB", "TestDB", "TestDB2", "SyntheticDB",
+        "DB_A", "DB_B", "FxHomestead", "FxBawrSpam",
+    }) do
+        _G[name] = nil
+    end
+
     -- Lifecycle's addon-loaded catch-up probes C_AddOns.IsAddOnLoaded(addonName).
     -- T.loadedAddons is the per-test set of names the mock reports on; empty by
     -- default, so the normal (not-yet-loaded) path runs and a test opts a name in
@@ -141,6 +171,26 @@ function T.Fire(frame, event, ...)
     if onEvent then return onEvent(frame, event, ...) end
 end
 
+-- The Tests/ directory path, exposed so specs can build fixture paths
+-- (e.g. T.loadFixture(T.testsDir .. "/DB/fixtures/empty.lua")).
+T.testsDir = testsDir
+
+-- Load a SavedVariables-format fixture — a bare `NAME = { ... }` global
+-- assignment, exactly the on-disk WTF shape — into a fresh sandbox env and
+-- return that env (so the caller reads env.NAME). Path-parameterized on
+-- purpose: specs load the committed fixtures under Tests/DB/fixtures/, and
+-- the Gate-2 real-save-file proofs pass an absolute path to a live WTF file
+-- through this very same loader, so both modes exercise identical code.
+-- The sandbox env is fresh and empty per call: fixtures are pure data and
+-- never see (or pollute) the test mocks or real globals.
+function T.loadFixture(path)
+    local chunk = assert(loadfile(path))
+    local env = {}
+    setfenv(chunk, env)
+    chunk()
+    return env
+end
+
 -- Load the bootstrap + the Commands and Events modules fresh; returns the
 -- Foundry table. Loading Events is additive: Commands tests reference only
 -- F.Commands and are unaffected by the extra module being present.
@@ -153,6 +203,8 @@ function T.loadFoundry()
     events("Foundry-1.0")
     local lifecycle = assert(loadfile(foundryRoot .. "/Modules/Lifecycle.lua"))
     lifecycle("Foundry-1.0")
+    local db = assert(loadfile(foundryRoot .. "/Modules/DB.lua"))
+    db("Foundry-1.0")
     return _G.Foundry_1_0
 end
 
@@ -196,6 +248,8 @@ local suites = {
     { label = "Foundry.Commands",  cases = assert(loadfile(testsDir .. "/Commands/commands_spec.lua"))(T) },
     { label = "Foundry.Events",    cases = assert(loadfile(testsDir .. "/Events/events_spec.lua"))(T) },
     { label = "Foundry.Lifecycle", cases = assert(loadfile(testsDir .. "/Lifecycle/lifecycle_spec.lua"))(T) },
+    { label = "Foundry.DB",        cases = assert(loadfile(testsDir .. "/DB/db_spec.lua"))(T) },
+    { label = "Foundry.DB.parity", cases = assert(loadfile(testsDir .. "/DB/acedb_parity.lua"))(T) },
 }
 
 local anyFailed = false

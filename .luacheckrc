@@ -15,6 +15,8 @@ globals = {
 read_globals = {
     "CreateFrame",
     "C_AddOns",
+    "UnitName",
+    "GetRealmName",
 }
 
 -- The module factories (Commands:New / Events:New) take an unused `self` by the

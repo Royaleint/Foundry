@@ -40,7 +40,7 @@ local isDevBuild = (tocVersion == nil)
 local F = {}
 F.IS_DEV_BUILD = isDevBuild
 F.VERSION = isDevBuild and DEV_VERSION or tocVersion
-F.API_VERSION = 3
+F.API_VERSION = 4
 
 -- 3. Shared fail-loud helper. In a dev build an unsupported
 --    or unsafe condition raises a Lua error so the author sees it immediately.

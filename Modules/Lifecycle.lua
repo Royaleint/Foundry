@@ -34,6 +34,7 @@ local byAddonName = {}        -- addonName -> controller  (PENDING ADDON_LOADED 
 local ownedNames = {}         -- addonName -> controller  (PERSISTENT: lives until Destroy; backs re-register rejection)
 local loginControllers = {}   -- controller -> true  (set: who wants login/logout phases)
 local loginFired = false      -- central "PLAYER_LOGIN already fired" flag
+local postLogout = {}          -- array of private post-logout callbacks (Cycle-3 DB strip seam)
 
 -- Surface a captured hook error through F:RaiseDevError. The captured value may
 -- be ANY Lua value -- INCLUDING a falsy one (a hook that called error(nil),
@@ -95,7 +96,23 @@ local function ensureDispatcher()
                 local r, e = snapshot[i]:_fireLogout()
                 if r and not raised then raised, firstErr = true, e end
             end
+            -- Post-logout fan-out (private seam). Runs strictly AFTER the consumer
+            -- logout fan-out completes -- so a consumer's final writes are in place
+            -- before the DB strip walks them (spec §6.4 contract 2) -- and strictly
+            -- BEFORE the deferred surfacing below: in a dev build surfaceHookError
+            -- raises, which would abort this branch and skip the strip whenever a
+            -- consumer logout hook errored, defeating the continue-on-error contract
+            -- the strip depends on (spec §6.4 contract 1). Each callback is captured
+            -- so one cannot starve another or the surfacing; a raised post-logout
+            -- callback is surfaced after the loop on its own gate (the registrant --
+            -- DB -- owns finer pcall-per-store isolation beneath this).
+            local plRaised, plFirstErr = false, nil
+            for i = 1, #postLogout do
+                local ok, e = pcall(postLogout[i])
+                if not ok and not plRaised then plRaised, plFirstErr = true, e end
+            end
             if raised then surfaceHookError("logout", firstErr) end
+            if plRaised then surfaceHookError("post-logout", plFirstErr) end
         end
     end)
 
@@ -104,6 +121,25 @@ local function ensureDispatcher()
     frame:RegisterEvent("PLAYER_LOGOUT")
 
     dispatcher = frame
+end
+
+-- Private post-logout-fan-out registration seam (Cycle-3 deliverable; spec §6.4,
+-- plan R2). Internal surface only -- the dot-call underscore name keeps it off
+-- the public controller API, so Lifecycle.API_VERSION stays 1 (the _TestFire
+-- precedent). Foundry.DB registers its logout strip here exactly once, at its
+-- first :New. It calls ensureDispatcher() itself so the dispatcher and its
+-- PLAYER_LOGOUT registration exist even for a DB-only consumer that never calls
+-- Lifecycle:New -- otherwise that consumer's strip would never be delivered
+-- (spec §6.4 contract 1 holds Lifecycle-controller-or-not). The registered
+-- callbacks run after the consumer logout fan-out and before deferred error
+-- surfacing (see the PLAYER_LOGOUT branch above).
+function Lifecycle._RegisterPostLogout(fn)
+    if type(fn) ~= "function" then
+        F:RaiseDevError("Lifecycle._RegisterPostLogout: fn must be a function")
+        return
+    end
+    ensureDispatcher()
+    postLogout[#postLogout + 1] = fn
 end
 
 --------------------------------------------------------------------------------
