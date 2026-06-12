@@ -32,4 +32,5 @@ ignore = {
 exclude_files = {
     "Tests/",
     ".worktrees/",
+    "Foundry_Dev/",  -- private nested dev repo: probes, scratch, staged SV data
 }
