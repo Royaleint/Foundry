@@ -25,7 +25,11 @@ ignore = {
     "212/self",
 }
 
--- The dev-only test suite mocks WoW globals and never ships; don't lint it as addon code.
+-- The dev-only test suite mocks WoW globals and never ships; don't lint it as
+-- addon code. Worktree checkouts under .worktrees/ carry their own Tests/ copies
+-- that the bare "Tests/" pattern does not match from the repo root, so a
+-- root-level run would re-lint them as addon code; each worktree lints itself.
 exclude_files = {
     "Tests/",
+    ".worktrees/",
 }
