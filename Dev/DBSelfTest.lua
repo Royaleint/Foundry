@@ -526,17 +526,23 @@ end
 -- Gate (2c): register through a private F.Commands controller, so no raw SLASH_*
 -- global is written. /foundrydb is DB's OWN dev surface (it cannot share
 -- /foundrydev — Commands:New refuses duplicate slashes, and in a combined dev
--- session the second registrant would silently lose its command). Bare
--- /foundrydb runs the full synthetic walk.
+-- session the second registrant would silently lose its command). The walk
+-- requires the EXPLICIT `walk` subcommand; bare /foundrydb prints help. The
+-- Phase D/E worksheets type `/foundrydb inspect ...` repeatedly in sessions
+-- where a consumer's real store is live — a dropped word must print help, never
+-- fire the simulated logout.
 local devCommands = F.Commands and F.Commands:New({
     name = "FoundryDB",
     slashes = { "/foundrydb" },
-    description = "Foundry.DB developer self-test (dev-build only). "
-        .. "Bare /foundrydb runs the full synthetic walk.",
-    defaultHandler = walkHandler,
+    description = "Foundry.DB developer self-test (dev-build only).",
 })
 
 if devCommands then
+    devCommands:Register({
+        name = "walk",
+        help = "Run the full synthetic walk: create -> defaults -> writes -> simulated strip -> re-init.",
+        handler = walkHandler,
+    })
     devCommands:Register({
         name = "errortest",
         help = "Run the migrate-raises drive: refused construction, store intact.",
