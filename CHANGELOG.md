@@ -2,10 +2,11 @@
 
 All notable changes to Foundry-1.0 are recorded here.
 
-## [Unreleased]
+## [1.0.4] - 2026-06-13
 
 ### Added
 - **Foundry.DB** — the AceDB-3.0 replacement (`F.DB:New({ name, sv, defaults, defaultProfile, schema })`). Loads a consumer's SavedVariables, applies its defaults, runs its registered migrations, exposes the live `profile` / `char` / `global` / `sv` section tables, and strips default-equal values back out at logout — for the two storage shapes the committed consumers have on disk. It changes the machinery behind existing save files, never their shape. `db:OnReady`, `db:GetNativeHandles`, and `db:Destroy` round out the controller; unsupported AceDB surfaces (profiles, namespaces, callbacks, wildcards) fail loudly rather than silently. Library API version bumps to 4.
+- **Embedded-copy guard** — Foundry can now be safely bundled inside consumer addon zips for Wago distribution, eliminating the need for a separate Foundry install on Wago. When a standalone copy and one or more embedded copies coexist, the standalone wins; when multiple embedded copies coexist without a standalone, the first-loaded copy wins. All later copies stand down silently with no duplicate dispatchers, no double DB strip, and no save-data corruption. Consumers embedding Foundry must use v1.0.4 or newer as the minimum embedded tag.
 
 ## [1.0.3] - 2026-06-09
 
