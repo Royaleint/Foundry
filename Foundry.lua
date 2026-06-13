@@ -41,6 +41,7 @@ local F = {}
 F.IS_DEV_BUILD = isDevBuild
 F.VERSION = isDevBuild and DEV_VERSION or tocVersion
 F.API_VERSION = 4
+F._LOAD_TOKEN = {}   -- per-load identity token (guarded-embed §2.2c)
 
 -- 3. Shared fail-loud helper. In a dev build an unsupported
 --    or unsafe condition raises a Lua error so the author sees it immediately.
@@ -96,6 +97,24 @@ function F:RequireModule(name, minApiVersion)
     return module
 end
 
--- 5. Publish under the major-version-qualified global. There
+-- 5. Bootstrap gate: if a copy of this major version already claimed the runtime
+--    symbol (a standalone or an earlier-loading consumer's embed), this copy must
+--    NOT overwrite it. The first copy to load wins and serves everyone; later copies
+--    load nothing. Replacing the table would create a second live library instance
+--    (split-brain dispatcher; double DB logout strip = save corruption). §2.2a + §2.3.
+local existing = _G.Foundry_1_0
+if existing then
+    -- Emit a dev diagnostic when a genuinely different copy is suppressed (§2.3).
+    -- Gated on IS_DEV_BUILD (winner's build flag) so release builds are silent;
+    -- and on token identity (NOT version string — SV-3) so the same copy loaded
+    -- twice doesn't fire spuriously.
+    if existing.IS_DEV_BUILD and existing._LOAD_TOKEN ~= F._LOAD_TOKEN then
+        existing:RaiseDevError("a redundant embedded Foundry-1.0 copy was suppressed; "
+            .. "the first-loaded copy is serving")
+    end
+    return
+end
+
+-- 6. Publish under the major-version-qualified global. There
 --    is no plain _G.Foundry; consumers bind _G.Foundry_1_0 explicitly.
 _G.Foundry_1_0 = F

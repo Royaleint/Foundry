@@ -16,6 +16,10 @@ if not F then
     error("Foundry-1.0: DB.lua requires the Foundry-1.0 bootstrap (Foundry.lua) "
         .. "to have loaded first; _G.Foundry_1_0 is missing.", 0)
 end
+-- Guarded-embedding stand-down (§2.2b): if this module is already registered on the
+-- winning copy, this is a redundant embedded copy — load nothing. Silent no-op on
+-- the first load (not registered yet). Zero new surface on F (HasModule already exists).
+if F:HasModule("DB") then return end
 
 local DB = {}
 DB.API_VERSION = 1
