@@ -215,6 +215,48 @@ test("New: extentCalculator path sets a calculator, not a fixed extent", functio
     T.eq(view._extent, nil, "no fixed extent wired")
 end)
 
+test("extentCalculator runtime guard: nil/non-positive return raises (dev), valid passes through", function()
+    local F = T.fresh()
+    -- A calculator that returns nil for every row — the exact Gate-2 crash shape
+    -- (variable-height rows with no rowHeight). :New still accepts it (it IS a
+    -- function); the wrapped calculator is what guards the RETURN value.
+    local cfg = valid()
+    cfg.extent = nil
+    cfg.extentCalculator = function() return nil end
+    local c = F.List:New(cfg)
+    T.truthy(c, "controller created (the function-type check at :New still passes)")
+    local calc = c:GetNativeHandles().view._calc
+    T.eq(type(calc), "function", "List wrapped the consumer calculator")
+    -- Dev build: the wrapped calculator raises a clear, located List error rather
+    -- than letting nil flow into Blizzard's extent math.
+    T.raises(function() calc(1, { id = 1 }) end, "nil return raises",
+        "extentCalculator must return a number")
+
+    -- Happy path: a valid number flows through the wrapper unchanged.
+    local F2 = T.fresh()
+    local cfg2 = valid()
+    cfg2.extent = nil
+    cfg2.extentCalculator = function() return 18 end
+    local c2 = F2.List:New(cfg2)
+    local calc2 = c2:GetNativeHandles().view._calc
+    T.eq(calc2(1, { id = 1 }), 18, "valid calculator return passes through unchanged")
+end)
+
+test("extentCalculator runtime guard: release build prints and returns a positive fallback", function()
+    local F = T.fresh("1.0.0")
+    local cfg = valid()
+    cfg.extent = nil
+    cfg.extentCalculator = function() return nil end
+    local c = F.List:New(cfg)
+    T.truthy(c, "controller created in release build")
+    local calc = c:GetNativeHandles().view._calc
+    local fallback = calc(1, { id = 1 })
+    T.eq(type(fallback), "number", "release returns a number fallback (never nil)")
+    T.truthy(fallback > 0, "fallback is positive so Blizzard's extent math is safe")
+    T.outputContains("extentCalculator must return a number",
+        "release printed the diagnostic instead of raising")
+end)
+
 test("New: single-initializer path only (selection never wired)", function()
     local F = T.fresh()
     F.List:New(valid())
