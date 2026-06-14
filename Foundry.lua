@@ -106,11 +106,23 @@ local existing = _G.Foundry_1_0
 if existing then
     -- Emit a dev diagnostic when a genuinely different copy is suppressed (§2.3).
     -- Gated on IS_DEV_BUILD (winner's build flag) so release builds are silent;
-    -- and on token identity (NOT version string — SV-3) so the same copy loaded
-    -- twice doesn't fire spuriously.
-    if existing.IS_DEV_BUILD and existing._LOAD_TOKEN ~= F._LOAD_TOKEN then
+    -- on token identity (NOT version string — SV-3) so the same copy loaded twice
+    -- doesn't fire spuriously; and (FND-007 #2) on an API_VERSION SKEW between the
+    -- suppressed copy and the winner, so a same-version multi-embed dev setup
+    -- (several addons each shipping the identical Foundry) stays silent and only a
+    -- real version mismatch — the case worth a dev's attention — speaks up.
+    --
+    -- DEV-ENVIRONMENT NOISE TUNING ONLY. This whole branch is gated on the WINNER's
+    -- IS_DEV_BUILD, so in a real production graft (the winner is a live release
+    -- standalone) it NEVER fires. It is NOT production graft protection -- DB.lua's
+    -- RaiseDevError graft-guard is the sole production guard for the consequential
+    -- (DB) graft. This message exists purely to cut noise in dev setups.
+    if existing.IS_DEV_BUILD and existing._LOAD_TOKEN ~= F._LOAD_TOKEN
+        and existing.API_VERSION ~= F.API_VERSION then
         existing:RaiseDevError("a redundant embedded Foundry-1.0 copy was suppressed; "
-            .. "the first-loaded copy is serving")
+            .. "the first-loaded copy (API_VERSION " .. tostring(existing.API_VERSION)
+            .. ") is serving and this copy (API_VERSION " .. tostring(F.API_VERSION)
+            .. ") loaded nothing")
     end
     return
 end
