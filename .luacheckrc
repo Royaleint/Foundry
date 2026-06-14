@@ -21,6 +21,8 @@ read_globals = {
     "ScrollUtil",
     "CreateScrollBoxListLinearView",
     "CreateDataProvider",
+    -- Dev/ListSelfTest.lua parents its visible demo frame to UIParent (dev-only).
+    "UIParent",
 }
 
 -- The module factories (Commands:New / Events:New) take an unused `self` by the
