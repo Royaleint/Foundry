@@ -89,15 +89,26 @@ function T.installMocks(tocVersion)
         end,
     }
 
-    -- CreateFrame("Frame") stub (additive; Commands never calls CreateFrame).
+    -- CreateFrame stub (additive; Commands never calls CreateFrame).
     -- Returns a recorder frame whose event/script methods log calls so Events
     -- tests can assert what the controller drove on the native frame, and a
     -- T.Fire(frame, event, ...) helper synthesizes an OnEvent delivery by
     -- invoking the captured OnEvent script as onEvent(frame, event, ...).
+    --
+    -- The signature captures (kind, name, parent, template) so Foundry.List tests
+    -- can find the WowScrollBoxList frame and the MinimalScrollBar EventFrame by
+    -- (kind, template). Frames built from the WowScrollBoxList template gain the
+    -- ScrollBox-list methods (SetDataProvider / ForEachFrame / RemoveDataProvider /
+    -- GetDataProvider), wired to a view by ScrollUtil.InitScrollBoxListWithScrollBar.
+    -- The existing event-frame buckets and OnEvent plumbing are unchanged, so the
+    -- Commands/Events/Lifecycle/DB suites are unaffected.
     T.frames = {}
-    _G.CreateFrame = function(kind)
+    _G.CreateFrame = function(kind, name, parent, template)
         local frame = {}
         frame._kind = kind
+        frame._name = name
+        frame._parent = parent
+        frame._template = template
         frame._shown = true
         -- Call logs: each native method appends a record so a test can count
         -- and inspect the exact args (including unit2 presence/order).
@@ -109,6 +120,7 @@ function T.installMocks(tocVersion)
             SetScript = {},
             Hide = {},
             Show = {},
+            SetPoint = {},
         }
         function frame:RegisterEvent(event)
             self.calls.RegisterEvent[#self.calls.RegisterEvent + 1] = { event }
@@ -150,9 +162,128 @@ function T.installMocks(tocVersion)
         function frame:IsShown()
             return self._shown
         end
+        -- Layout recorders (List anchors its ScrollBox/ScrollBar). No-op math; the
+        -- recorder only logs that the call happened with its args.
+        function frame:SetPoint(...)
+            self.calls.SetPoint[#self.calls.SetPoint + 1] = { ... }
+        end
+        function frame:ClearAllPoints() end
+
+        -- WowScrollBoxList frames carry the ScrollBox-list surface List drives.
+        -- SetDataProvider delegates to the view (so the factory-before-provider
+        -- trap fires through the view) and records the box-level scroll-to-begin.
+        if template == "WowScrollBoxList" then
+            frame._realizedFrames = {}
+            frame.calls.SetDataProvider = {}
+            frame.calls.RemoveDataProvider = {}
+            frame.calls.ForEachFrame = {}
+            function frame:SetDataProvider(provider, retainScrollPosition)
+                if not self._view then
+                    error("ScrollBox:SetDataProvider: a view is required before assigning the data provider.")
+                end
+                self._view:SetDataProvider(provider)
+                if not retainScrollPosition then self._scrolledToBegin = true end
+                self.calls.SetDataProvider[#self.calls.SetDataProvider + 1] =
+                    { provider = provider, retain = retainScrollPosition }
+            end
+            function frame:GetDataProvider()
+                return self._view and self._view:GetDataProvider()
+            end
+            function frame:RemoveDataProvider()
+                if self._view then self._view._dataProvider = nil end
+                self.calls.RemoveDataProvider[#self.calls.RemoveDataProvider + 1] = {}
+            end
+            function frame:ForEachFrame(fn)
+                self.calls.ForEachFrame[#self.calls.ForEachFrame + 1] = {}
+                for _, rf in ipairs(self._realizedFrames) do
+                    local stop = fn(rf, rf._elementData)
+                    if stop then return stop end
+                end
+            end
+        end
         T.frames[#T.frames + 1] = frame
         return frame
     end
+
+    -- The modern ScrollBox view, data provider, and ScrollUtil wiring that
+    -- Foundry.List composes. Recorder objects that replicate the real call
+    -- REQUIREMENTS (not just accept calls): SetDataProvider errors if no element
+    -- factory was set first (factory-before-provider trap), and
+    -- InitScrollBoxListWithScrollBar errors if the scrollbar is not an EventFrame.
+    T.views = {}
+    _G.CreateScrollBoxListLinearView = function(top, bottom, left, right, spacing)
+        local view = {
+            _spacing = spacing,
+            _elementFactory = false,
+            calls = {
+                SetElementExtent = {},
+                SetElementExtentCalculator = {},
+                SetElementInitializer = {},
+                SetElementResetter = {},
+                SetDataProvider = {},
+            },
+        }
+        function view:SetElementExtent(n)
+            self._extent = n
+            self.calls.SetElementExtent[#self.calls.SetElementExtent + 1] = { n }
+        end
+        function view:SetElementExtentCalculator(fn)
+            self._calc = fn
+            self.calls.SetElementExtentCalculator[#self.calls.SetElementExtentCalculator + 1] = { fn }
+        end
+        function view:SetElementInitializer(typeOrTemplate, fn)
+            self._elementFactory = true
+            self._initType = typeOrTemplate
+            self._initializer = fn
+            self.calls.SetElementInitializer[#self.calls.SetElementInitializer + 1] = { typeOrTemplate }
+        end
+        function view:SetElementResetter(fn)
+            self._resetter = fn
+            self.calls.SetElementResetter[#self.calls.SetElementResetter + 1] = { fn }
+        end
+        function view:SetDataProvider(provider)
+            if not self._elementFactory then
+                error("SetDataProvider() elementFactory was nil. Call SetElementFactory() before setting the data provider.")
+            end
+            self._dataProvider = provider
+            self.calls.SetDataProvider[#self.calls.SetDataProvider + 1] = { provider }
+        end
+        function view:GetDataProvider()
+            return self._dataProvider
+        end
+        T.views[#T.views + 1] = view
+        return view
+    end
+
+    _G.CreateDataProvider = function(tbl)
+        local provider = { _rows = tbl or {} }
+        function provider:GetSize()
+            return #self._rows
+        end
+        return provider
+    end
+
+    _G.ScrollUtil = {
+        _selectionCalls = 0,
+        InitScrollBoxListWithScrollBar = function(scrollBox, scrollBar, view)
+            if not (scrollBar and scrollBar._kind == "EventFrame") then
+                error("InitScrollBoxListWithScrollBar: scrollBar must be an EventFrame (got "
+                    .. tostring(scrollBar and scrollBar._kind) .. ")")
+            end
+            scrollBox._view = view
+            scrollBox._bar = scrollBar
+            scrollBox._inited = true
+        end,
+        AddManagedScrollBarVisibilityBehavior = function(scrollBox, scrollBar)
+            return { _box = scrollBox, _bar = scrollBar, _managed = true }
+        end,
+        -- v1 List must NEVER wire native selection; the spec cuts it. The stub
+        -- counts calls so a test can assert List makes none.
+        AddSelectionBehavior = function()
+            _G.ScrollUtil._selectionCalls = _G.ScrollUtil._selectionCalls + 1
+            return {}
+        end,
+    }
     _G.print = function(...)
         local n = select("#", ...)
         local parts = {}
@@ -205,6 +336,8 @@ function T.loadFoundry()
     lifecycle("Foundry-1.0")
     local db = assert(loadfile(foundryRoot .. "/Modules/DB.lua"))
     db("Foundry-1.0")
+    local list = assert(loadfile(foundryRoot .. "/Modules/List.lua"))
+    list("Foundry-1.0")
     return _G.Foundry_1_0
 end
 
@@ -250,6 +383,7 @@ local suites = {
     { label = "Foundry.Lifecycle", cases = assert(loadfile(testsDir .. "/Lifecycle/lifecycle_spec.lua"))(T) },
     { label = "Foundry.DB",        cases = assert(loadfile(testsDir .. "/DB/db_spec.lua"))(T) },
     { label = "Foundry.DB.parity", cases = assert(loadfile(testsDir .. "/DB/acedb_parity.lua"))(T) },
+    { label = "Foundry.List",      cases = assert(loadfile(testsDir .. "/List/list_spec.lua"))(T) },
 }
 
 local anyFailed = false

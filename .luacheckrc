@@ -17,6 +17,12 @@ read_globals = {
     "C_AddOns",
     "UnitName",
     "GetRealmName",
+    -- Foundry.List bridges the modern ScrollBox system.
+    "ScrollUtil",
+    "CreateScrollBoxListLinearView",
+    "CreateDataProvider",
+    -- Dev/ListSelfTest.lua parents its visible demo frame to UIParent (dev-only).
+    "UIParent",
 }
 
 -- The module factories (Commands:New / Events:New) take an unused `self` by the
