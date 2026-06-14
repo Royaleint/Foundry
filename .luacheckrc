@@ -17,6 +17,10 @@ read_globals = {
     "C_AddOns",
     "UnitName",
     "GetRealmName",
+    -- Foundry.List bridges the modern ScrollBox system.
+    "ScrollUtil",
+    "CreateScrollBoxListLinearView",
+    "CreateDataProvider",
 }
 
 -- The module factories (Commands:New / Events:New) take an unused `self` by the
