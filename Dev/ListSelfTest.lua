@@ -281,7 +281,12 @@ local function runSpawn(out)
         "ForEachFrame visited only the realized screenful (" .. realized
             .. " < " .. FIXED_ROW_COUNT .. "), proving virtualization")
 
-    -- A truthy return stops iteration early.
+    -- A truthy return stops iteration early. This check only MEANS anything if
+    -- more than one row is realized to begin with — with a single realized row,
+    -- "visited == 1" would be true whether or not early-stop works. Guard it so a
+    -- future recycling change that realized only one row can't make it falsely pass.
+    check(report, realized >= 2,
+        "at least two rows realized (so the early-stop check below is meaningful)")
     local visited = 0
     list:ForEachFrame(function() visited = visited + 1; return true end)
     check(report, visited == 1, "ForEachFrame stops on the first truthy return")

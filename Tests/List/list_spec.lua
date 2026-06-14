@@ -32,7 +32,7 @@ local function valid(over)
 end
 
 --------------------------------------------------------------------------------
--- 1. Construction + method surface
+-- Construction + method surface
 --------------------------------------------------------------------------------
 
 test("New returns a controller exposing exactly the four v1 methods", function()
@@ -48,8 +48,26 @@ test("New returns a controller exposing exactly the four v1 methods", function()
     end
 end)
 
+test("New: template path SUCCEEDS with no extent (template rows don't require extent)", function()
+    -- The spec asymmetry: elementType rows REQUIRE an extent or calculator (no XML
+    -- to measure), but template rows are measured from their authored XML, so the
+    -- extent is optional. The template= path has only rejection coverage today; this
+    -- locks the shipped happy path before any consumer adopts it.
+    local F = T.fresh()
+    local c = F.List:New({
+        name        = "TemplateList",
+        parent      = {},
+        template    = "MyRowTemplate",
+        initializer = function() end,
+    })
+    T.truthy(c, "controller created from a template config with NO extent")
+    -- The view received the template name as its element-factory identity.
+    T.eq(c:GetNativeHandles().view._initType, "MyRowTemplate",
+        "view wired with the template name as the element-factory id")
+end)
+
 --------------------------------------------------------------------------------
--- 2-16. Atomic :New validation (dev build raises; a rejected call builds nothing)
+-- Atomic :New validation (dev build raises; a rejected call builds nothing)
 --------------------------------------------------------------------------------
 
 test("New: non-table config refused, builds nothing", function()
@@ -132,6 +150,10 @@ test("New: non-positive / non-number extent refused", function()
     T.raises(function() F.List:New(valid({ extent = 0 })) end, "zero extent", "config.extent must be a number > 0")
     T.raises(function() F.List:New(valid({ extent = -3 })) end, "negative extent", "config.extent must be a number > 0")
     T.raises(function() F.List:New(valid({ extent = "x" })) end, "string extent", "config.extent must be a number > 0")
+    -- Atomicity spot-check at a DEEP (mid-list) rejection: the extent check sits well
+    -- past name/parent/element-identity, yet a rejected :New still builds nothing.
+    -- This proves "a rejected :New builds nothing" beyond the early-rejection paths.
+    T.eq(#T.frames, 0, "no frame created on a deep (non-positive extent) rejection")
 end)
 
 test("New: extentCalculator not a function refused", function()
@@ -156,7 +178,7 @@ test("New: validation is ordered (type error before precondition)", function()
 end)
 
 --------------------------------------------------------------------------------
--- 17-23. Composition order against the recording stub
+-- Composition order against the recording stub
 --------------------------------------------------------------------------------
 
 test("New: builds the ScrollBox frame and a MinimalScrollBar EventFrame", function()
@@ -257,6 +279,46 @@ test("extentCalculator runtime guard: release build prints and returns a positiv
         "release printed the diagnostic instead of raising")
 end)
 
+test("extentCalculator runtime guard: a non-positive numeric return is caught (0 and -5)", function()
+    -- The existing guard tests cover only the nil return. A numeric-but-non-positive
+    -- return (0 or negative) is the OTHER half of the `<= 0` branch and must be
+    -- caught too: a 0 or negative extent is exactly what makes Blizzard clamp to 1px
+    -- and explode at display. The -5 case also pins the diagnostic's rendered value
+    -- ("(got -5)", via tostring) so a numeric value is reported, not its type.
+    local F = T.fresh()
+    local zeroCfg = valid()
+    zeroCfg.extent = nil
+    zeroCfg.extentCalculator = function() return 0 end
+    local cZero = F.List:New(zeroCfg)
+    local calcZero = cZero:GetNativeHandles().view._calc
+    T.raises(function() calcZero(1, { id = 1 }) end, "zero return raises",
+        "extentCalculator must return a number > 0")
+
+    local F2 = T.fresh()
+    local negCfg = valid()
+    negCfg.extent = nil
+    negCfg.extentCalculator = function() return -5 end
+    local cNeg = F2.List:New(negCfg)
+    local calcNeg = cNeg:GetNativeHandles().view._calc
+    -- The full contiguous substring locks BOTH the message and the tostring render
+    -- of the offending value (a plain "> 0" expect would pass with the old type()).
+    T.raises(function() calcNeg(1, { id = 1 }) end, "negative return raises with the value",
+        "extentCalculator must return a number > 0 (got -5)")
+
+    -- Release build: the same non-positive return prints the diagnostic (with the
+    -- rendered value) and degrades to a positive fallback instead of raising.
+    local F3 = T.fresh("1.0.0")
+    local relCfg = valid()
+    relCfg.extent = nil
+    relCfg.extentCalculator = function() return -5 end
+    local cRel = F3.List:New(relCfg)
+    local calcRel = cRel:GetNativeHandles().view._calc
+    local fallback = calcRel(1, { id = 1 })
+    T.eq(type(fallback), "number", "release returns a number fallback (never <= 0)")
+    T.truthy(fallback > 0, "fallback is positive so Blizzard's extent math is safe")
+    T.outputContains("(got -5)", "release printed the rendered offending value")
+end)
+
 test("New: single-initializer path only (selection never wired)", function()
     local F = T.fresh()
     F.List:New(valid())
@@ -279,7 +341,7 @@ test("New: a supplied resetter is wired to the view; none leaves it unset", func
 end)
 
 --------------------------------------------------------------------------------
--- 24-27. Data plumbing + re-entrancy
+-- Data plumbing + re-entrancy
 --------------------------------------------------------------------------------
 
 test("SetData replaces the row set with a fresh provider of K tables", function()
@@ -340,7 +402,7 @@ test("an erroring initializer still clears _inInitializer (SetData not bricked)"
 end)
 
 --------------------------------------------------------------------------------
--- 28-31. Escape hatch, ForEachFrame, teardown
+-- Escape hatch, ForEachFrame, teardown
 --------------------------------------------------------------------------------
 
 test("GetNativeHandles returns the four live objects, no selection key, fresh table", function()
@@ -391,7 +453,7 @@ test("Destroy releases the provider, hides the frames, and refuses afterwards", 
 end)
 
 --------------------------------------------------------------------------------
--- 32-35. Flavor gate, dev/release axis, version pins, managed visibility
+-- Flavor gate, dev/release axis, version pins, managed visibility
 --------------------------------------------------------------------------------
 
 test("New: flavor gate refuses when the ScrollBox system is absent", function()
@@ -415,10 +477,27 @@ test("version pins: List.API_VERSION == 1 and F.API_VERSION == 5", function()
     T.eq(F.API_VERSION, 5, "library API_VERSION bumped 4 -> 5 with List")
 end)
 
-test("New: managedScrollBarVisibility opt-in is accepted", function()
+test("New: managedScrollBarVisibility opt-in wires the behavior; omitting it leaves it unset", function()
     local F = T.fresh()
     local c = F.List:New(valid({ managedScrollBarVisibility = true }))
     T.truthy(c, "controller created with managed visibility")
+    T.truthy(c._managedVisBehavior ~= nil,
+        "managed-visibility behavior wired when opted in")
+    -- Omitted: List must NOT register the behavior, leaving the reference nil.
+    local F2 = T.fresh()
+    local c2 = F2.List:New(valid())
+    T.eq(c2._managedVisBehavior, nil,
+        "no managed-visibility behavior when the opt-in is omitted")
+end)
+
+test("New: spacing is passed to the view; omitting it defaults to 0", function()
+    local F = T.fresh()
+    local c = F.List:New(valid({ spacing = 2 }))
+    T.eq(c:GetNativeHandles().view._spacing, 2, "spacing forwarded to the view")
+    -- Omitted: the view receives 0 (List's `config.spacing or 0` default).
+    local F2 = T.fresh()
+    local c2 = F2.List:New(valid())
+    T.eq(c2:GetNativeHandles().view._spacing, 0, "spacing defaults to 0 when omitted")
 end)
 
 return tests
