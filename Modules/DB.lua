@@ -28,7 +28,7 @@ if F:HasModule("DB") then return end
 -- newer DB.lua runs against the OLD winning core. That old core has no DB module,
 -- so HasModule("DB") is false and we fall through -- about to graft a new DB onto a
 -- core whose Lifecycle predates the post-logout seam DB:New consumes
--- (F.Lifecycle._RegisterPostLogout, ~line 766). Grafting would defer the failure to
+-- (F.Lifecycle._RegisterPostLogout, ~line 795). Grafting would defer the failure to
 -- a cryptic "_RegisterPostLogout (a nil value)" deep in :New, far from the cause.
 --
 -- So feature-detect the EXACT seam DB needs and stand down if it is absent. We
