@@ -350,7 +350,7 @@ local function runVariable(out)
                 frame._st_text:SetPoint("LEFT", 6, 0)
                 frame._st_built = true
             end
-            frame._st_text:SetText(elementData.label .. " (h=" .. elementData.rowHeight .. ")")
+            frame._st_text:SetText(elementData.label .. " (h=" .. (elementData.rowHeight or 24) .. ")")
         end,
         resetter = function(frame)
             if frame._st_text then frame._st_text:SetText("") end
