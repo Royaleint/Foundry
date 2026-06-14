@@ -202,7 +202,7 @@ end)
 
 test("New: initializer set before the provider seed (factory-before-provider)", function()
     local F = T.fresh()
-    local c = F.List:New(valid())
+    F.List:New(valid())
     local box = T.frames[1]
     -- A valid :New proves the order held: the view's SetDataProvider would have
     -- errored if the initializer/factory were not set first. Confirm both ran.
