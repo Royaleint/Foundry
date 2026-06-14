@@ -341,7 +341,7 @@ local function runVariable(out)
         parent = listParent,
         elementType = "Button",
         extentCalculator = function(_, elementData)
-            return elementData.rowHeight
+            return elementData.rowHeight or 24
         end,
         managedScrollBarVisibility = true,
         initializer = function(frame, elementData)
