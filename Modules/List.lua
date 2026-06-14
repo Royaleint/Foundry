@@ -247,7 +247,7 @@ function List:New(config)
             local extent = consumerCalc(index, elementData)
             if type(extent) ~= "number" or extent <= 0 then
                 F:RaiseDevError("List: extentCalculator must return a number > 0 (got "
-                    .. type(extent) .. ")")
+                    .. tostring(extent) .. ")")
                 return 1
             end
             return extent
