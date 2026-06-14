@@ -135,9 +135,9 @@ end)
 --------------------------------------------------------------------------------
 
 -- version-pins-library-and-module
-test("version-pins: F.API_VERSION == 4 and DB.API_VERSION == 1", function()
+test("version-pins: F.API_VERSION == 5 and DB.API_VERSION == 1", function()
     local F = T.fresh()
-    T.eq(F.API_VERSION, 4, "library API_VERSION bumped 3 -> 4 with DB")
+    T.eq(F.API_VERSION, 5, "library API_VERSION is 5 (DB bumped 3 -> 4, List 4 -> 5)")
     T.eq(F.DB.API_VERSION, 1, "DB per-module marker == 1")
     -- Sibling markers unchanged.
     T.eq(F.Commands.API_VERSION, 1, "Commands marker unchanged")
