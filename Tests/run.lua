@@ -306,6 +306,20 @@ end
 -- (e.g. T.loadFixture(T.testsDir .. "/DB/fixtures/empty.lua")).
 T.testsDir = testsDir
 
+-- The Foundry repo root, exposed so the FND-007 injection specs can loadfile a
+-- SINGLE module file (Foundry.lua or Modules/DB.lua) against a hand-injected
+-- _G.Foundry_1_0 / hand-stubbed F.Lifecycle -- the graft scenarios the normal
+-- T.loadFoundry() path cannot reproduce (it pre-registers DB and loads a real,
+-- seam-bearing Lifecycle). Dev-test-only; the shipped TOC never loads run.lua.
+T.foundryRoot = foundryRoot
+
+-- Load one module file (relpath from the repo root, e.g. "Modules/DB.lua")
+-- against the current _G.Foundry_1_0, exactly as the TOC would. Convenience for
+-- the injection specs; pairs with installMocks (which resets _G.Foundry_1_0).
+function T.loadModule(relpath)
+    return assert(loadfile(foundryRoot .. "/" .. relpath))("Foundry-1.0")
+end
+
 -- Load a SavedVariables-format fixture — a bare `NAME = { ... }` global
 -- assignment, exactly the on-disk WTF shape — into a fresh sandbox env and
 -- return that env (so the caller reads env.NAME). Path-parameterized on
@@ -381,6 +395,7 @@ local suites = {
     { label = "Foundry.Commands",  cases = assert(loadfile(testsDir .. "/Commands/commands_spec.lua"))(T) },
     { label = "Foundry.Events",    cases = assert(loadfile(testsDir .. "/Events/events_spec.lua"))(T) },
     { label = "Foundry.Lifecycle", cases = assert(loadfile(testsDir .. "/Lifecycle/lifecycle_spec.lua"))(T) },
+    { label = "Foundry.Bootstrap", cases = assert(loadfile(testsDir .. "/Bootstrap/bootstrap_spec.lua"))(T) },
     { label = "Foundry.DB",        cases = assert(loadfile(testsDir .. "/DB/db_spec.lua"))(T) },
     { label = "Foundry.DB.parity", cases = assert(loadfile(testsDir .. "/DB/acedb_parity.lua"))(T) },
     { label = "Foundry.List",      cases = assert(loadfile(testsDir .. "/List/list_spec.lua"))(T) },

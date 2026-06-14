@@ -21,6 +21,35 @@ end
 -- the first load (not registered yet). Zero new surface on F (HasModule already exists).
 if F:HasModule("DB") then return end
 
+-- Graft-guard (FND-007 #1). The bootstrap gate above protects against a redundant
+-- copy of THE SAME core, but not against this cross-version graft: TOC load order
+-- is Foundry -> Commands -> Events -> Lifecycle -> DB -> List, so when a consumer
+-- embeds a NEWER Foundry but an OLDER standalone already won _G.Foundry_1_0, this
+-- newer DB.lua runs against the OLD winning core. That old core has no DB module,
+-- so HasModule("DB") is false and we fall through -- about to graft a new DB onto a
+-- core whose Lifecycle predates the post-logout seam DB:New consumes
+-- (F.Lifecycle._RegisterPostLogout, ~line 795). Grafting would defer the failure to
+-- a cryptic "_RegisterPostLogout (a nil value)" deep in :New, far from the cause.
+--
+-- So feature-detect the EXACT seam DB needs and stand down if it is absent. We
+-- detect the function itself, not an API_VERSION number, so the check cannot drift
+-- as versions bump and it tolerates a core that carries no Lifecycle at all. Standing
+-- down (not registering) is deliberate: the consumer is broken either way against an
+-- old core, but a clear load-time error plus an absent F.DB (a clean RequireModule
+-- "not present") beats a cryptic deep crash mid-session. This guard is provably inert
+-- on the normal load: Lifecycle always loads before DB, so the winning copy's seam
+-- always exists and we never reach the stand-down.
+if type(F.Lifecycle) ~= "table"
+    or type(F.Lifecycle._RegisterPostLogout) ~= "function" then
+    F:RaiseDevError("DB requires Lifecycle's post-logout seam "
+        .. "(F.Lifecycle._RegisterPostLogout), which the Foundry core serving this "
+        .. "session does not provide. This embedded Foundry is " .. tostring(F.VERSION)
+        .. " (API_VERSION " .. tostring(F.API_VERSION) .. "), but an older standalone "
+        .. "Foundry addon won the runtime and is serving everyone. Update the standalone "
+        .. "Foundry addon to at least this version. DB is unavailable this session.")
+    return
+end
+
 local DB = {}
 DB.API_VERSION = 1
 

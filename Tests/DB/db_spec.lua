@@ -1868,4 +1868,71 @@ test("strip-isolation: a consumer OnLogout that ERRORS does not prevent the DB s
     T.eq(_G.TestDB.global.a, nil, "default-equal stripped -- the strip was not skipped")
 end)
 
+--------------------------------------------------------------------------------
+-- FND-007 #1: DB graft-guard. When a NEWER DB.lua loads against an OLDER winning
+-- core whose Lifecycle lacks the post-logout seam DB:New consumes, DB must stand
+-- down at load time (loud, F.DB absent) rather than graft and crash deep in :New.
+--
+-- These cases bypass T.fresh()/loadFoundry() on purpose: that path pre-registers
+-- DB (so the HasModule short-circuit fires before the guard) and loads a real,
+-- seam-bearing Lifecycle. Instead each case installs mocks, loads ONLY the real
+-- bootstrap, stubs F.Lifecycle to a seam-LESS shape, then loads DB.lua alone.
+--------------------------------------------------------------------------------
+
+-- Load just the bootstrap (real F + real RaiseDevError) under the given build,
+-- then return the Foundry table with no modules registered yet.
+local function bootOnly(tocVersion)
+    T.installMocks(tocVersion or "@project-version@")
+    T.loadModule("Foundry.lua")
+    return _G.Foundry_1_0
+end
+
+local SEAM_SUBSTR = "post-logout seam"
+
+-- NEGATIVE (guard fires), dev build: a seam-less Lifecycle stub -> loading DB.lua
+-- RAISES at load (dev RaiseDevError), DB does not register, F.DB stays nil.
+test("graft-guard: dev build, seam-less Lifecycle -> DB stands down (raises, no register)", function()
+    local F = bootOnly("@project-version@")
+    F.Lifecycle = { _RegisterPostLogout = nil }   -- table present, seam absent
+    T.raises(function() T.loadModule("Modules/DB.lua") end,
+        "DB load must raise in dev when the seam is missing", SEAM_SUBSTR)
+    T.falsy(F:HasModule("DB"), "DB did not register")
+    T.eq(F.DB, nil, "F.DB is absent (clean RequireModule 'not present')")
+end)
+
+-- NEGATIVE, dev build, NO Lifecycle at all: the guard tolerates a core that
+-- carries no Lifecycle (the type(F.Lifecycle) ~= "table" branch).
+test("graft-guard: dev build, NO Lifecycle on the core -> DB stands down (raises)", function()
+    local F = bootOnly("@project-version@")
+    F.Lifecycle = nil
+    T.raises(function() T.loadModule("Modules/DB.lua") end,
+        "DB load must raise in dev when Lifecycle is absent entirely", SEAM_SUBSTR)
+    T.falsy(F:HasModule("DB"), "DB did not register")
+    T.eq(F.DB, nil, "F.DB is absent")
+end)
+
+-- NEGATIVE (guard fires), RELEASE build: same seam-less stub -> loading DB.lua
+-- returns normally but PRINTS the diagnostic and still does not register.
+test("graft-guard: release build, seam-less Lifecycle -> DB stands down (prints, no register)", function()
+    local F = bootOnly("1.0.0")
+    F.Lifecycle = { _RegisterPostLogout = nil }
+    T.loadModule("Modules/DB.lua")   -- release: print + return, no raise
+    T.outputContains(SEAM_SUBSTR, "release build prints the seam diagnostic")
+    T.falsy(F:HasModule("DB"), "DB did not register")
+    T.eq(F.DB, nil, "F.DB is absent")
+end)
+
+-- POSITIVE (guard inert): a normal current core (real, seam-bearing Lifecycle)
+-- -> DB DOES register and no seam diagnostic is emitted. Proves no over-fire.
+test("graft-guard: normal core with the seam present -> DB registers (guard inert)", function()
+    local F = T.fresh()   -- bootstrap + Lifecycle(seam) + DB, the real load order
+    T.truthy(F:HasModule("DB"), "DB registered on a normal load")
+    T.truthy(F.DB ~= nil, "F.DB is present")
+    -- No over-fire: the guard never emitted its seam diagnostic on the normal path.
+    for _, line in ipairs(T.output) do
+        T.falsy(line:find(SEAM_SUBSTR, 1, true),
+            "normal load must not emit the seam diagnostic (got: " .. line .. ")")
+    end
+end)
+
 return tests
