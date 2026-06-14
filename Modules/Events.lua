@@ -210,10 +210,11 @@ end
 -- Factory
 --------------------------------------------------------------------------------
 
--- Create a controller scoped to one consumer. owner labels the controller and
--- its shared frame for diagnostics and scopes :UnregisterAll. Each call owns
--- exactly one hidden frame and one event -> handler table; no event is
--- registered until the first :Register.
+-- Create a controller scoped to one consumer. owner is a stored identity label;
+-- it is not read elsewhere (it does not name the frame, appear in diagnostics, or
+-- scope :UnregisterAll, which is instance-scoped). Each call owns exactly one
+-- hidden frame and one event -> handler table; no event is registered until the
+-- first :Register.
 function Events:New(owner)
     if type(owner) ~= "string" or owner == "" then
         F:RaiseDevError("Events:New: owner must be a non-empty string")
