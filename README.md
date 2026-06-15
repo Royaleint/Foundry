@@ -30,14 +30,14 @@ Foundry-1.0 delivers a focused set of modules covering what most addons reach fo
 | **Commands** | Slash command registration with a per-consumer controller, auto-help, guard checks, and longest-prefix dispatch for multi-word names. | `SlashCmdList`, `SLASH_*` globals | AceConsole-3.0 | Available |
 | **Events** | Owned event registration with automatic cleanup, scoped to the consuming addon. | `CreateFrame` event frames, `RegisterEvent` | AceEvent-3.0 | Available |
 | **Lifecycle** | Honest hooks over the game's load and login signals, with a "saved settings ready" guarantee that fires when data is loaded and migrations have run. | `ADDON_LOADED`, `PLAYER_LOGIN`, `PLAYER_LOGOUT` | AceAddon-3.0 (lifecycle portion) | Available |
-| **DB** | SavedVariables management with defaults, profiles, and per-character data. Reads existing AceDB save files unchanged. | `SavedVariables`, `SavedVariablesPerCharacter` | AceDB-3.0 | Planned |
-| **List** | Bridge over Blizzard's modern scrolling-list system, which is powerful but punishing to use directly. | `ScrollBox`, `ScrollBoxListView`, `DataProvider`, `ScrollUtil` | No direct Ace3 equivalent | Planned |
+| **DB** | SavedVariables management with defaults, profiles, and per-character data. Reads existing AceDB save files unchanged. | `SavedVariables`, `SavedVariablesPerCharacter` | AceDB-3.0 | Available |
+| **List** | Bridge over Blizzard's modern scrolling-list system, which is powerful but punishing to use directly. | `ScrollBox`, `ScrollBoxListView`, `DataProvider`, `ScrollUtil` | No direct Ace3 equivalent | Available |
 | **Tooltip** | Bridge over Blizzard's modern tooltip-hook system. Current and supported, but under-documented for addon authors. | `TooltipDataProcessor` (added in Patch 10.0.2) | No direct Ace3 equivalent | Planned |
 | **Menu** | Bridge over Blizzard's modern menu system, which replaced the deprecated `UIDropDownMenu` in Patch 11.0.0. | `Blizzard_Menu`, `MenuUtil` | LibUIDropDownMenu (community library, now unmaintained for current retail) | Planned |
 
 The last three modules (List, Tooltip, Menu) exist to give authors an easy path away from older community UI libraries. Blizzard has shipped modern native equivalents, but the raw APIs are verbose enough that most authors stuck with the older libraries. Foundry's job here is to make the native path the easy path.
 
-**Next up** are the bridges authors reach for most: **Menu** over Blizzard's 11.0 menu system (the successor to the now-unmaintained LibUIDropDownMenu), **Tooltip** over TooltipDataProcessor, and **List** over ScrollBox — with **Events**, **Lifecycle**, and **DB** rounding out the everyday essentials.
+**Available now:** Commands, Events, Lifecycle, DB, and List. **Next up** are the two remaining UI bridges — **Menu** over Blizzard's 11.0 menu system (the successor to the now-unmaintained LibUIDropDownMenu) and **Tooltip** over TooltipDataProcessor.
 
 ## Using Foundry
 
