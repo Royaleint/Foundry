@@ -2,6 +2,15 @@
 
 All notable changes to Foundry-1.0 are recorded here.
 
+## [1.0.5] - 2026-06-14
+
+### Added
+- **Foundry.List** — a thin bridge over Blizzard's built-in ScrollBox system, and the replacement for hand-rolled scrolling lists. One `F.List:New(config)` builds the whole composition a scrolling list needs — the list frame, its scrollbar, the view, and the data provider — wired together in the right order with the ScrollBox ordering traps handled for you. It returns a small controller: `SetData` to swap in new rows, `ForEachFrame` to update the visible rows in place (say, to repaint a selection highlight) without a rebuild, `GetNativeHandles` to reach the raw Blizzard objects when you need them, and `Destroy` to tear it down. Linear lists only, in the insecure domain (not for protected combat frames). Assert a minimum version with `F:RequireModule("List", 1)`.
+
+### Changed
+- **Embedded DB stands down instead of crashing against an outdated standalone.** If a newer DB-bearing Foundry loads while an older standalone — one predating the DB module's logout hook — has already claimed the runtime, the embedded DB no longer attaches and then fails cryptically later; it refuses up front with a clear "update the standalone Foundry" message, and leaves saved data untouched.
+- **Fewer false developer warnings.** The "redundant embedded copy suppressed" developer message now appears only when the two copies are genuinely different API versions, so a normal setup where several addons ship the same Foundry version stays quiet. (Developer-only — players never saw it.)
+
 ## [1.0.4] - 2026-06-13
 
 ### Added
