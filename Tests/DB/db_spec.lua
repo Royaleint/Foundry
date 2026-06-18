@@ -141,7 +141,7 @@ test("version-pins: F.API_VERSION == 5 and DB.API_VERSION == 1", function()
     T.eq(F.DB.API_VERSION, 1, "DB per-module marker == 1")
     -- Sibling markers unchanged.
     T.eq(F.Commands.API_VERSION, 1, "Commands marker unchanged")
-    T.eq(F.Events.API_VERSION, 1, "Events marker unchanged")
+    T.eq(F.Events.API_VERSION, 2, "Events marker == 2 (RegisterBucket added, FND-008)")
     T.eq(F.Lifecycle.API_VERSION, 1, "Lifecycle marker unchanged (private seam keeps it 1)")
 end)
 

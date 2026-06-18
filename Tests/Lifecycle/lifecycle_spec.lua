@@ -87,7 +87,7 @@ test("HasModule / RequireModule behavior for Lifecycle; additive version markers
     -- Sibling modules still register and keep their own markers.
     T.truthy(F:HasModule("Events"), "Events still registered")
     T.truthy(F:HasModule("Commands"), "Commands still registered")
-    T.eq(F.Events.API_VERSION, 1, "Events per-module marker unchanged == 1")
+    T.eq(F.Events.API_VERSION, 2, "Events per-module marker == 2 (RegisterBucket added, FND-008)")
 end)
 
 -- one-frame-three-reg

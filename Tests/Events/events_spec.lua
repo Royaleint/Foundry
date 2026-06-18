@@ -66,8 +66,9 @@ test("HasModule / RequireModule behavior for Events", function()
     T.truthy(F:HasModule("Events"), "has Events")
     T.falsy(F:HasModule("Nope"), "does not have Nope")
     T.eq(F:RequireModule("Events"), F.Events, "RequireModule returns the module")
-    T.eq(F.Events.API_VERSION, 1, "Events.API_VERSION == 1")
+    T.eq(F.Events.API_VERSION, 2, "Events.API_VERSION == 2")
     T.eq(F:RequireModule("Events", 1), F.Events, "RequireModule min=1 returns the module")
+    T.eq(F:RequireModule("Events", 2), F.Events, "RequireModule min=2 returns the module (bucket support)")
     T.raises(function() F:RequireModule("Events", 99) end, "above-max API raises", "API version")
     T.raises(function() F:RequireModule("Nope") end, "missing module raises in dev")
     T.eq(F.API_VERSION, 5, "library API_VERSION == 5")
@@ -86,8 +87,8 @@ test("New returns a controller exposing the public methods", function()
     local F = T.fresh()
     local c = F.Events:New("MyAddon")
     T.truthy(c, "controller created")
-    for _, m in ipairs({ "Register", "RegisterUnit", "RegisterOnce", "Unregister",
-        "UnregisterAll", "IsRegistered", "GetNativeHandles", "Destroy" }) do
+    for _, m in ipairs({ "Register", "RegisterUnit", "RegisterOnce", "RegisterBucket",
+        "Unregister", "UnregisterAll", "IsRegistered", "GetNativeHandles", "Destroy" }) do
         T.eq(type(c[m]), "function", "method " .. m)
     end
 end)
@@ -1166,6 +1167,422 @@ test("release build: the other six methods after Destroy refuse without working"
         T.eq(handles, nil, "GetNativeHandles returns nil after destroy in release")
         assertFrameUntouched(before, "GetNativeHandles")
     end
+end)
+
+--------------------------------------------------------------------------------
+-- RegisterBucket
+--------------------------------------------------------------------------------
+
+-- The single pending timer for a controller's lone bucket is T.timers[#T.timers]
+-- right after a fire opens a window. T.FireTimer(handle) synthesizes expiry,
+-- invoking the flush callback once and only if the handle was never cancelled.
+
+-- bucket-surface
+test("RegisterBucket returns a handle exposing Cancel and IsPending", function()
+    local F = T.fresh()
+    local c = F.Events:New("A")
+    local b = c:RegisterBucket({ events = "E", interval = 0.2, handler = noop })
+    T.truthy(b, "bucket handle returned")
+    T.eq(type(b.Cancel), "function", "Cancel present")
+    T.eq(type(b.IsPending), "function", "IsPending present")
+    T.eq(b:IsPending(), false, "no flush pending before any fire")
+end)
+
+-- bucket-leading-coalesces
+test("leading bucket: first fire opens the window, the burst coalesces to one call", function()
+    local F = T.fresh()
+    local c = F.Events:New("A")
+    local fr = T.frames[1]
+    local hits = 0
+    local b = c:RegisterBucket({ events = "E", interval = 0.2, edge = "leading",
+        handler = function() hits = hits + 1 end })
+    T.eq(#fr.calls.RegisterEvent, 1, "member event registered natively")
+    T.truthy(c:IsRegistered("E"), "IsRegistered true for a bucket-owned event")
+
+    -- First fire opens the window; the next fires in the window are absorbed.
+    T.Fire(fr, "E")
+    T.truthy(b:IsPending(), "flush pending after first fire")
+    local timer = T.timers[#T.timers]
+    T.Fire(fr, "E"); T.Fire(fr, "E")
+    T.eq(#T.timers, 1, "no extra timer scheduled during the window (leading anchors to first fire)")
+    T.eq(hits, 0, "handler has not run yet (deferred to window expiry)")
+
+    -- Window expiry runs the handler exactly once.
+    T.FireTimer(timer)
+    T.eq(hits, 1, "handler ran once at window expiry")
+    T.eq(b:IsPending(), false, "pending cleared after flush")
+
+    -- A fire after the flush opens a brand-new window.
+    T.Fire(fr, "E")
+    T.truthy(b:IsPending(), "next fire opens a fresh window")
+    T.eq(#T.timers, 2, "a new timer was scheduled for the new window")
+    T.FireTimer(T.timers[#T.timers])
+    T.eq(hits, 2, "second window flushes once")
+end)
+
+-- bucket-leading-no-args
+test("leading bucket handler receives no arguments", function()
+    local F = T.fresh()
+    local c = F.Events:New("A")
+    local fr = T.frames[1]
+    local gotN
+    c:RegisterBucket({ events = "E", interval = 0.2,
+        handler = function(...) gotN = select("#", ...) end })
+    T.Fire(fr, "E", "payload", 42)
+    T.FireTimer(T.timers[#T.timers])
+    T.eq(gotN, 0, "handler called with zero args (no arg-aggregation)")
+end)
+
+-- bucket-leading-rearm-in-handler
+test("leading bucket: a handler that re-triggers a member event opens a fresh window safely", function()
+    local F = T.fresh()
+    local c = F.Events:New("A")
+    local fr = T.frames[1]
+    local hits = 0
+    local b
+    b = c:RegisterBucket({ events = "E", interval = 0.2, edge = "leading",
+        handler = function()
+            hits = hits + 1
+            -- Pending must already be false here (cleared before invoke), so a
+            -- re-trigger of a member event opens a fresh window rather than being
+            -- absorbed into a still-pending one.
+            T.eq(b:IsPending(), false, "pending cleared before handler runs")
+            if hits == 1 then T.Fire(fr, "E") end  -- re-trigger once
+        end })
+    T.Fire(fr, "E")
+    local ok = pcall(function() T.FireTimer(T.timers[#T.timers]) end)
+    T.truthy(ok, "flush with in-handler re-trigger does not error")
+    T.eq(hits, 1, "first flush ran once")
+    T.truthy(b:IsPending(), "the re-trigger opened a fresh window")
+    T.FireTimer(T.timers[#T.timers])
+    T.eq(hits, 2, "the fresh window flushes once")
+end)
+
+-- bucket-trailing-reschedules
+test("trailing bucket: each fire reschedules; the old timer is cancelled and never flushes", function()
+    local F = T.fresh()
+    local c = F.Events:New("A")
+    local fr = T.frames[1]
+    local hits = 0
+    local b = c:RegisterBucket({ events = "E", interval = 0.2, edge = "trailing",
+        handler = function() hits = hits + 1 end })
+
+    T.Fire(fr, "E")
+    local t1 = T.timers[#T.timers]
+    T.Fire(fr, "E")  -- cancels t1, schedules t2
+    local t2 = T.timers[#T.timers]
+    T.truthy(t1 ~= t2, "a second timer was scheduled on the reschedule")
+    T.truthy(t1:IsCancelled(), "the first timer was cancelled by the reschedule")
+
+    -- The stale timer must not flush; only the live one does, exactly once.
+    T.FireTimer(t1)
+    T.eq(hits, 0, "the cancelled timer does not flush the handler")
+    T.FireTimer(t2)
+    T.eq(hits, 1, "the live timer flushes the handler once after the events go quiet")
+    T.eq(b:IsPending(), false, "pending cleared after the trailing flush")
+end)
+
+-- bucket-multi-event
+test("a multi-event bucket coalesces fires across all its member events", function()
+    local F = T.fresh()
+    local c = F.Events:New("A")
+    local fr = T.frames[1]
+    local hits = 0
+    c:RegisterBucket({ events = { "A_EVT", "B_EVT", "C_EVT" }, interval = 0.2,
+        edge = "leading", handler = function() hits = hits + 1 end })
+    T.eq(#fr.calls.RegisterEvent, 3, "all three member events registered natively")
+    T.truthy(c:IsRegistered("A_EVT"), "A_EVT owned")
+    T.truthy(c:IsRegistered("B_EVT"), "B_EVT owned")
+    T.truthy(c:IsRegistered("C_EVT"), "C_EVT owned")
+
+    -- A burst across different member events still collapses to one window.
+    T.Fire(fr, "A_EVT"); T.Fire(fr, "B_EVT"); T.Fire(fr, "C_EVT")
+    T.eq(#T.timers, 1, "one shared window for the whole burst")
+    T.FireTimer(T.timers[#T.timers])
+    T.eq(hits, 1, "handler ran once for the cross-event burst")
+end)
+
+-- bucket-refuse-on-duplicate-event
+test("RegisterBucket refuses (atomically) when any member event is already owned", function()
+    -- Over a plain Register.
+    do
+        local F = T.fresh()
+        local c = F.Events:New("A")
+        local fr = T.frames[1]
+        local kept = 0
+        local orig = function() kept = kept + 1 end
+        c:Register("E", orig)
+        local regBefore = #fr.calls.RegisterEvent
+        local b
+        T.raises(function() b = c:RegisterBucket({ events = "E", interval = 0.2, handler = noop }) end,
+            "bucket over plain handler", "already registered")
+        T.eq(b, nil, "no bucket returned on refusal")
+        T.eq(#fr.calls.RegisterEvent, regBefore, "no native RegisterEvent on refusal")
+        -- The slot still holds the ORIGINAL plain handler, not a bucket onFire closure.
+        T.eq(c:GetNativeHandles().handlers["E"], orig, "slot still holds the original handler (bucket onFire never installed)")
+        T.falsy(c._bucketEvents["E"], "no bucket bookkeeping recorded for the refused event")
+        -- The original plain handler is intact and still dispatches.
+        T.Fire(fr, "E")
+        T.eq(kept, 1, "original Register handler untouched")
+    end
+    -- Mid-list duplicate refuses the WHOLE bucket: no member event gets registered.
+    do
+        local F = T.fresh()
+        local c = F.Events:New("A")
+        local fr = T.frames[1]
+        c:Register("DUP", noop)
+        local regBefore = #fr.calls.RegisterEvent
+        T.raises(function()
+            c:RegisterBucket({ events = { "FRESH1", "DUP", "FRESH2" }, interval = 0.2, handler = noop })
+        end, "mid-list duplicate", "already registered")
+        T.eq(#fr.calls.RegisterEvent, regBefore, "no member event registered (atomic refusal)")
+        T.falsy(c:IsRegistered("FRESH1"), "FRESH1 never registered")
+        T.falsy(c:IsRegistered("FRESH2"), "FRESH2 never registered")
+    end
+    -- A second bucket cannot claim an event the first owns.
+    do
+        local F = T.fresh()
+        local c = F.Events:New("A")
+        c:RegisterBucket({ events = "E", interval = 0.2, handler = noop })
+        T.raises(function() c:RegisterBucket({ events = "E", interval = 0.2, handler = noop }) end,
+            "bucket over bucket", "already registered")
+    end
+    -- Register cannot claim a bucket-owned event either (existing dup check).
+    do
+        local F = T.fresh()
+        local c = F.Events:New("A")
+        c:RegisterBucket({ events = "E", interval = 0.2, handler = noop })
+        T.raises(function() c:Register("E", noop) end, "register over bucket", "already registered")
+    end
+end)
+
+-- bucket-cancel-cancels-pending-flush
+test("bucket:Cancel unregisters events and cancels a pending flush", function()
+    local F = T.fresh()
+    local c = F.Events:New("A")
+    local fr = T.frames[1]
+    local hits = 0
+    local b = c:RegisterBucket({ events = { "E1", "E2" }, interval = 0.2,
+        handler = function() hits = hits + 1 end })
+    T.Fire(fr, "E1")
+    T.truthy(b:IsPending(), "flush pending before Cancel")
+    local timer = T.timers[#T.timers]
+
+    b:Cancel()
+    T.eq(b:IsPending(), false, "no flush pending after Cancel")
+    T.truthy(timer:IsCancelled(), "the pending timer was cancelled")
+    T.falsy(c:IsRegistered("E1"), "E1 unregistered by Cancel")
+    T.falsy(c:IsRegistered("E2"), "E2 unregistered by Cancel")
+    T.eq(#fr.calls.UnregisterEvent, 2, "both member events unregistered natively")
+
+    -- A firing of the cancelled timer must not reach the handler.
+    T.FireTimer(timer)
+    T.eq(hits, 0, "cancelled flush never runs the handler")
+
+    -- Cancel is idempotent: a second Cancel is a no-op (no extra native unregister).
+    local ok = pcall(function() b:Cancel() end)
+    T.truthy(ok, "second Cancel does not error")
+    T.eq(#fr.calls.UnregisterEvent, 2, "no extra native unregister on the idempotent second Cancel")
+end)
+
+-- bucket-cancel-frees-slot
+test("after bucket:Cancel the member events can be registered again", function()
+    local F = T.fresh()
+    local c = F.Events:New("A")
+    local fr = T.frames[1]
+    local b = c:RegisterBucket({ events = "E", interval = 0.2, handler = noop })
+    b:Cancel()
+    local hits = 0
+    local ok = pcall(function() c:Register("E", function() hits = hits + 1 end) end)
+    T.truthy(ok, "re-register after Cancel does not raise a duplicate")
+    T.Fire(fr, "E")
+    T.eq(hits, 1, "the freshly registered plain handler fires")
+end)
+
+-- bucket-unregister-refused
+test("Unregister on a bucket-owned event is refused with guidance to Cancel the bucket", function()
+    local F = T.fresh()
+    local c = F.Events:New("A")
+    local fr = T.frames[1]
+    local b = c:RegisterBucket({ events = "E", interval = 0.2, handler = noop })
+    T.raises(function() c:Unregister("E") end, "unregister bucket event", "bucket:Cancel()")
+    -- Refusal is atomic: the event is still owned and natively registered.
+    T.truthy(c:IsRegistered("E"), "bucket event still owned after the refused Unregister")
+    T.eq(#fr.calls.UnregisterEvent, 0, "no native UnregisterEvent on the refused call")
+    -- The bucket still works.
+    T.eq(b:IsPending(), false, "bucket still live")
+end)
+
+-- bucket-destroy-no-leak
+test("Destroy tears down every bucket: no pending timer survives", function()
+    local F = T.fresh()
+    local c = F.Events:New("A")
+    local fr = T.frames[1]
+    local hits = 0
+    local b = c:RegisterBucket({ events = { "E1", "E2" }, interval = 0.2,
+        handler = function() hits = hits + 1 end })
+    T.Fire(fr, "E1")
+    local timer = T.timers[#T.timers]
+    T.truthy(b:IsPending(), "a flush is pending before Destroy")
+
+    c:Destroy()
+    T.truthy(timer:IsCancelled(), "the pending flush timer was cancelled by Destroy")
+    -- A late firing of the (now cancelled) timer must not run the handler.
+    T.FireTimer(timer)
+    T.eq(hits, 0, "no flush leaks into the destroyed controller")
+    -- A consumer Cancel after Destroy is an idempotent no-op (bucket already torn down).
+    local ok = pcall(function() b:Cancel() end)
+    T.truthy(ok, "bucket:Cancel after Destroy does not error or touch the destroyed frame")
+end)
+
+-- bucket-unregisterall-no-leak
+test("UnregisterAll tears down every bucket: no pending timer survives; controller lives", function()
+    local F = T.fresh()
+    local c = F.Events:New("A")
+    local fr = T.frames[1]
+    local hits = 0
+    local b = c:RegisterBucket({ events = "E", interval = 0.2,
+        handler = function() hits = hits + 1 end })
+    T.Fire(fr, "E")
+    local timer = T.timers[#T.timers]
+
+    c:UnregisterAll()
+    T.truthy(timer:IsCancelled(), "the pending flush timer was cancelled by UnregisterAll")
+    T.falsy(c:IsRegistered("E"), "the bucket event is cleared")
+    T.FireTimer(timer)
+    T.eq(hits, 0, "no flush leaks after UnregisterAll")
+
+    -- Controller survives UnregisterAll: a fresh registration works.
+    local n = 0
+    c:Register("NEW", function() n = n + 1 end)
+    T.Fire(fr, "NEW")
+    T.eq(n, 1, "controller still functional after UnregisterAll cleared the bucket")
+    -- The torn-down bucket's Cancel is an idempotent no-op.
+    local ok = pcall(function() b:Cancel() end)
+    T.truthy(ok, "Cancel on the already-torn-down bucket is safe")
+end)
+
+-- bucket-validation
+test("RegisterBucket validation rejects bad spec fields atomically", function()
+    local F = T.fresh()
+    local c = F.Events:New("A")
+    local fr = T.frames[1]
+    local function noNativeReg(label)
+        T.eq(#fr.calls.RegisterEvent, 0, "no native RegisterEvent on rejection (" .. label .. ")")
+    end
+    -- spec not a table
+    T.raises(function() c:RegisterBucket(nil) end, "nil spec", "spec must be a table")
+    T.raises(function() c:RegisterBucket("E") end, "string spec", "spec must be a table")
+    -- events shape
+    T.raises(function() c:RegisterBucket({ events = "", interval = 0.2, handler = noop }) end,
+        "empty events string", "events string must be non-empty")
+    T.raises(function() c:RegisterBucket({ events = {}, interval = 0.2, handler = noop }) end,
+        "empty events array", "events array must be non-empty")
+    T.raises(function() c:RegisterBucket({ events = { "E", "" }, interval = 0.2, handler = noop }) end,
+        "empty member", "every event must be a non-empty string")
+    T.raises(function() c:RegisterBucket({ events = { "E", 7 }, interval = 0.2, handler = noop }) end,
+        "non-string member", "every event must be a non-empty string")
+    T.raises(function() c:RegisterBucket({ events = { "E", "E" }, interval = 0.2, handler = noop }) end,
+        "duplicate member", "duplicate event 'E'")
+    T.raises(function() c:RegisterBucket({ events = 7, interval = 0.2, handler = noop }) end,
+        "events number", "events must be a string or an array of strings")
+    -- interval
+    T.raises(function() c:RegisterBucket({ events = "E", interval = 0, handler = noop }) end,
+        "zero interval", "interval must be a finite number > 0")
+    T.raises(function() c:RegisterBucket({ events = "E", interval = -1, handler = noop }) end,
+        "negative interval", "interval must be a finite number > 0")
+    T.raises(function() c:RegisterBucket({ events = "E", interval = "x", handler = noop }) end,
+        "non-number interval", "interval must be a finite number > 0")
+    T.raises(function() c:RegisterBucket({ events = "E", interval = 0 / 0, handler = noop }) end,
+        "NaN interval", "interval must be a finite number > 0")
+    T.raises(function() c:RegisterBucket({ events = "E", interval = math.huge, handler = noop }) end,
+        "infinite interval", "interval must be a finite number > 0")
+    T.raises(function() c:RegisterBucket({ events = "E", handler = noop }) end,
+        "missing interval", "interval must be a finite number > 0")
+    -- edge
+    T.raises(function() c:RegisterBucket({ events = "E", interval = 0.2, edge = "bogus", handler = noop }) end,
+        "bad edge", "edge must be 'leading' or 'trailing'")
+    -- handler
+    T.raises(function() c:RegisterBucket({ events = "E", interval = 0.2 }) end,
+        "missing handler", "handler must be a function")
+    T.raises(function() c:RegisterBucket({ events = "E", interval = 0.2, handler = 7 }) end,
+        "non-function handler", "handler must be a function")
+    noNativeReg("all rejections")
+    T.falsy(c:IsRegistered("E"), "no event left registered after the rejections")
+end)
+
+-- bucket-edge-defaults-leading
+test("edge defaults to leading when omitted", function()
+    local F = T.fresh()
+    local c = F.Events:New("A")
+    local fr = T.frames[1]
+    local hits = 0
+    c:RegisterBucket({ events = "E", interval = 0.2,
+        handler = function() hits = hits + 1 end })  -- no edge field
+    T.Fire(fr, "E")
+    local t1 = T.timers[#T.timers]
+    -- Leading semantics: a second fire in the window does NOT reschedule.
+    T.Fire(fr, "E")
+    T.eq(#T.timers, 1, "no reschedule (leading default)")
+    T.falsy(t1:IsCancelled(), "the first timer was not cancelled (leading, not trailing)")
+    T.FireTimer(t1)
+    T.eq(hits, 1, "handler ran once")
+end)
+
+-- bucket-destroyed-guard
+test("RegisterBucket on a destroyed controller raises its own message", function()
+    local F = T.fresh()
+    local c = F.Events:New("A")
+    c:Destroy()
+    T.raises(function() c:RegisterBucket({ events = "E", interval = 0.2, handler = noop }) end,
+        "destroyed bucket", "Events:RegisterBucket called on a destroyed controller")
+end)
+
+-- bucket-destroyed-refuses-release
+-- House-style parity with release-destroyed-refuses-rest: in a RELEASE build, on
+-- a destroyed controller, RegisterBucket must refuse without raising -- it prints
+-- its own diagnostic, returns nil, and mutates the native frame for none of it.
+test("release build: RegisterBucket after Destroy refuses without working", function()
+    local F = T.fresh("1.0.0")
+    T.falsy(F.IS_DEV_BUILD, "release build")
+    local c = F.Events:New("A")
+    local fr = T.frames[1]
+    c:Destroy()
+    local regBefore = #fr.calls.RegisterEvent
+    local b, ran
+    local ok = pcall(function() b = c:RegisterBucket({ events = "E", interval = 0.2, handler = noop }); ran = true end)
+    T.truthy(ok, "no raise in release after destroy")
+    T.truthy(ran, "returned normally")
+    T.outputContains("Events:RegisterBucket called on a destroyed controller", "diagnostic printed")
+    T.eq(b, nil, "RegisterBucket returns nil after destroy in release")
+    T.eq(#fr.calls.RegisterEvent, regBefore, "no native RegisterEvent after destroy")
+end)
+
+-- bucket-validation-refuses-release
+-- A bad spec in a RELEASE build refuses (prints, returns nil) rather than raising,
+-- and leaves the frame untouched -- the release half of bucket-validation.
+test("release build: a bad RegisterBucket spec refuses without mutating", function()
+    local F = T.fresh("1.0.0")
+    T.falsy(F.IS_DEV_BUILD, "release build")
+    local c = F.Events:New("A")
+    local fr = T.frames[1]
+    local b
+    local ok = pcall(function() b = c:RegisterBucket({ events = "E", interval = 0, handler = noop }) end)
+    T.truthy(ok, "no raise in release on a bad interval")
+    T.outputContains("interval must be a finite number > 0", "diagnostic printed")
+    T.eq(b, nil, "returns nil on the refused spec")
+    T.eq(#fr.calls.RegisterEvent, 0, "no native RegisterEvent on the refused spec")
+    T.falsy(c:IsRegistered("E"), "event never registered")
+end)
+
+-- bucket-getnativehandles-snapshot
+test("GetNativeHandles snapshots the bucket onFire closure for each member event", function()
+    local F = T.fresh()
+    local c = F.Events:New("A")
+    c:RegisterBucket({ events = { "E1", "E2" }, interval = 0.2, handler = noop })
+    local h = c:GetNativeHandles()
+    T.eq(type(h.handlers["E1"]), "function", "E1 slot holds a function")
+    T.eq(h.handlers["E1"], h.handlers["E2"], "both member events share the one onFire closure")
 end)
 
 return tests
