@@ -70,6 +70,10 @@ commands:Register({
 
 Full API reference: [the Foundry wiki](https://github.com/Royaleint/Foundry/wiki).
 
+If you embed Foundry inside your own addon package, include
+`Foundry-1.0.xml` from your `embeds.xml` rather than hand-listing Foundry's Lua
+files. The manifest carries the same runtime load order as the standalone TOC.
+
 ## Adding new modules
 
 Foundry's module set isn't fixed at the initial seven. If there's a Blizzard API you'd like to see bridged, here's how new modules get added.

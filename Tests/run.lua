@@ -399,6 +399,7 @@ local suites = {
     { label = "Foundry.DB",        cases = assert(loadfile(testsDir .. "/DB/db_spec.lua"))(T) },
     { label = "Foundry.DB.parity", cases = assert(loadfile(testsDir .. "/DB/acedb_parity.lua"))(T) },
     { label = "Foundry.List",      cases = assert(loadfile(testsDir .. "/List/list_spec.lua"))(T) },
+    { label = "Foundry.Packaging", cases = assert(loadfile(testsDir .. "/Packaging/packaging_spec.lua"))(T) },
 }
 
 local anyFailed = false
