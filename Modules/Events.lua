@@ -17,7 +17,7 @@ end
 if F:HasModule("Events") then return end
 
 local Events = {}
-Events.API_VERSION = 1
+Events.API_VERSION = 2
 
 --------------------------------------------------------------------------------
 -- Controller
@@ -131,6 +131,220 @@ function Controller:RegisterOnce(event, handler)
     self._frame:RegisterEvent(event)
 end
 
+--------------------------------------------------------------------------------
+-- Bucket (RegisterBucket)
+--------------------------------------------------------------------------------
+
+-- A bucket coalesces a burst of WoW events into a single delayed handler call,
+-- the same settle-pattern Blizzard ships for SOME systems as a "_DELAYED" event
+-- (e.g. BAG_UPDATE_DELAYED). RegisterBucket gives that coalescing to any event
+-- that lacks a native _DELAYED twin.
+--
+-- SCOPE BOUNDARY: this is a Blizzard-event-coalescing wrapper, NOT a general
+-- scheduler. It collapses a burst of WoW EVENT fires into one handler call and
+-- nothing more -- it is not combat-gating / defer-until-an-arbitrary-signal,
+-- not debounce-by-arbitrary-key, not a repeating ticker, and not general
+-- scheduling. Those are native via C_Timer or live outside this Blizzard-wrapper
+-- lane. The feature is anchored strictly to Blizzard's own _DELAYED precedent.
+--
+-- A bucket is HANDLE-based, not event-keyed: a multi-event bucket cannot be
+-- keyed by a single event name, so RegisterBucket returns a handle object and
+-- the caller drives it via bucket:Cancel() / bucket:IsPending(). The bucket
+-- still OCCUPIES one handler slot per member event on the controller's shared
+-- frame, so the module's one-handler-per-event rule keeps holding: a later
+-- Register/RegisterUnit/RegisterOnce (or another bucket) on an owned event is
+-- refused by the existing self._handlers[event] duplicate check.
+local Bucket = {}
+Bucket.__index = Bucket
+
+-- Whether a flush is currently scheduled. Pure read; safe after Cancel (always
+-- false once cancelled). Intended for diagnostics and tests.
+function Bucket:IsPending()
+    return self._timer ~= nil
+end
+
+-- Cancel the bucket: unregister all its member events, cancel any pending flush,
+-- and drop its controller bookkeeping. Idempotent -- a second Cancel (or a
+-- Cancel after the controller already tore the bucket down via Destroy /
+-- UnregisterAll) is a no-op. Cancel touches the controller's frame only while
+-- the bucket is live, so it never reaches into a destroyed controller.
+function Bucket:Cancel()
+    if self._cancelled then return end
+    local c = self._controller
+    for _, event in ipairs(self._events) do
+        c._handlers[event] = nil
+        c._bucketEvents[event] = nil
+        c._frame:UnregisterEvent(event)
+    end
+    -- Remove this handle from the controller's live bucket list.
+    for i = #c._buckets, 1, -1 do
+        if c._buckets[i] == self then
+            table.remove(c._buckets, i)
+            break
+        end
+    end
+    self:_teardown()
+end
+
+-- Internal teardown shared by Cancel and by controller-level teardown
+-- (Destroy / UnregisterAll). It cancels a pending flush timer and flips the
+-- cancelled flag; it does NOT touch the native frame or the controller's bucket
+-- list, because the two callers handle native unregistration differently
+-- (Cancel per-event; Destroy/UnregisterAll via UnregisterAllEvents). Idempotent.
+function Bucket:_teardown()
+    if self._cancelled then return end
+    self._cancelled = true
+    if self._timer then
+        self._timer:Cancel()
+        self._timer = nil
+    end
+end
+
+-- Register a bucket: coalesce a burst of one or more WoW events into a single
+-- handler() call, fired once per quiet-window. spec fields:
+--   events   -- a non-empty event-name string, OR an array of unique, non-empty
+--               event-name strings.
+--   interval -- the coalescing window in seconds (a number > 0).
+--   edge     -- "leading" (DEFAULT) or "trailing"; nil means leading.
+--   handler  -- the function called once per window, with NO arguments.
+-- Returns a bucket HANDLE exposing :Cancel() and :IsPending().
+--
+-- Validation is atomic and mirrors Register/RegisterUnit: every check runs and
+-- a rejected call mutates neither the handler table, the bucket bookkeeping, nor
+-- the native frame. In particular, ALL member events are checked for a prior
+-- registration BEFORE any event is registered, so a duplicate anywhere in the
+-- list refuses the whole bucket cleanly (Foundry prefers a refused operation
+-- over a silent overwrite).
+function Controller:RegisterBucket(spec)
+    if self._destroyed then
+        F:RaiseDevError("Events:RegisterBucket called on a destroyed controller")
+        return
+    end
+    if type(spec) ~= "table" then
+        F:RaiseDevError("Events:RegisterBucket: spec must be a table")
+        return
+    end
+
+    -- Normalize events to a list and validate shape: a non-empty string, or a
+    -- non-empty array of non-empty, unique strings. Duplicates within the list
+    -- are refused (they would map two slots to one event and corrupt teardown).
+    local events = spec.events
+    local list
+    if type(events) == "string" then
+        if events == "" then
+            F:RaiseDevError("Events:RegisterBucket: events string must be non-empty")
+            return
+        end
+        list = { events }
+    elseif type(events) == "table" then
+        if #events == 0 then
+            F:RaiseDevError("Events:RegisterBucket: events array must be non-empty")
+            return
+        end
+        local seen = {}
+        list = {}
+        for i = 1, #events do
+            local ev = events[i]
+            if type(ev) ~= "string" or ev == "" then
+                F:RaiseDevError("Events:RegisterBucket: every event must be a non-empty string")
+                return
+            end
+            if seen[ev] then
+                F:RaiseDevError("Events:RegisterBucket: duplicate event '" .. ev
+                    .. "' in the events array")
+                return
+            end
+            seen[ev] = true
+            list[#list + 1] = ev
+        end
+    else
+        F:RaiseDevError("Events:RegisterBucket: events must be a string or an array of strings")
+        return
+    end
+
+    -- A finite number > 0. The positive form also rejects NaN (NaN > 0 is false)
+    -- and +inf (interval < math.huge is false): both would otherwise pass a "<= 0"
+    -- check, then schedule a flush that never sensibly fires -- silently swallowing
+    -- coalesced events while IsPending stays true, the opposite of failing loudly.
+    if type(spec.interval) ~= "number"
+        or not (spec.interval > 0 and spec.interval < math.huge) then
+        F:RaiseDevError("Events:RegisterBucket: interval must be a finite number > 0")
+        return
+    end
+
+    local edge = spec.edge
+    if edge == nil then
+        edge = "leading"
+    elseif edge ~= "leading" and edge ~= "trailing" then
+        F:RaiseDevError("Events:RegisterBucket: edge must be 'leading' or 'trailing' when supplied")
+        return
+    end
+
+    if type(spec.handler) ~= "function" then
+        F:RaiseDevError("Events:RegisterBucket: handler must be a function")
+        return
+    end
+
+    -- Atomic duplicate check: refuse if ANY member event is already owned on this
+    -- controller (by a plain handler, a once-wrapper, or another bucket) BEFORE
+    -- registering any of them, so a rejected bucket leaves the frame untouched.
+    for i = 1, #list do
+        if self._handlers[list[i]] then
+            F:RaiseDevError("Events:RegisterBucket: event '" .. list[i]
+                .. "' is already registered; Unregister it (or Cancel its bucket) first")
+            return
+        end
+    end
+
+    local bucket = setmetatable({}, Bucket)
+    bucket._controller = self
+    bucket._events = list
+    bucket._interval = spec.interval
+    bucket._edge = edge
+    bucket._handler = spec.handler
+    bucket._timer = nil
+    bucket._cancelled = false
+
+    -- Flush: clear the pending state BEFORE invoking handler (mirrors the
+    -- RegisterOnce free-before-invoke order), so a handler that re-triggers a
+    -- member event opens a fresh window safely and IsPending() reads false from
+    -- inside the handler. Guarded against a stray post-teardown fire.
+    local function flush()
+        if bucket._cancelled then return end
+        bucket._timer = nil
+        bucket._handler()
+    end
+
+    -- One shared OnFire closure across every member event. Leading: the first
+    -- fire opens the window (creates the timer); fires while a flush is already
+    -- pending are absorbed (the timer is left alone) so the window is anchored to
+    -- the FIRST fire. Trailing: every fire cancels and reschedules, anchoring the
+    -- window to the LAST fire -- the flush runs once the events go quiet for
+    -- interval. handler receives NO arguments (no arg-aggregation).
+    local function onFire()
+        if bucket._cancelled then return end
+        if edge == "leading" then
+            if bucket._timer then return end
+            bucket._timer = C_Timer.NewTimer(bucket._interval, flush)
+        else
+            if bucket._timer then
+                bucket._timer:Cancel()
+            end
+            bucket._timer = C_Timer.NewTimer(bucket._interval, flush)
+        end
+    end
+
+    for i = 1, #list do
+        local event = list[i]
+        self._handlers[event] = onFire
+        self._bucketEvents[event] = bucket
+        self._frame:RegisterEvent(event)
+    end
+    self._buckets[#self._buckets + 1] = bucket
+
+    return bucket
+end
+
 -- Remove the handler for one event and call the matching native unregister.
 -- Idempotent: unregistering an event that is not registered is a no-op, not an
 -- error.
@@ -144,6 +358,15 @@ function Controller:Unregister(event)
         return
     end
     if not self._handlers[event] then return end
+    -- A bucket-owned event is not a plain handler: it shares an OnFire closure
+    -- across the bucket's member events, so removing this one slot would leave a
+    -- half-torn bucket. Refuse and point the caller at bucket:Cancel(), which
+    -- tears the whole bucket down (events + pending flush) coherently.
+    if self._bucketEvents[event] then
+        F:RaiseDevError("Events:Unregister: event '" .. event
+            .. "' is owned by a bucket; call bucket:Cancel() to remove it")
+        return
+    end
     self._handlers[event] = nil
     self._frame:UnregisterEvent(event)
 end
@@ -154,6 +377,18 @@ function Controller:UnregisterAll()
     if self._destroyed then
         F:RaiseDevError("Events:UnregisterAll called on a destroyed controller")
         return
+    end
+    -- Tear down every bucket first: cancel each pending flush timer and drop the
+    -- bucket bookkeeping. We mark each bucket cancelled (rather than routing
+    -- through bucket:Cancel(), which would re-issue per-event native unregisters
+    -- that UnregisterAllEvents below makes redundant) so a later consumer
+    -- bucket:Cancel() is an idempotent no-op.
+    for i = #self._buckets, 1, -1 do
+        self._buckets[i]:_teardown()
+        self._buckets[i] = nil
+    end
+    for event in pairs(self._bucketEvents) do
+        self._bucketEvents[event] = nil
     end
     for event in pairs(self._handlers) do
         self._handlers[event] = nil
@@ -198,6 +433,17 @@ function Controller:Destroy()
     end
     local frame = self._frame
     frame:UnregisterAllEvents()
+    -- Cancel every bucket's pending flush so no timer survives teardown and
+    -- leaks a callback into a destroyed controller. _teardown only cancels the
+    -- timer + flips the bucket's cancelled flag; the native unregister is
+    -- covered by UnregisterAllEvents above.
+    for i = #self._buckets, 1, -1 do
+        self._buckets[i]:_teardown()
+        self._buckets[i] = nil
+    end
+    for event in pairs(self._bucketEvents) do
+        self._bucketEvents[event] = nil
+    end
     for event in pairs(self._handlers) do
         self._handlers[event] = nil
     end
@@ -224,6 +470,11 @@ function Events:New(owner)
     local c = setmetatable({}, Controller)
     c._owner = owner
     c._handlers = {}
+    -- Bucket bookkeeping (RegisterBucket). _bucketEvents maps an owned event ->
+    -- its bucket handle, so Unregister can tell a bucket-owned event from a plain
+    -- one; _buckets is the live list teardown iterates to cancel pending timers.
+    c._bucketEvents = {}
+    c._buckets = {}
     c._destroyed = false
 
     local frame = CreateFrame("Frame")

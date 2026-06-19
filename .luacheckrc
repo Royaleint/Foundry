@@ -14,6 +14,7 @@ globals = {
 -- string, error, setmetatable, _G, ...) come from std = "lua51".
 read_globals = {
     "CreateFrame",
+    "C_Timer",  -- Foundry.Events RegisterBucket schedules its flush via C_Timer.NewTimer.
     "C_AddOns",
     "UnitName",
     "GetRealmName",

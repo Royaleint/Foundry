@@ -284,6 +284,35 @@ function T.installMocks(tocVersion)
             return {}
         end,
     }
+    -- C_Timer stub (additive; only Foundry.Events' RegisterBucket uses it, and
+    -- no module touches C_Timer at load, so the other suites stay green). The
+    -- bucket schedules its flush via C_Timer.NewTimer (a CANCELABLE handle) so
+    -- Cancel()/Destroy() can kill a pending flush. The stub mirrors that handle:
+    -- NewTimer(interval, cb) records the timer in T.timers and returns a handle
+    -- with :Cancel() (sets _cancelled) and :IsCancelled(). Nothing fires on its
+    -- own -- a test drives expiry deterministically via T.FireTimer(handle),
+    -- which invokes cb exactly once and only if the handle was never cancelled
+    -- (one-shot, like the real C_Timer.NewTimer firing).
+    T.timers = {}
+    _G.C_Timer = {
+        NewTimer = function(interval, callback)
+            local handle = {
+                _interval = interval,
+                _callback = callback,
+                _cancelled = false,
+                _fired = false,
+            }
+            function handle:Cancel()
+                self._cancelled = true
+            end
+            function handle:IsCancelled()
+                return self._cancelled
+            end
+            T.timers[#T.timers + 1] = handle
+            return handle
+        end,
+    }
+
     _G.print = function(...)
         local n = select("#", ...)
         local parts = {}
@@ -300,6 +329,16 @@ end
 function T.Fire(frame, event, ...)
     local onEvent = frame and frame._onEvent
     if onEvent then return onEvent(frame, event, ...) end
+end
+
+-- Synthesize a C_Timer expiry: invoke the handle's recorded callback exactly
+-- once, and only if the handle was never cancelled (the real one-shot timer
+-- never fires after Cancel()). A no-op for a cancelled or already-fired handle,
+-- so a test can assert a rescheduled/torn-down timer never reaches its handler.
+function T.FireTimer(handle)
+    if not handle or handle._cancelled or handle._fired then return end
+    handle._fired = true
+    return handle._callback()
 end
 
 -- The Tests/ directory path, exposed so specs can build fixture paths
