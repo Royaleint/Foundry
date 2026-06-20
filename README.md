@@ -32,12 +32,13 @@ Foundry-1.0 delivers a focused set of modules covering what most addons reach fo
 | **Lifecycle** | Honest hooks over the game's load and login signals, with a "saved settings ready" guarantee that fires when data is loaded and migrations have run. | `ADDON_LOADED`, `PLAYER_LOGIN`, `PLAYER_LOGOUT` | AceAddon-3.0 (lifecycle portion) | Available |
 | **DB** | SavedVariables management with defaults, profiles, and per-character data. Reads existing AceDB save files unchanged. | `SavedVariables`, `SavedVariablesPerCharacter` | AceDB-3.0 | Available |
 | **List** | Bridge over Blizzard's modern scrolling-list system, which is powerful but punishing to use directly. | `ScrollBox`, `ScrollBoxListView`, `DataProvider`, `ScrollUtil` | No direct Ace3 equivalent | Available |
+| **Settings** | Options panel registration, automatically selecting Blizzard's modern Settings API or falling back to the legacy interface options panel. | `Settings.RegisterCanvasLayoutCategory`, `RegisterAddOnCategory` | AceConfig-3.0 / AceConfigDialog-3.0 | Available |
 | **Tooltip** | Bridge over Blizzard's modern tooltip-hook system. Current and supported, but under-documented for addon authors. | `TooltipDataProcessor` (added in Patch 10.0.2) | No direct Ace3 equivalent | Planned |
 | **Menu** | Bridge over Blizzard's modern menu system, which replaced the deprecated `UIDropDownMenu` in Patch 11.0.0. | `Blizzard_Menu`, `MenuUtil` | LibUIDropDownMenu (community library, now unmaintained for current retail) | Planned |
 
-The last three modules (List, Tooltip, Menu) exist to give authors an easy path away from older community UI libraries. Blizzard has shipped modern native equivalents, but the raw APIs are verbose enough that most authors stuck with the older libraries. Foundry's job here is to make the native path the easy path.
+**Tooltip** and **Menu** exist specifically to give authors an easy path away from older community UI libraries. Blizzard shipped modern native equivalents for both, but the raw APIs are verbose enough that most authors have stuck with the older wrappers. Foundry's job here is to make the native path the easy path.
 
-**Available now:** Commands, Events, Lifecycle, DB, and List. **Next up** are the two remaining UI bridges — **Menu** over Blizzard's 11.0 menu system (the successor to the now-unmaintained LibUIDropDownMenu) and **Tooltip** over TooltipDataProcessor.
+**Available now:** Commands, Events, Lifecycle, DB, List, and Settings. **Next up** are the two remaining UI bridges — **Menu** over Blizzard's 11.0 menu system (the successor to the now-unmaintained LibUIDropDownMenu) and **Tooltip** over TooltipDataProcessor.
 
 ## Using Foundry
 
@@ -86,7 +87,7 @@ files. The manifest carries the same runtime load order as the standalone TOC.
 
 ## Adding new modules
 
-Foundry's module set isn't fixed at the initial seven. If there's a Blizzard API you'd like to see bridged, here's how new modules get added.
+Foundry's module set isn't fixed at the initial eight. If there's a Blizzard API you'd like to see bridged, here's how new modules get added.
 
 **The path in:** open an issue describing the API you'd like Foundry to cover and how you'd use it in your addon. Concrete is better than abstract — "here's the code I'd write if Foundry had this module" lands faster than "Foundry should support X."
 
@@ -94,7 +95,7 @@ Foundry's module set isn't fixed at the initial seven. If there's a Blizzard API
 
 **What gets a "not yet":** modules without a clear consumer to validate them. Foundry's quality bar is tied to real-world use; designing in the abstract risks shipping API surface that doesn't survive contact with actual addons. We'd rather wait for a concrete use case than guess at one.
 
-This isn't a high bar — it's the same bar the initial seven modules cleared. If you have an addon and an API you want bridged, that's enough.
+This isn't a high bar — it's the same bar the initial eight modules cleared. If you have an addon and an API you want bridged, that's enough.
 
 ## Installation
 
