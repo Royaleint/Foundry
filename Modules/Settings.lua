@@ -108,6 +108,7 @@ function Controller:GetNativeHandles()
         category   = self._category,
         categoryID = categoryID,
         mode       = self._mode,
+        layout     = self._layout,
     }
 end
 
@@ -122,6 +123,7 @@ function Controller:Destroy()
     self._destroyed = true
     self._category  = nil
     self._frame     = nil
+    self._name      = nil
 end
 
 --------------------------------------------------------------------------------
@@ -190,17 +192,31 @@ function Settings:New(config)
 
     -- 6. Path selection and registration.
     local category
+    local layout
     local mode
 
     if hasModernSettings() then
         -- Modern path: feature-detected, no pcall (fail-loud per house style).
         if parent then
+            -- SF-3: on the modern path, the parent must also have been registered
+            -- via the modern path so that parent._category is a valid Blizzard
+            -- category object for RegisterCanvasLayoutSubcategory.
+            if parent._mode ~= "settings" then
+                F:RaiseDevError("Settings:New: config.parent was registered on the legacy path; "
+                    .. "subcategory registration requires a modern-path parent")
+                return
+            end
+            -- SF-5: guard against a structurally invalid parent (no category object).
+            if type(parent._category) ~= "table" then
+                F:RaiseDevError("Settings:New: config.parent has no valid category object")
+                return
+            end
             -- Child: RegisterCanvasLayoutSubcategory; do NOT call RegisterAddOnCategory.
-            category = _G.Settings.RegisterCanvasLayoutSubcategory(
+            category, layout = _G.Settings.RegisterCanvasLayoutSubcategory(
                 parent._category, frame, title)
         else
             -- Root: RegisterCanvasLayoutCategory + RegisterAddOnCategory (once only).
-            category = _G.Settings.RegisterCanvasLayoutCategory(frame, title)
+            category, layout = _G.Settings.RegisterCanvasLayoutCategory(frame, title)
             _G.Settings.RegisterAddOnCategory(category)
         end
         mode = "settings"
@@ -221,6 +237,7 @@ function Settings:New(config)
     -- 7. Construct controller.
     local c = setmetatable({}, Controller)
     c._category            = category
+    c._layout              = layout
     c._frame               = frame
     c._mode                = mode
     c._name                = name

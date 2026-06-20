@@ -144,6 +144,9 @@ test("version pins: Settings.API_VERSION == 1 and F.API_VERSION == 5", function(
     installModern()
     T.eq(F.Settings.API_VERSION, 1, "Settings per-module API_VERSION == 1")
     T.eq(F.API_VERSION, 5, "library API_VERSION remains 5 (Settings does not bump)")
+    T.eq(F:RequireModule("Settings", 1), F.Settings, "RequireModule min=1 returns the module")
+    T.raises(function() F:RequireModule("Settings", 99) end,
+        "RequireModule too-high", "version")
 end)
 
 --------------------------------------------------------------------------------
@@ -225,6 +228,21 @@ test("Both stubs present (impossible on real client): modern wins", function()
     T.eq(#state.registerRootCalls, 1, "modern RegisterCanvasLayoutCategory was called")
     T.eq(#legacyCalls, 0, "legacy InterfaceOptions_AddCategory was NOT called")
     T.eq(c:GetNativeHandles().mode, "settings", "mode is 'settings' (modern wins)")
+end)
+
+test("Partial Settings table (missing RegisterAddOnCategory): legacy path taken", function()
+    -- hasModernSettings() requires ALL three: _G.Settings table + RegisterCanvasLayoutCategory
+    -- + RegisterAddOnCategory. A partial stub (only RegisterCanvasLayoutCategory present)
+    -- must NOT take the modern path.
+    local F = T.fresh()
+    local state = installLegacy()  -- sets up InterfaceOptions_AddCategory
+    -- Inject a partial modern stub that has RegisterCanvasLayoutCategory but NOT
+    -- RegisterAddOnCategory. hasModernSettings() must return false.
+    _G.Settings = { RegisterCanvasLayoutCategory = function() end }
+    local c = F.Settings:New(valid())
+    T.truthy(c, "controller created via legacy path")
+    T.eq(c:GetNativeHandles().mode, "interface-options",
+        "partial modern stub: legacy path taken, not partial-modern")
 end)
 
 --------------------------------------------------------------------------------
@@ -333,9 +351,12 @@ end)
 
 test("validation is ordered: title checked before frame", function()
     -- title is bad (empty) AND frame is bad (nil): title error must surface first.
+    -- IMPORTANT: valid({title="", frame=nil}) silently skips the frame=nil override
+    -- because pairs() does not iterate nil values. Set frame=nil explicitly after build.
     local F = T.fresh()
     installModern()
-    local cfg = valid({ title = "", frame = nil })
+    local cfg = valid({ title = "" })
+    cfg.frame = nil  -- explicit nil so the override actually takes effect
     T.raises(function() F.Settings:New(cfg) end, "title-before-frame", "config.title must be a non-empty string")
 end)
 
@@ -388,10 +409,10 @@ test("duplicate key freed on :Destroy; third :New with same name succeeds", func
 end)
 
 --------------------------------------------------------------------------------
--- Two-value return: only category stored, layout discarded
+-- Two-value return: both category and layout stored (SF-4)
 --------------------------------------------------------------------------------
 
-test("RegisterCanvasLayoutCategory returns two values; only category stored (no layout key)", function()
+test("RegisterCanvasLayoutCategory returns two values; category and layout both stored", function()
     local F = T.fresh()
     installModern()
     local c = F.Settings:New(valid())
@@ -399,9 +420,10 @@ test("RegisterCanvasLayoutCategory returns two values; only category stored (no 
     -- The category object is stored and exposed.
     T.truthy(h.category, "category is present in handles")
     T.eq(h.categoryID, 35, "categoryID comes from category:GetID()")
-    -- No layout key — controller does not store the second return value.
-    T.eq(h.layout, nil, "layout second return value is not stored on controller")
-    -- Keys: frame, category, categoryID, mode — and nothing else unexpected.
+    -- Layout is now stored and exposed (SF-4). The stub returns {_isLayout=true}.
+    T.truthy(h.layout, "layout second return value IS stored on controller (SF-4)")
+    T.truthy(h.layout._isLayout, "layout object has expected marker from stub")
+    -- Keys: frame, category, categoryID, mode, layout
     T.eq(h.mode, "settings", "mode key present")
     T.truthy(h.frame, "frame key present")
 end)
@@ -496,6 +518,7 @@ test(":GetNativeHandles returns correct keys for modern controller", function()
     T.eq(h.category,   rootCategory, "category key is the registered category")
     T.eq(h.categoryID, 35,           "categoryID is from category:GetID()")
     T.eq(h.mode,       "settings",   "mode is 'settings'")
+    T.truthy(h.layout,               "layout is present on modern path (SF-4)")
 end)
 
 test(":GetNativeHandles returns correct keys for legacy controller", function()
@@ -508,6 +531,7 @@ test(":GetNativeHandles returns correct keys for legacy controller", function()
     T.eq(h.category,   nil,                 "category is nil for legacy")
     T.eq(h.categoryID, nil,                 "categoryID is nil for legacy")
     T.eq(h.mode,       "interface-options", "mode is 'interface-options'")
+    T.eq(h.layout,     nil,                 "layout is nil on legacy path (no layout anchor)")
 end)
 
 test(":GetNativeHandles returns a fresh table each call; mutating it does not affect :Open", function()
@@ -550,13 +574,14 @@ test(":Destroy marks controller destroyed and frees the duplicate-refusal key", 
     T.truthy(c2, "re-registration after :Destroy succeeds")
 end)
 
-test(":Destroy releases internal category and frame references", function()
+test(":Destroy releases internal category, frame, and name references", function()
     local F = T.fresh()
     installModern()
     local c = F.Settings:New(valid())
     c:Destroy()
     T.eq(c._category, nil, "_category released")
     T.eq(c._frame,    nil, "_frame released")
+    T.eq(c._name,     nil, "_name released (NB-1)")
 end)
 
 test(":Destroy is idempotent (second :Destroy is a silent no-op, does not raise)", function()
