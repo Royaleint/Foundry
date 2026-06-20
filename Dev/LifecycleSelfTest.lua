@@ -203,14 +203,23 @@ local function runLifecycle(out)
 end
 
 --------------------------------------------------------------------------------
--- The error-continue drive: two login hooks, the FIRST error()s. Prove the
+-- The error-continue drive: two logout hooks, the FIRST error()s. Prove the
 -- SECOND still ran (fan-out completed) AND the error surfaced AFTER the fan-out
 -- (not at the throw site) — the single most important Lifecycle guarantee (Q5).
+--
+-- Why logout, not login? loginFired is set by the real PLAYER_LOGIN during the
+-- actual login sequence, so it is ALWAYS true in a live session. OnLogin
+-- registration immediately triggers the catch-up, surfacing the intentional
+-- error outside the test's pcall before the Summary prints. Logout has no
+-- equivalent global flag — it can be synthetically fired any number of times
+-- via _TestFire. Controllers must still call OnLogin (even with an empty
+-- handler) to join loginControllers, which is the set the logout fan-out
+-- iterates. Empty login handlers raise nothing, so the catch-up is harmless.
 --------------------------------------------------------------------------------
 
 local function runErrorTest(out)
     local report = newReport(out)
-    out("Foundry.Lifecycle self-test: continue-on-error (login fan-out)")
+    out("Foundry.Lifecycle self-test: continue-on-error (logout fan-out)")
 
     local Lifecycle = F.Lifecycle
     local stamp = nextStamp()
@@ -229,25 +238,31 @@ local function runErrorTest(out)
         return report
     end
 
-    cA:OnLogin(function()
+    -- OnLogin enrols both controllers in loginControllers (required for the
+    -- logout fan-out to reach them). The catch-up fires immediately in a live
+    -- session but empty handlers raise nothing.
+    cA:OnLogin(function() end)
+    cB:OnLogin(function() end)
+
+    cA:OnLogout(function()
         aRan = true
-        error("Foundry self-test: intentional login error from controller A")
+        error("Foundry self-test: intentional logout error from controller A")
     end)
-    cB:OnLogin(function() bRan = true end)
+    cB:OnLogout(function() bRan = true end)
 
     -- In a dev build the dispatcher re-raises AFTER the fan-out, so the fire
     -- itself raises — pcall it so the run continues, then assert that B's
     -- side-effect is ALREADY present, proving the loop completed BEFORE the error
     -- surfaced (the error did NOT abort dispatch at the throw site).
-    local fireOk, fireErr = pcall(function() Lifecycle:_TestFire("login") end)
+    local fireOk, fireErr = pcall(function() Lifecycle:_TestFire("logout") end)
 
-    check(report, aRan, "controller A's login hook ran (and threw)")
+    check(report, aRan, "controller A's logout hook ran (and threw)")
     check(report, bRan,
-        "controller B's login hook STILL RAN despite A throwing (fan-out completed)")
+        "controller B's logout hook STILL RAN despite A throwing (fan-out completed)")
     -- Dev: the fire raised after the fan-out, carrying A's error.
     check(report, not fireOk,
         "the error SURFACED after fan-out (dev build raised once the loop finished)")
-    check(report, fireErr ~= nil and tostring(fireErr):find("intentional login error", 1, true) ~= nil,
+    check(report, fireErr ~= nil and tostring(fireErr):find("intentional logout error", 1, true) ~= nil,
         "the surfaced error is controller A's")
 
     cA:Destroy()
