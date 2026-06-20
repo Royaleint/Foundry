@@ -40,7 +40,7 @@ local isDevBuild = (tocVersion == nil)
 local F = {}
 F.IS_DEV_BUILD = isDevBuild
 F.VERSION = isDevBuild and DEV_VERSION or tocVersion
-F.API_VERSION = 5
+F.API_VERSION = 6
 F._LOAD_TOKEN = {}   -- per-load identity token (guarded-embed §2.2c)
 
 -- 3. Shared fail-loud helper. In a dev build an unsupported

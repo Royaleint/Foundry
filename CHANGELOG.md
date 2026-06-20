@@ -2,6 +2,12 @@
 
 All notable changes to Foundry-1.0 are recorded here.
 
+## [1.0.6] - 2026-06-20
+
+### Added
+- **Foundry.Settings** — options panel registration for Blizzard's modern Settings API. One `F.Settings:New({title, frame})` registers your panel as a top-level category in Interface Options and returns a controller: `:Open()` to open directly to your panel, `:GetCategoryID()` for programmatic navigation, `:GetNativeHandles()` to reach the raw Blizzard category and layout objects, and `:Destroy()` to clean up and free the registration slot. Subcategories are supported via the optional `parent` config key. Duplicate registrations are refused loudly rather than silently clobbering an existing panel. Works on all current supported clients; the legacy `InterfaceOptions_AddCategory` path is retained as a forward-compatibility stub. Assert a minimum version with `F:RequireModule("Settings", 1)`.
+- **`Events:RegisterBucket`** — coalesces bursts of the same event (or a set of events) into a single handler call, firing after a quiet period rather than once per event. Useful for events that arrive in rapid bursts where only the final state matters — inventory changes, bag updates, auction results. Returns a handle with `:Cancel()` to suppress a pending fire, `:IsPending()` to check queue state, and `:Destroy()` to remove the registration entirely. Leading and trailing coalescing modes are both supported.
+
 ## [1.0.5] - 2026-06-14
 
 ### Added
