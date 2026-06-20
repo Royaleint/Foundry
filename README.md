@@ -41,18 +41,28 @@ The last three modules (List, Tooltip, Menu) exist to give authors an easy path 
 
 ## Using Foundry
 
-In your addon's TOC:
+If your addon depends on a standalone Foundry install only, your TOC can use:
 
 ```
 ## Dependencies: Foundry-1.0
 ```
+
+If you ship one shared TOC across CurseForge and embedded-fallback builds, use:
+
+```
+## OptionalDependencies: Foundry-1.0
+```
+
+In that shared-TOC shape, keep the hard CurseForge dependency in packager
+metadata (`required-dependencies: foundry`, using the CurseForge project slug)
+while your embedded build supplies the fallback files.
 
 In your Lua:
 
 ```lua
 local F = _G.Foundry_1_0
 if not F then
-    error("MyAddon requires Foundry-1.0. Please install or enable it.")
+    error("MyAddon failed to load Foundry-1.0.")
 end
 
 local commands = F.Commands:New({
