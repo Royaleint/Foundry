@@ -33,6 +33,14 @@ function T.installMocks(tocVersion)
     end
     for _, k in ipairs(stale) do _G[k] = nil end
 
+    -- Clear Settings flavor globals so each test starts with no surface installed.
+    -- Settings tests install exactly one surface (modern OR legacy OR neither) via
+    -- their per-test helper after T.fresh(). Without this reset a surface set by
+    -- a previous test would leak through to the next test's :New call.
+    _G.Settings                     = nil
+    _G.InterfaceOptions_AddCategory = nil
+    _G.InterfaceOptionsFrame        = nil
+
     _G.SlashCmdList = {}
 
     -- Player/realm identity for Foundry.DB (spec §3.4: charKey = "Name - Realm").
@@ -391,6 +399,8 @@ function T.loadFoundry()
     db("Foundry-1.0")
     local list = assert(loadfile(foundryRoot .. "/Modules/List.lua"))
     list("Foundry-1.0")
+    local settings = assert(loadfile(foundryRoot .. "/Modules/Settings.lua"))
+    settings("Foundry-1.0")
     return _G.Foundry_1_0
 end
 
@@ -438,6 +448,7 @@ local suites = {
     { label = "Foundry.DB",        cases = assert(loadfile(testsDir .. "/DB/db_spec.lua"))(T) },
     { label = "Foundry.DB.parity", cases = assert(loadfile(testsDir .. "/DB/acedb_parity.lua"))(T) },
     { label = "Foundry.List",      cases = assert(loadfile(testsDir .. "/List/list_spec.lua"))(T) },
+    { label = "Foundry.Settings",  cases = assert(loadfile(testsDir .. "/Settings/settings_spec.lua"))(T) },
     { label = "Foundry.Packaging", cases = assert(loadfile(testsDir .. "/Packaging/packaging_spec.lua"))(T) },
 }
 
