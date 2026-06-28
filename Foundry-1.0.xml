@@ -6,4 +6,5 @@
   <Script file="Modules\DB.lua"/>
   <Script file="Modules\List.lua"/>
   <Script file="Modules\Settings.lua"/>
+  <Script file="Modules\Tooltip.lua"/>
 </Ui>

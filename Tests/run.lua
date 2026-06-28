@@ -40,6 +40,7 @@ function T.installMocks(tocVersion)
     _G.Settings                     = nil
     _G.InterfaceOptions_AddCategory = nil
     _G.InterfaceOptionsFrame        = nil
+    _G.TooltipDataProcessor = nil
 
     _G.SlashCmdList = {}
 
@@ -401,6 +402,8 @@ function T.loadFoundry()
     list("Foundry-1.0")
     local settings = assert(loadfile(foundryRoot .. "/Modules/Settings.lua"))
     settings("Foundry-1.0")
+    local tooltip = assert(loadfile(foundryRoot .. "/Modules/Tooltip.lua"))
+    tooltip("Foundry-1.0")
     return _G.Foundry_1_0
 end
 
@@ -449,6 +452,7 @@ local suites = {
     { label = "Foundry.DB.parity", cases = assert(loadfile(testsDir .. "/DB/acedb_parity.lua"))(T) },
     { label = "Foundry.List",      cases = assert(loadfile(testsDir .. "/List/list_spec.lua"))(T) },
     { label = "Foundry.Settings",  cases = assert(loadfile(testsDir .. "/Settings/settings_spec.lua"))(T) },
+    { label = "Foundry.Tooltip",   cases = assert(loadfile(testsDir .. "/Tooltip/tooltip_spec.lua"))(T) },
     { label = "Foundry.Packaging", cases = assert(loadfile(testsDir .. "/Packaging/packaging_spec.lua"))(T) },
 }
 
