@@ -20,3 +20,12 @@ Modules/Lifecycle.lua
 Modules/DB.lua
 Modules/List.lua
 Modules/Settings.lua
+Modules/Tooltip.lua
+
+# Dev instruments — LOCAL ONLY, do NOT commit (triple-gated off; loaded only for in-game Gate 2).
+Dev/LifecycleSelfTest.lua
+Dev/DBSelfTest.lua
+Dev/ListSelfTest.lua
+Dev/EventsBucketSelfTest.lua
+Dev/SettingsSelfTest.lua
+Dev/TooltipSelfTest.lua

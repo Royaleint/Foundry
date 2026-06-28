@@ -2,6 +2,11 @@
 
 All notable changes to Foundry-1.0 are recorded here.
 
+## [Unreleased]
+
+### Added
+- **Foundry.Tooltip** — a Retail-only bridge over `TooltipDataProcessor` for appending lines to item tooltips (Cycle 7, Charter §3.3). One `F.Tooltip:Register(config)` sets up your handler to run after Blizzard's own tooltip population, so your lines land below the native ones rather than racing them. Registration is consumer-owned: you hold the handle and call `:Destroy()` to disable in place without a reload. An item whitelist filter lets you narrow which item tooltips receive your additions. Two line emitters — `AddLine` for a plain text line and `AddSeparator` for a visual divider — cover the common cases directly. `:GetNativeHandles()` is the escape hatch when you need to reach the raw processor objects. 44 headless tests cover the module; the in-game self-test is at `/foundrytooltip`. Assert a minimum version with `F:RequireModule("Tooltip", 1)`.
+
 ## [1.0.6] - 2026-06-20
 
 ### Added

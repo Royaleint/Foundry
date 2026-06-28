@@ -22,6 +22,8 @@ read_globals = {
     "ScrollUtil",
     "CreateScrollBoxListLinearView",
     "CreateDataProvider",
+    "TooltipDataProcessor",  -- Foundry.Tooltip drives this (Retail-only post-call hook system).
+    "Enum",                  -- Dev/TooltipSelfTest.lua reads Enum.TooltipDataType at runtime.
     -- Dev/ListSelfTest.lua parents its visible demo frame to UIParent (dev-only).
     "UIParent",
 }
