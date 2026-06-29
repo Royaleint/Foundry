@@ -106,17 +106,22 @@ end
 -- against future clients where the template or intrinsic may be absent.
 local function getDropdownButton()
     if not testDropdownButton then
+        emit("  Q10: Creating test DropdownButton (WowStyle1DropdownTemplate)...")
         local ok, err = pcall(function()
             testDropdownButton = CreateFrame(
                 "DropdownButton", "FoundryMenuTestDropdown", UIParent,
                 "WowStyle1DropdownTemplate")
-            testDropdownButton:SetPoint("CENTER", UIParent, "CENTER", 0, -100)
+            testDropdownButton:SetSize(160, 22)
+            -- Position above center — avoids chat frame overlap at bottom of screen.
+            testDropdownButton:SetPoint("CENTER", UIParent, "CENTER", 0, 100)
             testDropdownButton:Show()
         end)
         if not ok then
-            emit("  WARNING: CreateFrame('DropdownButton', ..., 'WowStyle1DropdownTemplate') failed — "
-                .. "Q10 and Q11(b) will be skipped on this client.")
+            emit("|cffff4444  FAIL: CreateFrame('DropdownButton') errored — Q10/Q11(b) skipped.|r")
             emit("           error = " .. tostring(err))
+            testDropdownButton = nil
+        else
+            emit("  Q10: Button created — look for it above screen center and CLICK it.")
         end
     end
     return testDropdownButton
