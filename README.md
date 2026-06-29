@@ -34,11 +34,11 @@ Foundry-1.0 delivers a focused set of modules covering what most addons reach fo
 | **List** | Bridge over Blizzard's modern scrolling-list system, which is powerful but punishing to use directly. | `ScrollBox`, `ScrollBoxListView`, `DataProvider`, `ScrollUtil` | No direct Ace3 equivalent | Available |
 | **Settings** | Options panel registration, automatically selecting Blizzard's modern Settings API or falling back to the legacy interface options panel. | `Settings.RegisterCanvasLayoutCategory`, `RegisterAddOnCategory` | AceConfig-3.0 / AceConfigDialog-3.0 | Available |
 | **Tooltip** | Bridge over Blizzard's modern tooltip-hook system. Current and supported, but under-documented for addon authors. | `TooltipDataProcessor` (added in Patch 10.0.2) | No direct Ace3 equivalent | Available |
-| **Menu** | Bridge over Blizzard's modern menu system, which replaced the deprecated `UIDropDownMenu` in Patch 11.0.0. | `Blizzard_Menu`, `MenuUtil` | LibUIDropDownMenu (community library, now unmaintained for current retail) | Planned |
+| **Menu** | Bridge over Blizzard's modern menu system, which replaced the deprecated `UIDropDownMenu` in Patch 11.0.0. | `Blizzard_Menu`, `MenuUtil` | LibUIDropDownMenu (community library, now unmaintained for current retail) | Available |
 
 **Tooltip** and **Menu** exist specifically to give authors an easy path away from older community UI libraries. Blizzard shipped modern native equivalents for both, but the raw APIs are verbose enough that most authors have stuck with the older wrappers. Foundry's job here is to make the native path the easy path.
 
-**Available now:** Commands, Events, Lifecycle, DB, List, Settings, and Tooltip. **Next up** is **Menu** — a bridge over Blizzard's 11.0 menu system, the successor to the now-unmaintained LibUIDropDownMenu.
+All eight modules are available now.
 
 ## Using Foundry
 
