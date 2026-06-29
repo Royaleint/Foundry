@@ -1,12 +1,12 @@
-name: Publish to Wago
+name: Package and Release
 
-# Foundry publishes to CurseForge via CF's server-side webhook (no Action needed
-# for CF). Wago has no equivalent server-side packager, so this Action runs the
-# BigWigs packager to build the addon and upload it to Wago using WAGO_API_TOKEN.
-# CF_API_KEY is deliberately omitted here so this never double-publishes to
-# CurseForge — CF is left entirely to its webhook. The multi-flavor TOC
-# (Interface: 11508, 20505, 120005) is handled by the packager from the TOC, so
-# no -g flag is set.
+# Publishes to CurseForge and Wago via the BigWigs packager on every version tag.
+# CF's server-side webhook is intentionally NOT used for release notes — it sends
+# the entire manual-changelog file as plain text regardless of markup-type.
+# Instead, the workflow extracts just the current version's section from
+# CHANGELOG.md, converts it from markdown to HTML (CF claims to support markdown
+# but renders it as plain text; HTML is the only format that renders on both
+# platforms), and passes the generated RELEASE_NOTES.html to the packager.
 
 on:
   push:
@@ -20,7 +20,7 @@ on:
         type: boolean
         default: false
 
-# Serialize releases so two in-flight runs can't race to be the last Wago upload.
+# Serialize releases so two in-flight runs can't race to be the last upload.
 concurrency:
   group: release
   cancel-in-progress: false
@@ -37,7 +37,7 @@ jobs:
           fetch-depth: 0
 
       # Only the highest version tag may publish, so an old/bulk tag push can't
-      # overwrite a newer Wago build. Mirrors Homestead's release guard (HS-107).
+      # overwrite a newer build. Mirrors Homestead's release guard (HS-107).
       - name: Guard — only the newest tag may publish
         id: guard
         run: |
@@ -56,12 +56,60 @@ jobs:
             echo "publish=true" >> "$GITHUB_OUTPUT"
           else
             echo "publish=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::$TAG is not the newest tag ($NEWEST); skipping the Wago upload. Re-run from the Actions tab with force=true to deliberately re-publish."
+            echo "::warning::$TAG is not the newest tag ($NEWEST); skipping upload. Re-run from the Actions tab with force=true to deliberately re-publish."
           fi
 
-      - name: Package and upload to Wago
+      - name: Extract and convert current version changelog
+        if: steps.guard.outputs.publish == 'true'
+        run: |
+          # Extract from the current version header to the next.
+          # Foundry CHANGELOG.md uses Keep-a-Changelog format: ## [X.Y.Z] - YYYY-MM-DD
+          awk '/^## \[[0-9]/{if(found) exit; found=1} found' CHANGELOG.md > RELEASE_NOTES.md
+
+          # Validate: must be non-empty (catches heading pattern mismatch).
+          if [ ! -s RELEASE_NOTES.md ]; then
+            echo "::error::RELEASE_NOTES.md is empty after extraction."
+            echo "Expected heading pattern: '## [X.Y.Z] - YYYY-MM-DD'"
+            echo "First 10 lines of CHANGELOG.md:"
+            head -10 CHANGELOG.md
+            exit 1
+          fi
+
+          # Validate: extracted heading must match the tag being released.
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if ! head -1 RELEASE_NOTES.md | grep -q "\[${TAG_VERSION}\]"; then
+            echo "::error::Extracted release notes don't match tag ${GITHUB_REF_NAME}."
+            echo "Extracted first line: $(head -1 RELEASE_NOTES.md)"
+            echo "Expected version: [${TAG_VERSION}]"
+            echo "Did you forget to write the v${TAG_VERSION} entry to CHANGELOG.md?"
+            exit 1
+          fi
+
+          echo "--- Extracted markdown for ${GITHUB_REF_NAME} ---"
+          cat RELEASE_NOTES.md
+
+          # Convert markdown to HTML. CF's API claims to accept markdown but renders
+          # it as plain text; HTML works on both CurseForge and Wago.
+          if ! command -v pandoc &>/dev/null; then
+            echo "pandoc not preinstalled — installing"
+            sudo apt-get update -qq && sudo apt-get install -y pandoc
+          fi
+          pandoc --wrap=none -f commonmark -t html RELEASE_NOTES.md -o RELEASE_NOTES.html
+
+          echo "--- Converted HTML ---"
+          cat RELEASE_NOTES.html
+
+      - name: Package and Release — CurseForge + GitHub
         if: steps.guard.outputs.publish == 'true'
         uses: BigWigsMods/packager@v2
         env:
-          WAGO_API_TOKEN: ${{ secrets.WAGO_API_TOKEN }}
+          CF_API_KEY: ${{ secrets.CF_API_KEY }}
           GITHUB_OAUTH: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Package and Release — Wago
+        if: steps.guard.outputs.publish == 'true'
+        uses: BigWigsMods/packager@v2
+        with:
+          args: -p 0 -a 0
+        env:
+          WAGO_API_TOKEN: ${{ secrets.WAGO_API_TOKEN }}
