@@ -4,8 +4,14 @@ All notable changes to Foundry-1.0 are recorded here.
 
 ## [Unreleased]
 
+## [1.0.7] - 2026-06-29
+
 ### Added
-- **Foundry.Tooltip** — a Retail-only bridge over `TooltipDataProcessor` for appending lines to item tooltips (Cycle 7, Charter §3.3). One `F.Tooltip:Register(config)` sets up your handler to run after Blizzard's own tooltip population, so your lines land below the native ones rather than racing them. Registration is consumer-owned: you hold the handle and call `:Destroy()` to disable in place without a reload. An item whitelist filter lets you narrow which item tooltips receive your additions. Two line emitters — `AddLine` for a plain text line and `AddSeparator` for a visual divider — cover the common cases directly. `:GetNativeHandles()` is the escape hatch when you need to reach the raw processor objects. 44 headless tests cover the module; the in-game self-test is at `/foundrytooltip`. Assert a minimum version with `F:RequireModule("Tooltip", 1)`.
+- **Foundry.Tooltip** — a Retail-only bridge over `TooltipDataProcessor` for appending lines to item tooltips. One `F.Tooltip:Register(config)` sets up your handler to run after Blizzard's own tooltip population, so your lines land below the native ones rather than racing them. Registration is consumer-owned: you hold the handle and call `:Destroy()` to disable in place without a reload. An item whitelist filter lets you narrow which item tooltips receive your additions. Two line emitters — `AddLine` for a plain text line and `AddSeparator` for a visual divider — cover the common cases directly. `:GetNativeHandles()` is the escape hatch when you need to reach the raw processor objects.
+- **Foundry.Menu** — a bridge over the modern `Blizzard_Menu` / `MenuUtil` system for context menus and persistent dropdown menus. One `F.Menu:New(config)` creates a named, lifecycle-tracked controller: `:CreateContextMenu(owner)` opens a context menu anchored near any frame, and `:SetupDropdown(button)` installs a persistent generator on a `DropdownButton` so the menu rebuilds fresh each time the button is clicked. Your builder function receives the raw Blizzard `rootDescription` and constructs menu content using Blizzard's own `Create*` API directly — buttons, checkboxes, radios, submenus, dividers, titles. Call `:Destroy()` when you're done; any generator already installed on a `DropdownButton` silently becomes a no-op rather than erroring. `:GetNativeHandles()` reaches `MenuUtil` and the `Menu` module directly. Works on Retail 11.0+, Classic Era 1.15.x, Pandaria Classic 5.5.x, and TBC Classic 2.5.x.
+
+### Changed
+- **Pandaria Classic (5.5.x) added to supported clients.** The TOC now declares interface version `50504`, bringing Pandaria Classic into the officially supported set alongside Retail, Classic Era, and TBC Classic.
 
 ## [1.0.6] - 2026-06-20
 
