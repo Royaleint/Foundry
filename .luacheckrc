@@ -24,6 +24,9 @@ read_globals = {
     "CreateDataProvider",
     "TooltipDataProcessor",  -- Foundry.Tooltip drives this (Retail-only post-call hook system).
     "Enum",                  -- Dev/TooltipSelfTest.lua reads Enum.TooltipDataType at runtime.
+    -- Foundry.Menu bridges the Blizzard_Menu system (present on all supported flavors).
+    "MenuUtil",              -- Entry points: CreateContextMenu; SetupMenu on DropdownButton.
+    "Menu",                  -- Raw escape hatch via GetNativeHandles().menu; may be nil on some clients.
     -- Dev/ListSelfTest.lua parents its visible demo frame to UIParent (dev-only).
     "UIParent",
 }
