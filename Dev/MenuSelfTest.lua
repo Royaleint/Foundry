@@ -303,31 +303,16 @@ local function registerHandler()
         end
     end
 
-    -- Q2: open the context menu visually now.
-    emit("register: opening context menu via :CreateContextMenu (Q2)...")
-    local openOk, openErr = pcall(function()
-        testController:CreateContextMenu(getAnchorFrame())
-    end)
-    check(r, openOk, ":CreateContextMenu returned without error (Q2)"
-        .. (openOk and "" or ": " .. tostring(openErr)))
-
     summary(r, "register")
 
-    if openOk then
-        emit("")
-        emit("  Q2:  A context menu should be visible near screen center with title")
-        emit("       'Foundry.Menu Test'. PASS = frame is present and readable.")
-        emit("  Q3:  Click 'Test Button' — callback must print a Q3 line; menu closes.")
-        emit("       Use /foundrymenu open to reopen without resetting state.")
-        emit("  Q4:  Click 'Refresh Button' — menu must stay open; second click still works.")
-        emit("  Q5:  Click the Checkbox — setter must print Q5 line; reopen to see state change.")
-        emit("  Q6:  Click 'Radio B' — selection moves to B. Click 'Radio A' — moves back.")
-        emit("  Q7:  Hover 'Submenu' — flyout opens with Sub-item Alpha and Beta inside.")
-        emit("  Q8:  Click 'Disabled Item' — must NOT print a callback line.")
-        emit("  Q9:  Hover 'Disabled Item' — tooltip must appear with Q9 text.")
-        emit("")
-        emit("  When ready: /foundrymenu dup (Q13 + dup refusal), then /foundrymenu destroy")
-    end
+    emit("")
+    emit("|cffffff00  >>> STEP 1 — Q10: Click the DropdownButton ABOVE screen center. <<<|r")
+    emit("  Open #1 title must appear in the menu. Close it and click again —")
+    emit("  title must read 'open #2'. Confirms generator re-fires each time.")
+    emit("")
+    emit("  STEP 2 — Q2–Q9:  /foundrymenu open   (opens context menu; menu items to interact with)")
+    emit("  STEP 3 — Q13+dup: /foundrymenu dup   (run while register controller is still live)")
+    emit("  STEP 4 — Q11:    /foundrymenu destroy (teardown; Q11(b) will prompt dropdown click)")
 end
 
 --------------------------------------------------------------------------------
@@ -415,7 +400,7 @@ local function destroyHandler()
         summary(r11a, "Q11(a)")
 
         emit("")
-        emit("  Q11(b): The test DropdownButton (screen center, slightly below) is still")
+        emit("  Q11(b): The test DropdownButton (above screen center) is still")
         emit("          installed with the destroyed controller's generatorWrapper.")
         if testDropdownButton and testDropdownButton:IsShown() then
             emit("  Q11(b): Click the test dropdown button now (5 seconds remaining).")
@@ -695,9 +680,10 @@ local devCommands = F.Commands and F.Commands:New({
 if devCommands then
     devCommands:Register({
         name    = "register",
-        help    = "Create context menu + dropdown controllers and open the context menu. "
-            .. "Q1 (New), Q2 (visible menu), Q3–Q9 (interact with menu items), "
-            .. "Q10 (click the DropdownButton at screen center).",
+        help    = "Create context menu + dropdown controllers. "
+            .. "Q1 (New), Q10 (click DropdownButton above screen center). "
+            .. "Then /foundrymenu open for Q2–Q9. /foundrymenu dup for Q13. "
+            .. "/foundrymenu destroy for Q11.",
         handler = registerHandler,
     })
     devCommands:Register({
