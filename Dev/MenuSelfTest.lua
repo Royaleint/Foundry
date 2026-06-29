@@ -98,20 +98,23 @@ local function getAnchorFrame()
 end
 
 -- Creates a real DropdownButton frame for Q10/Q11(b).
--- Template "WowStyle1DropdownTemplate" is required for the button to be visible and
--- clickable — confirmed from both committed consumers:
---   Homestead OptionsControls.lua:309  CreateFrame("DropdownButton", nil, frame, "WowStyle1DropdownTemplate")
---   Sift HistoryPanel.lua:1854         CreateFrame("DropdownButton", nil, parent, "WowStyle1DropdownTemplate")
--- Bare intrinsic (no template) does not render visibly on any flavor. pcall guards
--- against future clients where the template or intrinsic may be absent.
+--
+-- Template choice: UIPanelIconDropdownButtonTemplate (NOT WowStyle1DropdownTemplate).
+-- WowStyle1DropdownTemplate is for SELECTION menus — radio items + SetDefaultText /
+-- GenerateMenu() to update the button's displayed current value. Using it with only
+-- CreateButton items produces undefined close behavior (Gate-2 confirmed fail).
+-- UIPanelIconDropdownButtonTemplate is Blizzard's pattern for action-list menus
+-- (CreateButton items); used by GearDropdown in Blizzard_HousingBulletinBoard and
+-- Blizzard_HousingCornerstone — both open via SetupMenu + CreateButton and close
+-- correctly on item click.
 local function getDropdownButton()
     if not testDropdownButton then
-        emit("  Q10: Creating test DropdownButton (WowStyle1DropdownTemplate)...")
+        emit("  Q10: Creating test DropdownButton (UIPanelIconDropdownButtonTemplate)...")
         local ok, err = pcall(function()
             testDropdownButton = CreateFrame(
                 "DropdownButton", "FoundryMenuTestDropdown", UIParent,
-                "WowStyle1DropdownTemplate")
-            testDropdownButton:SetSize(160, 22)
+                "UIPanelIconDropdownButtonTemplate")
+            testDropdownButton:SetSize(36, 36)
             -- Position above center — avoids chat frame overlap at bottom of screen.
             testDropdownButton:SetPoint("CENTER", UIParent, "CENTER", 0, 100)
             testDropdownButton:Show()
@@ -121,7 +124,7 @@ local function getDropdownButton()
             emit("           error = " .. tostring(err))
             testDropdownButton = nil
         else
-            emit("  Q10: Button created — look for it above screen center and CLICK it.")
+            emit("  Q10: Button created (gear icon) — look ABOVE screen center and CLICK it.")
         end
     end
     return testDropdownButton
