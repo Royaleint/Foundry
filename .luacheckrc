@@ -23,16 +23,9 @@ read_globals = {
     "CreateScrollBoxListLinearView",
     "CreateDataProvider",
     "TooltipDataProcessor",  -- Foundry.Tooltip drives this (Retail-only post-call hook system).
-    "Enum",                  -- Dev/TooltipSelfTest.lua reads Enum.TooltipDataType at runtime.
     -- Foundry.Menu bridges the Blizzard_Menu system (present on all supported flavors).
     "MenuUtil",              -- Entry points: CreateContextMenu; SetupMenu on DropdownButton.
     "Menu",                  -- Raw escape hatch via GetNativeHandles().menu; may be nil on some clients.
-    -- Dev/ListSelfTest.lua parents its visible demo frame to UIParent (dev-only).
-    "UIParent",
-    -- Dev/MenuSelfTest.lua uses these Blizzard globals at runtime.
-    "MenuResponse",          -- Blizzard_Menu global; .Refresh/.Close/.CloseAll etc.
-    "GameTooltip_SetTitle",  -- Tooltip helper used in SetTooltip callback example.
-    "DevTools_Dump",         -- Dev inspection tool; used in MenuResponse dump (Q12).
 }
 
 -- The module factories (Commands:New / Events:New) take an unused `self` by the

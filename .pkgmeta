@@ -21,8 +21,11 @@ manual-changelog:
   filename: RELEASE_NOTES.html
   markup-type: html
 
-# Dev-only / repo-meta files: keep out of the packaged addon. LICENSE ships inside
-# the addon (root LICENSE -> Foundry-1.0/LICENSE in the zip).
+# Repo-meta files: keep out of the packaged addon. LICENSE ships inside
+# the addon (root LICENSE -> Foundry-1.0/LICENSE in the zip). There is no
+# Dev-only in-game self-test directory in this repo (FND-012) — those files
+# live in the private Foundry_Dev/Foundry-1.0-Dev/ companion addon instead,
+# so a packaged release can never reference a file the packager stripped.
 ignore:
   - .github
   - .gitignore
@@ -33,4 +36,3 @@ ignore:
   - CHANGELOG.md
   - RELEASE_NOTES.html
   - Tests
-  - Dev
