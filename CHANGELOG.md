@@ -4,8 +4,11 @@ All notable changes to Foundry-1.0 are recorded here.
 
 ## [Unreleased]
 
+## [1.0.100] - 2026-06-30
+
 ### Fixed
 - **Load errors right after login.** The packaged addon's manifest referenced developer-only test files that the release build correctly excludes, so the game reported them as missing on every login. Those files no longer ship in the manifest at all — they live in a separate, internal-only tool instead.
+- **Embedded copies of Foundry were missing the Menu module.** Addons that bundle Foundry directly (rather than requiring the standalone install) now get `Foundry.Menu` along with everything else.
 
 ## [1.0.7] - 2026-06-29
 
