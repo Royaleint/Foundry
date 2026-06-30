@@ -4,6 +4,9 @@ All notable changes to Foundry-1.0 are recorded here.
 
 ## [Unreleased]
 
+### Fixed
+- **Load errors right after login.** The packaged addon's manifest referenced developer-only test files that the release build correctly excludes, so the game reported them as missing on every login. Those files no longer ship in the manifest at all — they live in a separate, internal-only tool instead.
+
 ## [1.0.7] - 2026-06-29
 
 ### Added
