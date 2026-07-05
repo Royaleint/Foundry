@@ -99,12 +99,41 @@ jobs:
           echo "--- Converted HTML ---"
           cat RELEASE_NOTES.html
 
+      # Build the package WITHOUT uploading anywhere, purely so the shipped
+      # zip can be inspected before any store sees it. Costs one extra
+      # packager run; buys checking the real artifact, not a guess. (STU-064)
+      - name: Build package (no upload) for release-safety checks
+        if: steps.guard.outputs.publish == 'true'
+        uses: BigWigsMods/packager@v2
+        with:
+          args: -d
+
+      # A .pkgmeta ignore rule that strips a TOC-listed file ships an
+      # "Error loading <file>" to every player at every login with no CI
+      # signal — this check fails the release instead. Covers every flavor
+      # TOC inside the zip. (STU-064)
+      - name: Check — every TOC-listed file ships in the zip
+        if: steps.guard.outputs.publish == 'true'
+        run: node .github/scripts/check-toc-vs-zip.mjs .release
+
       - name: Package and Release — CurseForge + GitHub
         if: steps.guard.outputs.publish == 'true'
         uses: BigWigsMods/packager@v2
         env:
           CF_API_KEY: ${{ secrets.CF_API_KEY }}
           GITHUB_OAUTH: ${{ secrets.GITHUB_TOKEN }}
+      # Verify CurseForge holds EXACTLY one file for this version — a silent
+      # duplicate upload (packager retry layers make it structurally
+      # possible) otherwise goes unnoticed until a player asks which file to
+      # download. Warns-and-skips until CF_CORE_API_KEY (free Core API key,
+      # console.curseforge.com) is added to repo secrets. (STU-064)
+      - name: Check — CurseForge received exactly one file
+        if: steps.guard.outputs.publish == 'true'
+        env:
+          CF_CORE_API_KEY: ${{ secrets.CF_CORE_API_KEY }}
+          TAG: ${{ github.ref_name }}
+        run: node .github/scripts/check-cf-upload.mjs
+
 
       - name: Package and Release — Wago
         if: steps.guard.outputs.publish == 'true'
