@@ -84,4 +84,10 @@ if (totalMissing) {
   console.error(`check-toc-vs-zip: FAILED — ${totalMissing} missing file reference(s) across ${zips.length} zip(s). A .pkgmeta ignore rule probably strips a file the TOC still lists.`);
   process.exit(1);
 }
+if (process.exitCode) {
+  // A non-missing-file failure (e.g. a zip with no TOC) already set the exit
+  // code — do not print a contradictory PASSED line.
+  console.error("check-toc-vs-zip: FAILED — see errors above.");
+  process.exit(1);
+}
 console.log(`check-toc-vs-zip: PASSED — ${checkedTocs} TOC(s) across ${zips.length} zip(s), every referenced file ships.`);

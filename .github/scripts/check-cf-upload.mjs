@@ -65,8 +65,23 @@ const tag = process.env.TAG ?? "";
 if (!tag) warnSkip("TAG env not set");
 const version = tag.replace(/^v/, "").replace(/-wago$/, "");
 
+// Boundary-aware version match, declared BEFORE the retry loop that uses it
+// (a const after the loop is a temporal-dead-zone crash on the armed network
+// path — caught at Gate 1; the fixture path never enters the loop).
+// Rules: "2.5.3" must not match "2.5.30" (leading/trailing digit), must not
+// match "2.5.3.1" (dot-digit continuation), must not match "2.5.3-rc1"
+// (hyphen suffix = a different release), but MUST match "Addon-2.5.3.zip"
+// (dot followed by a non-digit is a file extension, not a version part).
+const versionRE = new RegExp(
+  `(^|[^0-9.])${version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![0-9]|\\.[0-9]|-[A-Za-z0-9])`
+);
+function matchesVersion(f) {
+  const hay = `${f.displayName ?? ""} ${f.fileName ?? ""}`;
+  return versionRE.test(hay);
+}
+
 const fixtureIdx = process.argv.indexOf("--files-json");
-let files;
+let files = [];
 let projectID = "(fixture)";
 if (fixtureIdx >= 0) {
   files = JSON.parse(readFileSync(process.argv[fixtureIdx + 1], "utf8")).data ?? [];
@@ -75,24 +90,28 @@ if (fixtureIdx >= 0) {
   if (!apiKey) warnSkip("CF_CORE_API_KEY secret not configured (create a free key at console.curseforge.com and add it to repo secrets to arm this check)");
   projectID = findProjectID();
   if (!projectID) warnSkip("no CF_PROJECT_ID env and no X-Curse-Project-ID found in any TOC");
+  // Transient API errors count as a retry, never an instant hard-fail: the
+  // upload already happened by the time this runs, so a CF blip must not
+  // torpedo the rest of the workflow on the first attempt.
+  let lastErr = null;
   for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
-    files = await fetchFiles(projectID, apiKey);
-    if (files.some((f) => matchesVersion(f))) break;
+    try {
+      files = await fetchFiles(projectID, apiKey);
+      lastErr = null;
+      if (files.some((f) => matchesVersion(f))) break;
+    } catch (err) {
+      lastErr = err;
+      console.log(`CF API error on attempt ${attempt}/${ATTEMPTS}: ${err.message}`);
+    }
     if (attempt < ATTEMPTS) {
-      console.log(`no file matching ${version} yet (attempt ${attempt}/${ATTEMPTS}) — waiting ${ATTEMPT_DELAY_MS / 1000}s for CF to catch up`);
+      console.log(`no confirmed file for ${version} yet (attempt ${attempt}/${ATTEMPTS}) — waiting ${ATTEMPT_DELAY_MS / 1000}s`);
       await new Promise((r) => setTimeout(r, ATTEMPT_DELAY_MS));
     }
   }
-}
-
-// Boundary-aware version match: "2.5.3" must not match "2.5.30" (a plain
-// substring test would flag that as a duplicate).
-const versionRE = new RegExp(
-  `(^|[^0-9.])${version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^0-9.]|$)`
-);
-function matchesVersion(f) {
-  const hay = `${f.displayName ?? ""} ${f.fileName ?? ""}`;
-  return versionRE.test(hay);
+  if (lastErr) {
+    console.error(`::error::check-cf-upload: CF Core API unreachable after ${ATTEMPTS} attempts (${lastErr.message}) — could not verify the upload. Check the CF file list manually.`);
+    process.exit(1);
+  }
 }
 
 const matches = files.filter(matchesVersion);

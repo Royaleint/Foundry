@@ -122,6 +122,15 @@ jobs:
         env:
           CF_API_KEY: ${{ secrets.CF_API_KEY }}
           GITHUB_OAUTH: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Package and Release — Wago
+        if: steps.guard.outputs.publish == 'true'
+        uses: BigWigsMods/packager@v2
+        with:
+          args: -p 0 -a 0
+        env:
+          WAGO_API_TOKEN: ${{ secrets.WAGO_API_TOKEN }}
+
       # Verify CurseForge holds EXACTLY one file for this version — a silent
       # duplicate upload (packager retry layers make it structurally
       # possible) otherwise goes unnoticed until a player asks which file to
@@ -133,12 +142,3 @@ jobs:
           CF_CORE_API_KEY: ${{ secrets.CF_CORE_API_KEY }}
           TAG: ${{ github.ref_name }}
         run: node .github/scripts/check-cf-upload.mjs
-
-
-      - name: Package and Release — Wago
-        if: steps.guard.outputs.publish == 'true'
-        uses: BigWigsMods/packager@v2
-        with:
-          args: -p 0 -a 0
-        env:
-          WAGO_API_TOKEN: ${{ secrets.WAGO_API_TOKEN }}
