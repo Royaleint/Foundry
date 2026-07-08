@@ -4,6 +4,32 @@ All notable changes to Foundry-1.0 are recorded here.
 
 ## [Unreleased]
 
+## [1.0.101] - 2026-07-08
+
+### Fixed
+- **Lifecycle: `OnLogin` now fires for controllers created after login.** If the
+  session's first Lifecycle controller was created after the player had already
+  logged in (a load-on-demand addon, for example), its `OnLogin` handler was
+  silently never called. The dispatcher now checks login state when it is
+  created, so late controllers catch up correctly.
+- **DB: a schema key of just `"global"` is refused up front.** That key would
+  have overwritten the whole global section with the version stamp, losing the
+  session's writes and locking the save out of every future load. `DB:New` now
+  refuses it loudly before anything touches disk.
+- **Commands: a wrong-typed `args` value is caught at `Register`.** A table or
+  boolean passed as `args` used to be accepted silently and then produce an
+  error in the player's chat when help rendered. It is now validated alongside
+  the other fields.
+- **Menu: the supported-client list now includes TBC Classic 2.5.x everywhere.**
+  The module's own notes disagreed with the documentation. Behavior is
+  unchanged; Menu already worked there.
+
+### Changed
+- The full test suite now runs automatically on every change to the repository,
+  including the AceDB compatibility checks.
+- The lint configuration file no longer ships in packaged copies, standalone or
+  embedded.
+
 ## [1.0.100] - 2026-06-30
 
 ### Fixed
