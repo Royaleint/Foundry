@@ -51,7 +51,7 @@ If your addon depends on a standalone Foundry install only, your TOC can use:
 If you ship one shared TOC across CurseForge and embedded-fallback builds, use:
 
 ```
-## OptionalDependencies: Foundry-1.0
+## OptionalDeps: Foundry-1.0
 ```
 
 In that shared-TOC shape, keep the hard CurseForge dependency in packager

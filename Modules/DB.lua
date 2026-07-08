@@ -631,6 +631,18 @@ function DB:New(config)
             refuse("DB:New: schema.key must be rooted at 'global' (got '"
                 .. schema.key .. "'); char/profile are keyed sections")
         end
+        -- The stamp needs a key BELOW the section root. A bare "global" passes
+        -- the root check but makes writeStamp overwrite sv.global -- the section
+        -- TABLE -- with the version NUMBER: this session's db.global writes
+        -- orphan into the detached section cache and vanish at logout, and the
+        -- §8.4 structural check then refuses the save on every later load --
+        -- the same permanent-lockout class the root restriction above exists
+        -- to prevent.
+        if #schemaPath < 2 then
+            refuse("DB:New: schema.key must name a key inside 'global' (got '"
+                .. schema.key .. "'); a bare section root would overwrite the "
+                .. "whole section with the version stamp")
+        end
         -- Step 0: the stamp must NOT be covered by declared defaults. A
         -- defaults-covered stamp evaporates from disk whenever it equals its
         -- default (the strip deletes it), so migrate(db, nil) would run every

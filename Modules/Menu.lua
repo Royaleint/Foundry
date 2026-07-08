@@ -12,9 +12,9 @@
 -- in-place destroy wrapper. MenuResponse is a Blizzard global; consumers access
 -- it directly at runtime. Foundry.Menu does not alias or re-export it.
 --
--- All flavors: MenuUtil is present on Retail 11.0+, Classic Era 1.15.x, and
--- Pandaria Classic 5.5.x (confirmed via ui-toc-list.txt manifests and active
--- consumer callsites). No fallback path exists or is needed.
+-- All flavors: MenuUtil is present on Retail 11.0+, Classic Era 1.15.x,
+-- Pandaria Classic 5.5.x, and TBC Classic 2.5.x (confirmed via ui-toc-list.txt
+-- manifests and active consumer callsites). No fallback path exists or is needed.
 
 local F = _G.Foundry_1_0
 if not F then
@@ -166,7 +166,7 @@ function Menu:New(config)
     if not hasMenuUtil() then
         F:RaiseDevError("Menu:New: MenuUtil is not available on this client; "
             .. "Foundry.Menu requires Blizzard_Menu (Retail 11.0+, Classic Era 1.15.x, "
-            .. "Pandaria Classic 5.5.x, or later)")
+            .. "TBC Classic 2.5.x, Pandaria Classic 5.5.x, or later)")
         return
     end
 

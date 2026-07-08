@@ -135,9 +135,9 @@ end)
 --------------------------------------------------------------------------------
 
 -- version-pins-library-and-module
-test("version-pins: F.API_VERSION == 5 and DB.API_VERSION == 1", function()
+test("version-pins: F.API_VERSION == 6 and DB.API_VERSION == 1", function()
     local F = T.fresh()
-    T.eq(F.API_VERSION, 5, "library API_VERSION is 5 (DB bumped 3 -> 4, List 4 -> 5)")
+    T.eq(F.API_VERSION, 6, "library API_VERSION is 6 (DB 3 -> 4, List 4 -> 5, Settings/RegisterBucket 5 -> 6)")
     T.eq(F.DB.API_VERSION, 1, "DB per-module marker == 1")
     -- Sibling markers unchanged.
     T.eq(F.Commands.API_VERSION, 1, "Commands marker unchanged")
@@ -980,6 +980,32 @@ test("schema-steps: a schema.key not rooted at 'global' is rejected", function()
         F.DB:New({ name = "TestAddon", sv = "TestDB", defaultProfile = true,
             schema = { version = 1, key = "realm.v", migrate = noop } })
     end, "bad root section", "schema.key must be rooted at 'global'")
+end)
+
+-- schema-validation-bare-root (FND-019): a single-segment key passes the root
+-- check but would make writeStamp overwrite sv.global (the section TABLE) with
+-- the version NUMBER -- silent data loss this session, then the §8.4 structural
+-- check refuses the save forever. Refused at :New, before any disk write.
+test("schema-steps: a bare 'global' schema.key (no sub-key) is rejected, SV untouched", function()
+    local F = freshLoaded()
+    -- (a) fresh save: refused, and no SV global is created.
+    _G.TestDB = nil
+    T.raises(function()
+        F.DB:New({ name = "TestAddon", sv = "TestDB", defaultProfile = true,
+            defaults = { profile = {} },
+            schema = { version = 4, key = "global", migrate = noop } })
+    end, "bare global root refused (fresh)", "schema.key must name a key inside 'global'")
+    T.eq(_G.TestDB, nil, "a rejected bare-root :New created no SV global")
+    -- (b) existing populated save: refused, and the global section table
+    -- survives byte-identical (the old failure replaced it with a number).
+    _G.TestDB = { profileKeys = {}, profiles = {},
+        global = { settings = { throttle = 5 } } }
+    T.raises(function()
+        F.DB:New({ name = "TestAddon", sv = "TestDB", defaultProfile = true,
+            schema = { version = 4, key = "global", migrate = noop } })
+    end, "bare global root refused (existing)", "schema.key must name a key inside 'global'")
+    T.eq(type(_G.TestDB.global), "table", "global section is still a table")
+    T.eq(_G.TestDB.global.settings.throttle, 5, "existing global data untouched")
 end)
 
 -- schema-validation-bad-migrate

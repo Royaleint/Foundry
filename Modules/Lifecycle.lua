@@ -124,6 +124,17 @@ local function ensureDispatcher()
     frame:RegisterEvent("PLAYER_LOGIN")
     frame:RegisterEvent("PLAYER_LOGOUT")
 
+    -- Late-creation catch-up (the login analogue of OnAddonLoaded's
+    -- C_AddOns.IsAddOnLoaded probe): if the FIRST controller of the whole
+    -- session is created after PLAYER_LOGIN (an all-Load-on-Demand consumer),
+    -- the one-shot event has already fired and will never reach this frame, so
+    -- loginFired would stay false and every OnLogin handler would be silently
+    -- dropped. IsLoggedIn() is authoritative for that state; seed the central
+    -- flag from it at the moment the dispatcher is born.
+    if type(IsLoggedIn) == "function" and IsLoggedIn() then
+        loginFired = true
+    end
+
     dispatcher = frame
 end
 

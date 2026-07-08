@@ -82,8 +82,8 @@ test("HasModule / RequireModule behavior for Lifecycle; additive version markers
     T.raises(function() F:RequireModule("Lifecycle", 99) end, "above-max API raises", "API version")
     -- Per-MODULE marker is 1 (matches Commands/Events precedent; does not change).
     T.eq(F.Lifecycle.API_VERSION, 1, "Lifecycle.API_VERSION == 1")
-    -- Library-wide version bumped ADDITIVELY 2 -> 3 when Lifecycle ships.
-    T.eq(F.API_VERSION, 5, "library API_VERSION == 5 (additive bump)")
+    -- Library-wide version only ever bumps ADDITIVELY (2 -> 3 when Lifecycle shipped).
+    T.eq(F.API_VERSION, 6, "library API_VERSION == 6 (additive bumps only)")
     -- Sibling modules still register and keep their own markers.
     T.truthy(F:HasModule("Events"), "Events still registered")
     T.truthy(F:HasModule("Commands"), "Commands still registered")
@@ -321,6 +321,36 @@ test("a controller registered after login catches up synchronously inside :New's
     -- A subsequent PLAYER_LOGIN must not double-fire the caught-up hook.
     T.Fire(dispatcherFrame(), "PLAYER_LOGIN")
     T.eq(fired, 1, "no second fire on a stray later PLAYER_LOGIN")
+end)
+
+-- catchup-login-late-dispatcher (FND-019): the dispatcher itself is created
+-- AFTER PLAYER_LOGIN already fired (an all-Load-on-Demand consumer is the
+-- session's first Lifecycle user). The one-shot event will never be delivered
+-- to the new frame, so the IsLoggedIn() probe at dispatcher creation must seed
+-- loginFired or every OnLogin handler is silently dropped.
+test("first :New after PLAYER_LOGIN still fires OnLogin (IsLoggedIn probe)", function()
+    local F = T.fresh()
+    T.loggedIn = true                 -- the session is already past PLAYER_LOGIN
+    local c = F.Lifecycle:New(nil, "LateLoD")
+    local fired = 0
+    c:OnLogin(function() fired = fired + 1 end)
+    T.eq(fired, 1, "OnLogin caught up although the event predates the dispatcher")
+    -- A stray later PLAYER_LOGIN must not double-fire the caught-up hook.
+    T.Fire(dispatcherFrame(), "PLAYER_LOGIN")
+    T.eq(fired, 1, "no second fire on a later PLAYER_LOGIN delivery")
+end)
+
+-- catchup-login-late-dispatcher-negative: with the session NOT past login
+-- (T.loggedIn = false, the harness default), dispatcher creation must NOT seed
+-- the flag -- OnLogin still waits for the real event.
+test("first :New before PLAYER_LOGIN does not spuriously catch up", function()
+    local F = T.fresh()
+    local c = F.Lifecycle:New(nil, "EarlyBoot")
+    local fired = 0
+    c:OnLogin(function() fired = fired + 1 end)
+    T.eq(fired, 0, "no catch-up while IsLoggedIn() is false")
+    T.Fire(dispatcherFrame(), "PLAYER_LOGIN")
+    T.eq(fired, 1, "fires normally on the real PLAYER_LOGIN")
 end)
 
 -- catchup-addonloaded-already

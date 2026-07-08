@@ -35,13 +35,24 @@ local function injectExisting(opts)
     return fake
 end
 
--- Load Foundry.lua against the already-injected winner. The loaded copy hardcodes
--- API_VERSION = 5; installMocks("@project-version@") makes the LOADED copy a dev
--- build, but the suppression branch is gated on the WINNER's IS_DEV_BUILD, so the
--- loaded copy's flag is irrelevant to whether the diagnostic fires.
+-- Load Foundry.lua against the already-injected winner. installMocks
+-- ("@project-version@") makes the LOADED copy a dev build, but the suppression
+-- branch is gated on the WINNER's IS_DEV_BUILD, so the loaded copy's flag is
+-- irrelevant to whether the diagnostic fires.
 local function loadBootstrap(tocVersion)
     T.installMocks(tocVersion or "@project-version@")
     return tocVersion
+end
+
+-- The loaded copy's API_VERSION, DERIVED by loading Foundry.lua once with no
+-- winner installed (the fresh copy wins and reports itself). Never hardcode it
+-- here: a hardcoded pin silently turned case (ii) below from a same-version
+-- embed into a skew when the library bumped 5 -> 6, leaving the same-version
+-- silence clause with no test covering it (FND-017).
+local function currentApiVersion()
+    T.installMocks("@project-version@")
+    T.loadModule("Foundry.lua")
+    return _G.Foundry_1_0.API_VERSION
 end
 
 local function containsAll(messages, ...)
@@ -56,23 +67,28 @@ local function containsAll(messages, ...)
     return true
 end
 
--- (i) dev winner + API_VERSION skew (winner 4 vs loaded 5) -> diagnostic FIRES,
--- naming both versions; the winner remains in place (suppression held).
+-- (i) dev winner + API_VERSION skew (winner one behind the loaded copy) ->
+-- diagnostic FIRES, naming both versions; the winner remains in place
+-- (suppression held).
 test("suppression: dev winner with API_VERSION skew fires and names both versions", function()
+    local current = currentApiVersion()
     loadBootstrap()
-    local fake = injectExisting({ IS_DEV_BUILD = true, API_VERSION = 4 })
+    local fake = injectExisting({ IS_DEV_BUILD = true, API_VERSION = current - 1 })
     T.loadModule("Foundry.lua")
     T.eq(_G.Foundry_1_0, fake, "the winning copy stays installed (later copy suppressed)")
     T.eq(#fake.captured, 1, "exactly one diagnostic fired")
-    local ok, missing = containsAll(fake.captured, "suppressed", "4", "5")
+    local ok, missing = containsAll(fake.captured, "suppressed",
+        tostring(current - 1), tostring(current))
     T.truthy(ok, "diagnostic names both API versions (missing: " .. tostring(missing) .. ")")
 end)
 
--- (ii) dev winner + SAME API_VERSION (winner 5 == loaded 5) -> SILENT. A
--- same-version multi-embed dev setup must not nag.
+-- (ii) dev winner + SAME API_VERSION (winner matches the loaded copy) -> SILENT.
+-- A same-version multi-embed dev setup must not nag. The winner's version is
+-- derived so this case keeps testing a genuine same-version embed across bumps.
 test("suppression: dev winner with same API_VERSION is silent", function()
+    local current = currentApiVersion()
     loadBootstrap()
-    local fake = injectExisting({ IS_DEV_BUILD = true, API_VERSION = 5 })
+    local fake = injectExisting({ IS_DEV_BUILD = true, API_VERSION = current })
     T.loadModule("Foundry.lua")
     T.eq(_G.Foundry_1_0, fake, "the winning copy stays installed")
     T.eq(#fake.captured, 0, "no diagnostic on a same-version embed")
@@ -82,18 +98,20 @@ end)
 -- DEV-ONLY noise tuning: a real production graft (live release standalone winning)
 -- never fires. Exercised with a skew so only the IS_DEV_BUILD gate can keep it quiet.
 test("suppression: release winner is silent even with an API_VERSION skew", function()
+    local current = currentApiVersion()
     loadBootstrap()
-    local fake = injectExisting({ IS_DEV_BUILD = false, API_VERSION = 4 })
+    local fake = injectExisting({ IS_DEV_BUILD = false, API_VERSION = current - 1 })
     T.loadModule("Foundry.lua")
     T.eq(_G.Foundry_1_0, fake, "the winning copy stays installed")
     T.eq(#fake.captured, 0, "release winner never fires -- not production graft protection")
 end)
 
 -- Red-without-change: case (ii) is the discriminator for the FND-007 #2 change,
--- NOT case (i). Case (i) fires with or without the third condition (4 ~= 5 is true
--- either way), so it cannot prove the change. Case (ii) can: with the third
--- condition (existing.API_VERSION ~= F.API_VERSION) deleted from Foundry.lua, the
--- same-version embed (5 == 5) fires a spurious diagnostic and this suite reports
+-- NOT case (i). Case (i) fires with or without the third condition (current-1 ~=
+-- current is true either way), so it cannot prove the change. Case (ii) can: with
+-- the third condition (existing.API_VERSION ~= F.API_VERSION) deleted from
+-- Foundry.lua, the same-version embed fires a spurious diagnostic and this suite
+-- reports
 --   "no diagnostic on a same-version embed: expected \"0\", got \"1\""
 -- (observed by temporarily striking that clause, then restored to green).
 

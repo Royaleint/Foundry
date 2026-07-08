@@ -51,6 +51,24 @@ test("Register name 'help' fails loudly in dev build", function()
         "reserved help", "reserved")
 end)
 
+-- register-args-type (FND-019): args is validated at Register like every other
+-- documented field; an unvalidated non-string used to defer the type error to
+-- PrintHelp's concatenation, in the player's chat at help-render time.
+test("Register: spec.args, when supplied, must be a string", function()
+    local F = T.fresh()
+    local c = F.Commands:New({ name = "ArgsType", slashes = { "/argstype" } })
+    T.raises(function()
+        c:Register({ name = "scan", handler = function() end, args = { "[full]" } })
+    end, "table args refused", "spec.args")
+    T.raises(function()
+        c:Register({ name = "scan", handler = function() end, args = true })
+    end, "boolean args refused", "spec.args")
+    -- The refused calls committed nothing: the same primary name registers
+    -- cleanly with a valid string args, and help renders without error.
+    c:Register({ name = "scan", handler = function() end, args = "[full]" })
+    c:Dispatch("help")
+end)
+
 -- 5
 test("New with a pre-existing SLASH_<NAME>N global fails loudly in dev build", function()
     local F = T.fresh()
@@ -322,7 +340,7 @@ test("bootstrap dev/release detection and the override global", function()
     T.installMocks("2.3.4"); local F2 = T.loadFoundry()
     T.falsy(F2.IS_DEV_BUILD, "real version -> release")
     T.eq(F2.VERSION, "2.3.4", "release version string")
-    T.eq(F2.API_VERSION, 5, "API_VERSION")
+    T.eq(F2.API_VERSION, 6, "API_VERSION")
     T.installMocks("2.3.4"); _G.FOUNDRY_DEV_BUILD_OVERRIDE = true; local F3 = T.loadFoundry()
     T.truthy(F3.IS_DEV_BUILD, "override forces dev even on a real version")
 end)
