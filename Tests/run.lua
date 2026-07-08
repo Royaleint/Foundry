@@ -78,6 +78,14 @@ function T.installMocks(tocVersion)
     -- default, so the normal (not-yet-loaded) path runs and a test opts a name in
     -- explicitly to exercise catch-up.
     T.loadedAddons = {}
+
+    -- Lifecycle's dispatcher-creation login catch-up probes IsLoggedIn().
+    -- T.loggedIn is the per-test session state; false by default, so the normal
+    -- (dispatcher created before PLAYER_LOGIN) path runs and a test opts in
+    -- explicitly to exercise the late-creation catch-up.
+    T.loggedIn = false
+    _G.IsLoggedIn = function() return T.loggedIn end
+
     _G.C_AddOns = {
         GetAddOnMetadata = function(_, key)
             if key == "Version" then return tocVersion end

@@ -16,6 +16,7 @@ read_globals = {
     "CreateFrame",
     "C_Timer",  -- Foundry.Events RegisterBucket schedules its flush via C_Timer.NewTimer.
     "C_AddOns",
+    "IsLoggedIn",  -- Foundry.Lifecycle seeds its login catch-up flag from this at dispatcher creation.
     "UnitName",
     "GetRealmName",
     -- Foundry.List bridges the modern ScrollBox system.

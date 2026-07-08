@@ -72,6 +72,14 @@ function Controller:Register(spec)
             .. "' requires a handler function")
         return
     end
+    -- args is a display hint PrintHelp concatenates into the help line; a
+    -- non-string stored here would defer the type error to help-render time,
+    -- in the player's chat, long after the bad Register call.
+    if spec.args ~= nil and type(spec.args) ~= "string" then
+        F:RaiseDevError("Commands:Register: spec.args, when supplied, must be a "
+            .. "string (got " .. type(spec.args) .. ")")
+        return
+    end
     if primary == "help" or primary:find("^help%s") then
         F:RaiseDevError("Commands:Register: subcommand name '" .. spec.name
             .. "' is reserved: 'help' and any 'help '-prefixed name route to "
