@@ -16,8 +16,7 @@ if not F then
         .. "to have loaded first; _G.Foundry_1_0 is missing.", 0)
 end
 -- Guarded-embedding stand-down (§2.2b): if this module is already registered on the
--- winning copy, this is a redundant embedded copy, so load nothing. Silent no-op on
--- the first load (not registered yet). Zero new surface on F (HasModule already exists).
+-- winning copy, this is a redundant embedded copy — load nothing.
 if F:HasModule("List") then return end
 
 local List = {}

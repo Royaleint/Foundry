@@ -12,8 +12,7 @@ if not F then
         .. "to have loaded first; _G.Foundry_1_0 is missing.", 0)
 end
 -- Guarded-embedding stand-down (§2.2b): if this module is already registered on the
--- winning copy, this is a redundant embedded copy — load nothing. Silent no-op on
--- the first load (not registered yet). Zero new surface on F (HasModule already exists).
+-- winning copy, this is a redundant embedded copy — load nothing.
 if F:HasModule("Settings") then return end
 
 local Settings = {}
@@ -198,15 +197,15 @@ function Settings:New(config)
     if hasModernSettings() then
         -- Modern path: feature-detected, no pcall (fail-loud per house style).
         if parent then
-            -- SF-3: on the modern path, the parent must also have been registered
-            -- via the modern path so that parent._category is a valid Blizzard
-            -- category object for RegisterCanvasLayoutSubcategory.
+            -- On the modern path, the parent must also have been registered via the
+            -- modern path so that parent._category is a valid Blizzard category
+            -- object for RegisterCanvasLayoutSubcategory.
             if parent._mode ~= "settings" then
                 F:RaiseDevError("Settings:New: config.parent was registered on the legacy path; "
                     .. "subcategory registration requires a modern-path parent")
                 return
             end
-            -- SF-5: guard against a structurally invalid parent (no category object).
+            -- Guard against a structurally invalid parent (no category object).
             if type(parent._category) ~= "table" then
                 F:RaiseDevError("Settings:New: config.parent has no valid category object")
                 return

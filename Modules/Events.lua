@@ -12,8 +12,7 @@ if not F then
         .. "to have loaded first; _G.Foundry_1_0 is missing.", 0)
 end
 -- Guarded-embedding stand-down (§2.2b): if this module is already registered on the
--- winning copy, this is a redundant embedded copy — load nothing. Silent no-op on
--- the first load (not registered yet). Zero new surface on F (HasModule already exists).
+-- winning copy, this is a redundant embedded copy — load nothing.
 if F:HasModule("Events") then return end
 
 local Events = {}
@@ -140,12 +139,10 @@ end
 -- (e.g. BAG_UPDATE_DELAYED). RegisterBucket gives that coalescing to any event
 -- that lacks a native _DELAYED twin.
 --
--- SCOPE BOUNDARY: this is a Blizzard-event-coalescing wrapper, NOT a general
--- scheduler. It collapses a burst of WoW EVENT fires into one handler call and
--- nothing more -- it is not combat-gating / defer-until-an-arbitrary-signal,
--- not debounce-by-arbitrary-key, not a repeating ticker, and not general
--- scheduling. Those are native via C_Timer or live outside this Blizzard-wrapper
--- lane. The feature is anchored strictly to Blizzard's own _DELAYED precedent.
+-- SCOPE BOUNDARY: a Blizzard-event-coalescing wrapper, NOT a general scheduler --
+-- it collapses a burst of WoW event fires into one handler call and nothing more
+-- (no combat-gating, debounce-by-key, or repeating ticker; those are C_Timer's).
+-- The feature is anchored strictly to Blizzard's own _DELAYED precedent.
 --
 -- A bucket is HANDLE-based, not event-keyed: a multi-event bucket cannot be
 -- keyed by a single event name, so RegisterBucket returns a handle object and
