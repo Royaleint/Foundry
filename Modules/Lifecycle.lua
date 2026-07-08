@@ -19,8 +19,7 @@ if not F then
         .. "to have loaded first; _G.Foundry_1_0 is missing.", 0)
 end
 -- Guarded-embedding stand-down (§2.2b): if this module is already registered on the
--- winning copy, this is a redundant embedded copy — load nothing. Silent no-op on
--- the first load (not registered yet). Zero new surface on F (HasModule already exists).
+-- winning copy, this is a redundant embedded copy — load nothing.
 if F:HasModule("Lifecycle") then return end
 
 local Lifecycle = {}
@@ -138,8 +137,8 @@ local function ensureDispatcher()
     dispatcher = frame
 end
 
--- Private post-logout-fan-out registration seam (Cycle-3 deliverable; spec §6.4,
--- plan R2). Internal surface only -- the dot-call underscore name keeps it off
+-- Private post-logout-fan-out registration seam (spec §6.4). Internal surface
+-- only -- the dot-call underscore name keeps it off
 -- the public controller API, so Lifecycle.API_VERSION stays 1 (the _TestFire
 -- precedent). Foundry.DB registers its logout strip here exactly once, at its
 -- first :New. It calls ensureDispatcher() itself so the dispatcher and its

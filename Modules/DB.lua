@@ -17,8 +17,7 @@ if not F then
         .. "to have loaded first; _G.Foundry_1_0 is missing.", 0)
 end
 -- Guarded-embedding stand-down (§2.2b): if this module is already registered on the
--- winning copy, this is a redundant embedded copy — load nothing. Silent no-op on
--- the first load (not registered yet). Zero new surface on F (HasModule already exists).
+-- winning copy, this is a redundant embedded copy — load nothing.
 if F:HasModule("DB") then return end
 
 -- Graft-guard (FND-007 #1). The bootstrap gate above protects against a redundant
@@ -359,10 +358,8 @@ local function materialize(store, section)
     return tbl
 end
 
--- Each controller's store is reached through the file-local `controllerStore`
--- side table (declared up top), keyed by the controller, never as a controller
--- field. A present underscore field would defeat the __newindex underscore guard
--- (Defect 2), so the controller is kept with no present keys at all.
+-- Each controller's store lives in the file-local `controllerStore` side table
+-- (declared up top), keyed by the controller and never as a controller field.
 
 local Controller = {}
 
@@ -373,12 +370,12 @@ local Controller = {}
 
 function Controller.OnReady(self, handler)
     local store = controllerStore[self]
-    -- Non-controller value (Rev 4 hostile finding F4): a method extracted and
-    -- invoked on a forged/foreign table (`local m = db.OnReady; m({})`) has no
-    -- store mapping. Refuse with a NAMED message (raise both builds) rather than
-    -- dying with the anonymous nil-index the named-message contract exists to
-    -- eliminate. Distinct from the destroyed-controller path below (row 6): a
-    -- destroyed controller still HAS a store, just flagged destroyed.
+    -- Non-controller value: a method extracted and invoked on a forged/foreign
+    -- table (`local m = db.OnReady; m({})`) has no store mapping. Refuse with a
+    -- NAMED message (raise both builds) rather than dying with the anonymous
+    -- nil-index the named-message contract exists to eliminate. Distinct from the
+    -- destroyed-controller path below (row 6): a destroyed controller still HAS a
+    -- store, just flagged destroyed.
     if store == nil then
         refuse("DB:OnReady called on a non-controller value")
     end
@@ -397,7 +394,7 @@ end
 
 function Controller.GetNativeHandles(self)
     local store = controllerStore[self]
-    -- Non-controller value (Rev 4 hostile finding F4): see Controller.OnReady.
+    -- Non-controller value: see Controller.OnReady.
     if store == nil then
         refuse("DB:GetNativeHandles called on a non-controller value")
     end
@@ -420,7 +417,7 @@ end
 
 function Controller.Destroy(self)
     local store = controllerStore[self]
-    -- Non-controller value (Rev 4 hostile finding F4): see Controller.OnReady.
+    -- Non-controller value: see Controller.OnReady.
     if store == nil then
         refuse("DB:Destroy called on a non-controller value")
     end
@@ -618,15 +615,14 @@ function DB:New(config)
         end
         schemaPath = splitPath(schema.key)
         local rootSection = schemaPath[1]
-        -- Step 0 (root restriction, Rev 4 hostile finding F1): the stamp must be
-        -- rooted EXACTLY at `global`. `char` and `profile` are keyed-MAP sections
-        -- (sv.char maps charKeys to buckets), so a flat path like
-        -- "char.schemaVersion" writes a scalar SIBLING of the per-character buckets
-        -- inside the keyed map; the §8.4 structural check then rejects that scalar
-        -- on every later load and construction refuses forever -- a permanent
-        -- lockout from the user's own save (probe-confirmed). A keyed-section stamp
-        -- has no coherent flat-path semantics, and both committed consumers stamp
-        -- `global`, so the only legal root is `global`.
+        -- Step 0 (root restriction): the stamp must be rooted EXACTLY at `global`.
+        -- `char` and `profile` are keyed-MAP sections (sv.char maps charKeys to
+        -- buckets), so a flat path like "char.schemaVersion" writes a scalar SIBLING
+        -- of the per-character buckets inside the keyed map; the §8.4 structural
+        -- check then rejects that scalar on every later load and construction
+        -- refuses forever -- a permanent lockout from the user's own save. A
+        -- keyed-section stamp has no coherent flat-path semantics, and both
+        -- committed consumers stamp `global`, so the only legal root is `global`.
         if rootSection ~= SECTION_GLOBAL then
             refuse("DB:New: schema.key must be rooted at 'global' (got '"
                 .. schema.key .. "'); char/profile are keyed sections")
@@ -827,8 +823,8 @@ function DB:New(config)
             -- The consumer's nil path must be an idempotent repair: storedVersion
             -- is nil for a populated-but-unversioned save.
             --
-            -- F3 (Rev 4 hostile finding): a PRESENT-but-non-number stamp fires a
-            -- loud dev diagnostic BEFORE proceeding. Such a value bypasses §8.3's
+            -- A PRESENT-but-non-number stamp fires a loud dev diagnostic BEFORE
+            -- proceeding. Such a value bypasses §8.3's
             -- downgrade check by type (the check only fires for a numeric stamp),
             -- so the otherwise-silent overwrite path gets dev visibility. Dev
             -- build: RaiseDevError raises, the author sees the corrupt stamp
