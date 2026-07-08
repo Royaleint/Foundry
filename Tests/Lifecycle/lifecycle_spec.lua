@@ -82,8 +82,8 @@ test("HasModule / RequireModule behavior for Lifecycle; additive version markers
     T.raises(function() F:RequireModule("Lifecycle", 99) end, "above-max API raises", "API version")
     -- Per-MODULE marker is 1 (matches Commands/Events precedent; does not change).
     T.eq(F.Lifecycle.API_VERSION, 1, "Lifecycle.API_VERSION == 1")
-    -- Library-wide version bumped ADDITIVELY 2 -> 3 when Lifecycle ships.
-    T.eq(F.API_VERSION, 5, "library API_VERSION == 5 (additive bump)")
+    -- Library-wide version only ever bumps ADDITIVELY (2 -> 3 when Lifecycle shipped).
+    T.eq(F.API_VERSION, 6, "library API_VERSION == 6 (additive bumps only)")
     -- Sibling modules still register and keep their own markers.
     T.truthy(F:HasModule("Events"), "Events still registered")
     T.truthy(F:HasModule("Commands"), "Commands still registered")
