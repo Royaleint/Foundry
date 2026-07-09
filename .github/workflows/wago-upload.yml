@@ -1,0 +1,55 @@
+name: Wago Upload (manual)
+
+# Recovery tool: re-run ONLY the Wago upload for an already-released tag.
+# Exists because release.yml is a single job — "re-run failed jobs" would also
+# re-run the CurseForge upload, and CF accepts duplicate files for the same
+# version (the FND-015 failure mode). Dispatch this on the tag ref instead.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  wago:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Refuse non-tag refs
+        run: |
+          case "${GITHUB_REF}" in
+            refs/tags/v*) echo "Dispatched on tag ${GITHUB_REF_NAME}" ;;
+            *) echo "::error::Dispatch this workflow on a v* tag ref (chose: ${GITHUB_REF})."; exit 1 ;;
+          esac
+
+      # Same extraction as release.yml so the packaged changelog matches what
+      # CurseForge got for this version.
+      - name: Extract and convert current version changelog
+        run: |
+          awk '/^## \[[0-9]/{if(found) exit; found=1} found' CHANGELOG.md > RELEASE_NOTES.md
+          if [ ! -s RELEASE_NOTES.md ]; then
+            echo "::error::RELEASE_NOTES.md is empty after extraction."
+            exit 1
+          fi
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if ! head -1 RELEASE_NOTES.md | grep -q "\[${TAG_VERSION}\]"; then
+            echo "::error::Extracted notes don't match ${GITHUB_REF_NAME}; is the CHANGELOG entry missing?"
+            exit 1
+          fi
+          if ! command -v pandoc &>/dev/null; then
+            sudo apt-get update -qq && sudo apt-get install -y pandoc
+          fi
+          pandoc --wrap=none -f commonmark -t html RELEASE_NOTES.md -o RELEASE_NOTES.html
+
+      - name: Package and Release — Wago only
+        uses: BigWigsMods/packager@v2
+        with:
+          args: -p 0
+        env:
+          WAGO_API_TOKEN: ${{ secrets.WAGO_API_TOKEN }}
