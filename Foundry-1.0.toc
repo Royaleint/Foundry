@@ -7,7 +7,7 @@
 ## Category: Libraries
 ## X-Category: Library
 ## X-Curse-Project-ID: 1558554
-## X-Wago-ID: O67DVyK3
+## X-Wago-ID: RNLkL8Go
 ## DefaultState: enabled
 ## LoadOnDemand: 0
 ## SavedVariables:
