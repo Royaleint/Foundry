@@ -3,10 +3,16 @@ name: Wago Upload (manual)
 # Recovery tool: re-run ONLY the Wago upload for an already-released tag.
 # Exists because release.yml is a single job — "re-run failed jobs" would also
 # re-run the CurseForge upload, and CF accepts duplicate files for the same
-# version (the FND-015 failure mode). Dispatch this on the tag ref instead.
+# version (the FND-015 failure mode). Dispatch from main with the tag as input
+# (dispatching on the tag ref itself only works if the tag contains this file).
 
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing v* tag to re-publish to Wago (e.g. v1.0.101)'
+        required: true
+        type: string
 
 concurrency:
   group: release
@@ -16,17 +22,23 @@ jobs:
   wago:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout the requested tag
         uses: actions/checkout@v5
         with:
+          ref: ${{ inputs.tag }}
           fetch-depth: 0
 
-      - name: Refuse non-tag refs
+      - name: Validate the tag
         run: |
-          case "${GITHUB_REF}" in
-            refs/tags/v*) echo "Dispatched on tag ${GITHUB_REF_NAME}" ;;
-            *) echo "::error::Dispatch this workflow on a v* tag ref (chose: ${GITHUB_REF})."; exit 1 ;;
+          TAG="${{ inputs.tag }}"
+          case "$TAG" in
+            v*) ;;
+            *) echo "::error::'$TAG' is not a v* tag."; exit 1 ;;
           esac
+          if [ "$(git describe --tags --exact-match 2>/dev/null)" != "$TAG" ]; then
+            echo "::error::Checked-out commit is not exactly tag $TAG."
+            exit 1
+          fi
 
       # Same extraction as release.yml so the packaged changelog matches what
       # CurseForge got for this version.
@@ -37,9 +49,10 @@ jobs:
             echo "::error::RELEASE_NOTES.md is empty after extraction."
             exit 1
           fi
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          TAG_VERSION="${{ inputs.tag }}"
+          TAG_VERSION="${TAG_VERSION#v}"
           if ! head -1 RELEASE_NOTES.md | grep -q "\[${TAG_VERSION}\]"; then
-            echo "::error::Extracted notes don't match ${GITHUB_REF_NAME}; is the CHANGELOG entry missing?"
+            echo "::error::Extracted notes don't match ${{ inputs.tag }}; is the CHANGELOG entry missing?"
             exit 1
           fi
           if ! command -v pandoc &>/dev/null; then
