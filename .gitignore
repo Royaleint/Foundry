@@ -7,6 +7,9 @@ Thumbs.db
 # Packager output
 .release/
 
+# Generated dev-build TOC (STU-074) — never commit, never ship.
+Foundry-1.0_DevBuild.toc
+
 # Git worktrees (studio standard: feature branches live in .worktrees/)
 .worktrees/
 

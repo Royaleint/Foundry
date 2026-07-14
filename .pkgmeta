@@ -29,6 +29,7 @@ manual-changelog:
 ignore:
   - .github
   - .gitignore
+  - Foundry-1.0_DevBuild.toc
   - .gitattributes
   - .luacheckrc
   - .pkgmeta
