@@ -1,0 +1,33 @@
+{
+  "project": "Foundry",
+  "ticket_prefix": "FND",
+  "release_branch": "main",
+  "clean_roots": [".", "Foundry_Dev"],
+  "gate2": {
+    "mode": "automated",
+    "source": "completed",
+    "source_path": "Foundry_Dev/Found_Completed.md",
+    "field": "Completed",
+    "marker_pattern": "Gate 2 (in-game )?PASS"
+  },
+  "version_categories": [
+    { "pattern": "Breaking", "category": "major" },
+    { "pattern": "^Feature", "category": "minor" },
+    { "pattern": "^Bug", "category": "patch" },
+    { "pattern": "^Data", "category": "patch" },
+    { "pattern": "^Chore", "category": "patch" },
+    { "pattern": "^Refactor", "category": "patch" },
+    { "pattern": "^Maintenance", "category": "patch" },
+    { "pattern": "^Infrastructure", "category": "patch" },
+    { "pattern": "^Docs", "category": "patch" }
+  ],
+  "tag_type": "annotated",
+  "luacheck": "luacheck . --config .luacheckrc",
+  "version_bump_files": [],
+  "changelog": {
+    "public": "CHANGELOG.md",
+    "confidentiality_mode": "none"
+  },
+  "publication_targets": ["CurseForge", "Wago", "GitHub"],
+  "commit_trailer": "By BawrLabs"
+}
