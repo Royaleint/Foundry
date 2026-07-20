@@ -26,7 +26,8 @@
   "version_bump_files": [],
   "changelog": {
     "public": "CHANGELOG.md",
-    "confidentiality_mode": "none"
+    "confidentiality_mode": "none",
+    "manual_changelog_generated": true
   },
   "publication_targets": ["CurseForge", "Wago", "GitHub"],
   "commit_trailer": "By BawrLabs"
