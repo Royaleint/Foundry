@@ -362,12 +362,18 @@ local function materialize(store, section)
         sectionDefaults = defaults and defaults.char
     end
 
+    -- Flag and cache BEFORE applying defaults (FND-035): applyDefaults can
+    -- raise mid-walk via onMismatch (dev builds), and an unflagged section
+    -- whose defaults were already partially written would be skipped by the
+    -- logout strip -- freezing fresh defaults onto disk as phantom user data,
+    -- the exact trap the strip exists to prevent.
+    cache[section] = tbl
+    store.materialized[section] = true
+
     if type(sectionDefaults) == "table" then
         applyDefaults(tbl, sectionDefaults, store.onMismatch, section .. ".")
     end
 
-    cache[section] = tbl
-    store.materialized[section] = true
     return tbl
 end
 
@@ -798,7 +804,7 @@ function DB:New(config)
         charKey = charKey,
         profileKey = profileKey,
         sections = {},        -- section name -> live table (the cache)
-        materialized = {},    -- section name -> true once read
+        materialized = {},    -- section name -> true once a read begins (strip-owned; FND-035)
         destroyed = false,
     }
     -- A loud dev diagnostic for each value-level type mismatch (D2 preserve-skip).

@@ -738,6 +738,30 @@ test("malformed: value-level type-mismatch-under-table-default is preserve-and-s
     T.raises(function() local _ = db.global end, "dev mismatch diagnostic", "conflicts with its table-typed default")
 end)
 
+-- malformed-mismatch-flags-section-before-defaults (FND-035)
+test("malformed: a dev mismatch raise mid-materialize still flags the section for the strip", function()
+    -- The dev-build onMismatch raise aborts materialize mid-applyDefaults. The
+    -- section MUST already be flagged materialized by then: defaults written
+    -- before the raise would otherwise be skipped by the logout strip and
+    -- freeze onto disk as phantom user data. The flag assertion is
+    -- deterministic; the post-logout check is belt-and-braces (pairs order
+    -- decides how many defaults were written before the raise, but under the
+    -- fix all written ones strip either way).
+    local F = freshLoaded()
+    _G.TestDB = { profileKeys = { [CHARKEY] = "Default" }, global = { sub = 5 } }
+    local db = newHS(F, { defaults = { global = { good = 1, sub = { inner = 1 } } } })
+    T.raises(function() local _ = db.global end, "dev mismatch diagnostic",
+        "conflicts with its table-typed default")
+    local h = db:GetNativeHandles()
+    T.truthy(h.materialized.global,
+        "global is flagged materialized despite the mid-apply raise")
+    fireLogout()
+    T.eq(_G.TestDB.global and _G.TestDB.global.good, nil,
+        "a default written before the raise does not freeze onto disk")
+    T.eq(_G.TestDB.global and _G.TestDB.global.sub, 5,
+        "the preserved mismatched scalar survives the strip")
+end)
+
 -- malformed-value-type-mismatch-preserve-release
 test("malformed: value-level type-mismatch preserves the stored scalar (release, no raise)", function()
     local F = freshLoaded("1.0.0")
