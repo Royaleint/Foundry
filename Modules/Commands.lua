@@ -38,10 +38,9 @@ function Controller:_print(line)
     end
 end
 
--- Register a subcommand. Validation is atomic: the primary name and every alias
--- are validated into a temporary set before any mutation, so a bad alias leaves
--- the controller unchanged rather than half-registered: Foundry prefers a
--- refused operation over a half-applied one.
+-- Register a subcommand. Validation is atomic: the primary name and every
+-- alias are validated into a temporary set before any mutation, so a bad
+-- alias leaves the controller unchanged rather than half-registered.
 function Controller:Register(spec)
     if self._destroyed then
         F:RaiseDevError("Commands:Register called on a destroyed controller")

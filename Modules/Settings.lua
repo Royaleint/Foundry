@@ -145,21 +145,18 @@ function Settings:New(config)
         return
     end
 
-    -- 1. Validate title.
     local title = config.title
     if type(title) ~= "string" or title == "" then
         F:RaiseDevError("Settings:New: config.title must be a non-empty string")
         return
     end
 
-    -- 2. Validate frame (must be a real WoW frame: a table with GetObjectType).
     local frame = config.frame
     if type(frame) ~= "table" or type(frame.GetObjectType) ~= "function" then
         F:RaiseDevError("Settings:New: config.frame must be a WoW frame (table with GetObjectType)")
         return
     end
 
-    -- 3. Validate parent: nil or a live (non-destroyed) Foundry.Settings controller.
     local parent = config.parent
     if parent ~= nil then
         if type(parent) ~= "table"
@@ -171,7 +168,6 @@ function Settings:New(config)
         end
     end
 
-    -- 4. Resolve name (duplicate-refusal key); validate if explicitly supplied.
     local name = config.name
     if name ~= nil then
         if type(name) ~= "string" or name == "" then
@@ -182,14 +178,12 @@ function Settings:New(config)
         name = title
     end
 
-    -- 5. Duplicate-key check.
     if liveKeys[name] then
         F:RaiseDevError("Settings:New: a live controller already owns the name '"
             .. name .. "'; :Destroy() it before re-registering")
         return
     end
 
-    -- 6. Path selection and registration.
     local category
     local layout
     local mode
@@ -233,7 +227,6 @@ function Settings:New(config)
         return
     end
 
-    -- 7. Construct controller.
     local c = setmetatable({}, Controller)
     c._category            = category
     c._layout              = layout
@@ -243,7 +236,6 @@ function Settings:New(config)
     c._destroyed           = false
     c._isSettingsController = true
 
-    -- 8. Register the key in the live-key registry.
     liveKeys[name] = true
 
     return c

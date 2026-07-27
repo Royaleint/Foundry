@@ -20,24 +20,19 @@ end
 -- winning copy, this is a redundant embedded copy — load nothing.
 if F:HasModule("DB") then return end
 
--- Graft-guard (FND-007 #1). The bootstrap gate above protects against a redundant
--- copy of THE SAME core, but not against this cross-version graft: TOC load order
--- is Foundry -> Commands -> Events -> Lifecycle -> DB -> List, so when a consumer
--- embeds a NEWER Foundry but an OLDER standalone already won _G.Foundry_1_0, this
--- newer DB.lua runs against the OLD winning core. That old core has no DB module,
--- so HasModule("DB") is false and we fall through -- about to graft a new DB onto a
--- core whose Lifecycle predates the post-logout seam DB:New consumes
--- (F.Lifecycle._RegisterPostLogout, ~line 795). Grafting would defer the failure to
--- a cryptic "_RegisterPostLogout (a nil value)" deep in :New, far from the cause.
+-- Graft-guard (FND-007 #1). The bootstrap gate above protects against a
+-- redundant copy of THE SAME core, but not this cross-version graft: TOC load
+-- order is Foundry -> Commands -> Events -> Lifecycle -> DB -> List, so a
+-- consumer embedding a NEWER Foundry when an OLDER standalone already won
+-- _G.Foundry_1_0 runs this newer DB.lua against the OLD core, which has no DB
+-- module and no post-logout seam. Grafting would defer the failure to a
+-- cryptic "_RegisterPostLogout (a nil value)" deep in :New.
 --
--- So feature-detect the EXACT seam DB needs and stand down if it is absent. We
--- detect the function itself, not an API_VERSION number, so the check cannot drift
--- as versions bump and it tolerates a core that carries no Lifecycle at all. Standing
--- down (not registering) is deliberate: the consumer is broken either way against an
--- old core, but a clear load-time error plus an absent F.DB (a clean RequireModule
--- "not present") beats a cryptic deep crash mid-session. This guard is provably inert
--- on the normal load: Lifecycle always loads before DB, so the winning copy's seam
--- always exists and we never reach the stand-down.
+-- Feature-detect the exact seam DB needs (the function itself, not an
+-- API_VERSION number, so the check can't drift and tolerates a core with no
+-- Lifecycle at all) and stand down if absent: a clear load-time error plus an
+-- absent F.DB beats a cryptic deep crash mid-session. Provably inert on the
+-- normal load, since Lifecycle always loads before DB.
 if type(F.Lifecycle) ~= "table"
     or type(F.Lifecycle._RegisterPostLogout) ~= "function" then
     F:RaiseDevError("DB requires Lifecycle's post-logout seam "
@@ -60,17 +55,15 @@ DB.API_VERSION = 1
 -- rejection. A Destroyed controller releases its slot so a later :New may reuse it.
 local liveControllers = {}
 
--- Controller -> store association, held OFF the controller in a file-local side
--- table (Defect 2). The store must NOT live at a present controller field such as
--- `c._store`: Lua 5.1 __newindex fires only on ABSENT keys, so a present `_store`
--- lets `db._store = x` raw-overwrite the live store pointer and the underscore
--- write-guard never fires. Keyed off the side table, the controller carries ZERO
--- present fields, so __index/__newindex see EVERY access and the guards stay
--- enforceable for the controller's whole life. GC is a non-issue: every store is
--- already retained for the session in the file-local `stores` registry (it backs
--- the logout strip and never leaves it), so the controller key here is reachable
--- exactly as long as the session lives -- a weak table would buy nothing and a
--- plain table introduces no new leak.
+-- Controller -> store association, held OFF the controller in a file-local
+-- side table (Defect 2). The store must NOT live at a present controller
+-- field like `c._store`: Lua 5.1 __newindex fires only on ABSENT keys, so a
+-- present `_store` lets `db._store = x` raw-overwrite the live store pointer
+-- and the underscore write-guard never fires. Keyed off the side table, the
+-- controller carries ZERO present fields, so __index/__newindex see EVERY
+-- access and the guards stay enforceable for its whole life. GC is a
+-- non-issue: every store is already retained for the session in `stores`
+-- (it backs the logout strip), so a weak table would buy nothing here.
 local controllerStore = {}
 
 -- EVERY store constructed this session, in construction order. A "store" is a
@@ -120,16 +113,15 @@ local RESERVED = {
 
 local REFERENCE_TAIL = "; see the DB Reference page"
 
--- Direct both-builds refusal (locked decision D3, Charter §3.4.1 clarification).
--- For every condition with NO checked-return refusal path -- the :New validation
--- refusals, the §5 unsupported-surface deny-list, destroyed-controller SECTION
--- reads, and the consumer-migrate-raised surfacing -- the raise IS the release
--- refusal: the same clear, named error fires identically in dev and release.
--- F:RaiseDevError (dev raise / release print+nil) is reserved for the one class
--- whose release contract is print+return nil: destroyed-controller METHOD calls
--- (§7 row 6). Level 3 points the error at the consumer's call site: level 1 is
--- refuse itself, level 2 is the calling :New body / __index / __newindex
--- metamethod, level 3 is the consumer line that triggered it.
+-- Direct both-builds refusal (locked decision D3, Charter §3.4.1). For every
+-- condition with NO checked-return refusal path -- :New validation, the §5
+-- deny-list, destroyed-controller SECTION reads, and migrate-raised surfacing
+-- -- the raise IS the release refusal: the same named error fires identically
+-- in dev and release. F:RaiseDevError (dev raise / release print+nil) is
+-- reserved for the one class whose release contract is print+return nil:
+-- destroyed-controller METHOD calls (§7 row 6). Level 3 points at the
+-- consumer's call site (1 = refuse itself, 2 = the calling :New/__index/
+-- __newindex, 3 = the consumer line that triggered it).
 local function refuse(msg)
     error("Foundry-1.0: " .. tostring(msg), 3)
 end
@@ -295,21 +287,19 @@ end
 -- error VALUE's truthiness -- the §3.4.1 falsy-error rule). A store registering
 -- a new store mid-strip (via re-:New) is intentionally not in this snapshot.
 --
--- Newest-store-per-sv rule (FND-030): only the LAST-constructed store for each
--- sv TABLE strips. A Destroyed store whose sv was re-:New'd with CHANGED
--- defaults must not strip: its stale defaults would delete any stored value
--- the user deliberately set that happens to equal an OLD default -- silent
--- save-data deletion, the failure the module header rules out. The newer
--- store's defaults are authoritative for that sv. The trade (spec §2.2
--- re-decided): a stale old-default value the user never touched now freezes
--- as ordinary data instead of being stripped -- wrong-but-safe, and
--- indistinguishable from a deliberate choice anyway. The same exclusion
--- applies with IDENTICAL defaults when only materialization differs: a
--- section only the stale store materialized freezes its default-equal values
--- this logout (they match current defaults and strip on any later logout
--- that materializes the section). A Destroyed store with NO successor still
--- strips exactly as before (skipping it would freeze its own materialized
--- defaults -- the phantom-deviation trap).
+-- Newest-store-per-sv rule (FND-030): only the LAST-constructed store for
+-- each sv TABLE strips. A Destroyed store whose sv was re-:New'd with
+-- CHANGED defaults must not strip: its stale defaults could delete a stored
+-- value the user deliberately set that happens to equal an OLD default --
+-- silent save-data deletion, the failure this module rules out. The newer
+-- store's defaults are authoritative for that sv; the trade (spec §2.2
+-- re-decided) is that a stale old-default value the user never touched now
+-- freezes as ordinary data instead of being stripped -- wrong-but-safe, and
+-- indistinguishable from a deliberate choice. The same exclusion applies with
+-- IDENTICAL defaults when only materialization differs (the frozen section
+-- strips on a later logout that materializes it there too). A Destroyed
+-- store with NO successor still strips as before (skipping it would freeze
+-- its own materialized defaults -- the phantom-deviation trap).
 local function onLogout()
     local newest = {}
     for i = 1, #stores do newest[stores[i].sv] = stores[i] end
@@ -448,14 +438,12 @@ function Controller.Destroy(self)
         F:RaiseDevError("DB:Destroy called on a destroyed controller")
         return
     end
-    -- Release the controller surface and free the sv slot for a later :New. Never
-    -- deletes or mutates saved data; the consumer's section references stay valid
-    -- as fully-merged plain tables. The store's END-OF-SESSION strip duty SURVIVES
-    -- this -- the store stays in `stores` and the logout strip still runs over it
-    -- via the captured refs -- UNLESS a later :New covers the same sv, in which
-    -- case the newest store strips instead (FND-030; see onLogout): a stale
-    -- store's changed-out defaults deleting user data outranks the
-    -- phantom-deviation trap (spec §2.2).
+    -- Release the controller surface and free the sv slot for a later :New.
+    -- Never deletes or mutates saved data; the consumer's section references
+    -- stay valid as fully-merged plain tables. The store's end-of-session
+    -- strip duty SURVIVES this -- it stays in `stores` and still strips at
+    -- logout -- UNLESS a later :New covers the same sv, in which case the
+    -- newest store strips instead (FND-030; see onLogout).
     store.destroyed = true
     if liveControllers[store.svName] == self then
         liveControllers[store.svName] = nil
@@ -843,20 +831,16 @@ function DB:New(config)
             materialize(store, section)  -- ensure the rooted section is live
             writeStamp(sv, schemaPath, schema.version)
         elseif not (type(storedVersion) == "number" and storedVersion == schema.version) then
-            -- Stored < declared, or nothing / a non-number: call migrate. (Stored
-            -- == declared is a no-op, handled by skipping this branch entirely.)
-            -- The consumer's nil path must be an idempotent repair: storedVersion
-            -- is nil for a populated-but-unversioned save.
+            -- Stored < declared, or nothing / a non-number: call migrate (stored
+            -- == declared is a no-op, handled by skipping this branch). The
+            -- consumer's nil path must be an idempotent repair: storedVersion is
+            -- nil for a populated-but-unversioned save.
             --
-            -- A PRESENT-but-non-number stamp fires a loud dev diagnostic BEFORE
-            -- proceeding. Such a value bypasses §8.3's
-            -- downgrade check by type (the check only fires for a numeric stamp),
-            -- so the otherwise-silent overwrite path gets dev visibility. Dev
-            -- build: RaiseDevError raises, the author sees the corrupt stamp
-            -- immediately. Release build: it prints and the existing nil-path
-            -- migrate/repair proceeds unchanged (storedVersion is non-number, so
-            -- mv is nil below either way). This matches the D2 onMismatch transport
-            -- precedent already in this file.
+            -- A PRESENT-but-non-number stamp bypasses §8.3's downgrade check (it
+            -- only fires for a numeric stamp), so fire a loud dev diagnostic
+            -- before proceeding: dev raises immediately; release prints and the
+            -- nil-path migrate/repair proceeds unchanged (mv is nil either way;
+            -- D2 onMismatch transport precedent).
             if storedVersion ~= nil and type(storedVersion) ~= "number" then
                 F:RaiseDevError("DB:New: schema stamp at '" .. schema.key
                     .. "' is present but not a number (got a " .. type(storedVersion)

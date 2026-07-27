@@ -129,20 +129,17 @@ end
 --                         "F.Menu.anon.N" (N = module-level counter, never reused).
 --                         Two live controllers with the same name are refused.
 function Menu:New(config)
-    -- 1. config is a table.
     if type(config) ~= "table" then
         F:RaiseDevError("Menu:New: config must be a table")
         return
     end
 
-    -- 2. config.builder is a function.
     local builder = config.builder
     if type(builder) ~= "function" then
         F:RaiseDevError("Menu:New: config.builder must be a function")
         return
     end
 
-    -- 3. Resolve name (duplicate-refusal key); validate if explicitly supplied.
     local name = config.name
     if name ~= nil then
         if type(name) ~= "string" or name == "" then
@@ -154,15 +151,14 @@ function Menu:New(config)
         name = "F.Menu.anon." .. anonCounter
     end
 
-    -- 4. Duplicate-key check.
     if liveKeys[name] then
         F:RaiseDevError("Menu:New: a live controller already owns the name '"
             .. name .. "'; :Destroy() it before re-registering")
         return
     end
 
-    -- 5. Feature-detect MenuUtil (runs last per house style: a consumer with a
-    --    typo in builder sees the builder error, not a misleading "MenuUtil absent").
+    -- Feature-detect MenuUtil last (house style): a consumer with a typo in
+    -- builder sees the builder error, not a misleading "MenuUtil absent".
     if not hasMenuUtil() then
         F:RaiseDevError("Menu:New: MenuUtil is not available on this client; "
             .. "Foundry.Menu requires Blizzard_Menu (Retail 11.0+, Classic Era 1.15.x, "
@@ -170,25 +166,22 @@ function Menu:New(config)
         return
     end
 
-    -- 6. Build controller c. The generatorWrapper closure captures c by upvalue so
-    --    :Destroy() (which sets c._destroyed) silences all future deliveries without
-    --    any public unregister call — identical to Tooltip's in-place disable pattern.
+    -- generatorWrapper captures c by upvalue so :Destroy() (which sets
+    -- c._destroyed) silences all future deliveries with no unregister call --
+    -- identical to Tooltip's in-place disable pattern.
     local c = setmetatable({}, Controller)
     c._name      = name
     c._builder   = builder
     c._destroyed = false
 
-    -- 7. Build generatorWrapper closure capturing c.
     local function generatorWrapper(owner, rootDescription, ...)
         if c._destroyed then return end
         c._builder(owner, rootDescription, ...)
     end
     c._generatorWrapper = generatorWrapper
 
-    -- 8. Register the key in the live-key registry.
     liveKeys[name] = true
 
-    -- 9. Return the controller.
     return c
 end
 

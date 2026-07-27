@@ -26,9 +26,8 @@ local Controller = {}
 Controller.__index = Controller
 
 -- Register a standard frame event. One handler per event: a duplicate is
--- rejected (Foundry prefers a refused operation over a silent overwrite),
--- leaving the existing registration unchanged. Validation is atomic -- a
--- rejected call mutates neither the handler table nor the native frame.
+-- rejected, leaving the existing registration unchanged. Validation is atomic
+-- -- a rejected call mutates neither the handler table nor the native frame.
 -- The native register runs BEFORE any bookkeeping: Midnight's RegisterEvent
 -- throws on an unknown/removed event name, and that error must propagate with
 -- the controller unchanged (no phantom IsRegistered, retry stays possible).
@@ -138,20 +137,17 @@ end
 --------------------------------------------------------------------------------
 
 -- A bucket coalesces a burst of WoW events into a single delayed handler call,
--- the same settle-pattern Blizzard ships for SOME systems as a "_DELAYED" event
--- (e.g. BAG_UPDATE_DELAYED). RegisterBucket gives that coalescing to any event
--- that lacks a native _DELAYED twin.
+-- the same settle-pattern Blizzard ships for some systems as a "_DELAYED"
+-- event (e.g. BAG_UPDATE_DELAYED), for any event lacking a native twin.
 --
--- SCOPE BOUNDARY: a Blizzard-event-coalescing wrapper, NOT a general scheduler --
--- it collapses a burst of WoW event fires into one handler call and nothing more
--- (no combat-gating, debounce-by-key, or repeating ticker; those are C_Timer's).
--- The feature is anchored strictly to Blizzard's own _DELAYED precedent.
+-- SCOPE: a Blizzard-event-coalescing wrapper, NOT a general scheduler -- one
+-- handler call per quiet-window, nothing more (no combat-gating,
+-- debounce-by-key, or repeating ticker; those are C_Timer's).
 --
--- A bucket is HANDLE-based, not event-keyed: a multi-event bucket cannot be
--- keyed by a single event name, so RegisterBucket returns a handle object and
--- the caller drives it via bucket:Cancel() / bucket:IsPending(). The bucket
--- still OCCUPIES one handler slot per member event on the controller's shared
--- frame, so the module's one-handler-per-event rule keeps holding: a later
+-- HANDLE-based, not event-keyed: a multi-event bucket can't be keyed by a
+-- single event name, so RegisterBucket returns a handle (:Cancel/:IsPending).
+-- The bucket still occupies one handler slot per member event on the shared
+-- frame, so the one-handler-per-event rule keeps holding: a later
 -- Register/RegisterUnit/RegisterOnce (or another bucket) on an owned event is
 -- refused by the existing self._handlers[event] duplicate check.
 local Bucket = {}
@@ -209,12 +205,11 @@ end
 --   handler  -- the function called once per window, with NO arguments.
 -- Returns a bucket HANDLE exposing :Cancel() and :IsPending().
 --
--- Validation is atomic and mirrors Register/RegisterUnit: every check runs and
--- a rejected call mutates neither the handler table, the bucket bookkeeping, nor
--- the native frame. In particular, ALL member events are checked for a prior
--- registration BEFORE any event is registered, so a duplicate anywhere in the
--- list refuses the whole bucket cleanly (Foundry prefers a refused operation
--- over a silent overwrite).
+-- Validation is atomic and mirrors Register/RegisterUnit: every check runs
+-- and a rejected call mutates neither the handler table, the bucket
+-- bookkeeping, nor the native frame. ALL member events are checked for a
+-- prior registration BEFORE any event is registered, so a duplicate anywhere
+-- in the list refuses the whole bucket cleanly.
 function Controller:RegisterBucket(spec)
     if self._destroyed then
         F:RaiseDevError("Events:RegisterBucket called on a destroyed controller")

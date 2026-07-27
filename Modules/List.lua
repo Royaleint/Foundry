@@ -232,15 +232,12 @@ function List:New(config)
     if hasExtent then
         view:SetElementExtent(config.extent)
     elseif hasCalc then
-        -- Wrap the consumer calculator so its RETURN value is guarded at runtime.
-        -- :New already proved config.extentCalculator is a function, but a function
-        -- can still return a non-number for a given row (e.g. a row table missing the
-        -- height field). Blizzard's CalculateExtents does table.insert(t, calc(...)),
-        -- so a nil return leaves calculatedElementExtents short and ScrollBoxStride
-        -- then does `extent + GetElementExtent(index)` with a nil right-hand side —
-        -- a cryptic "arithmetic on a nil value" crash far from the cause. Validate
-        -- here: dev raises a clear, located List error; release prints the diagnostic
-        -- and degrades to a safe positive fallback so Blizzard's math never sees nil.
+        -- Wrap the consumer calculator so its RETURN value is guarded at runtime:
+        -- :New only proved it's a function. A nil return leaves Blizzard's
+        -- calculatedElementExtents SHORT (ScrollBoxStride then hits a nil
+        -- operand); a non-number return instead corrupts the extents arithmetic
+        -- -- either way a cryptic crash far from the cause. Dev raises a clear
+        -- List error; release prints and degrades to a safe positive fallback.
         local consumerCalc = config.extentCalculator
         view:SetElementExtentCalculator(function(index, elementData)
             local extent = consumerCalc(index, elementData)

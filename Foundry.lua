@@ -8,27 +8,23 @@
 
 local ADDON_NAME = ...
 
--- The packaging-version sentinel is built by concatenation so the contiguous
--- literal never appears in this source file. The BigWigs/CurseForge packager
--- substitutes that token across ALL packaged files, not just the TOC, so a
--- hardcoded contiguous sentinel here would itself be rewritten to the real
--- version at package time, making the dev-build comparison below true in a
--- packaged release (a false dev build). Splitting it keeps the sentinel intact.
+-- Built by concatenation so the literal token never appears in this file: the
+-- BigWigs/CurseForge packager substitutes it across ALL packaged files, not
+-- just the TOC, so a contiguous sentinel here would itself get rewritten at
+-- package time -- a packaged release would then read as a dev build.
 local VERSION_TOKEN = "@" .. "project-version" .. "@"
 local DEV_VERSION = "dev"
 
--- 1. Read the version the packager wrote into the TOC. C_AddOns.GetAddOnMetadata
---    is the current-retail metadata API (the bare GetAddOnMetadata global routes
---    to it). When Foundry runs from unpackaged source the packager has not run,
---    so this still returns the literal token.
+-- 1. Read the version the packager wrote into the TOC (C_AddOns.GetAddOnMetadata;
+--    the bare GetAddOnMetadata global routes to it). Unpackaged source still
+--    returns the literal token, since the packager never ran.
 local tocVersion = C_AddOns and C_AddOns.GetAddOnMetadata(ADDON_NAME, "Version")
 
--- 2. Dev-build detection. An unsubstituted token, or no version at all, means a
---    developer's working copy. _G.FOUNDRY_DEV_BUILD_OVERRIDE (truthy, set before
---    this bootstrap) forces dev on for local testing; it lives in the consumer's
---    own code, so a packaged release cannot accidentally ship dev-on once the
---    packager substitutes the token. The release-pipeline sanity check is the
---    contracted complement guarding against a pipeline that ships the literal token.
+-- 2. Dev-build detection: an unsubstituted token or missing version means a dev
+--    copy. _G.FOUNDRY_DEV_BUILD_OVERRIDE (set in consumer code before this file
+--    loads) forces dev on for local testing without risking a shipped release
+--    reading as dev-on. The release-pipeline sanity check guards the inverse
+--    case: a pipeline that ships the literal token.
 local override = _G.FOUNDRY_DEV_BUILD_OVERRIDE
 local isDevBuild = (tocVersion == nil)
     or (tocVersion == VERSION_TOKEN)
@@ -40,10 +36,10 @@ F.VERSION = isDevBuild and DEV_VERSION or tocVersion
 F.API_VERSION = 6
 F._LOAD_TOKEN = {}   -- per-load identity token (guarded-embed §2.2c)
 
--- 3. Shared fail-loud helper. Dev build: raise a Lua error so the author sees it
---    immediately. Release build: print a clear diagnostic and return, leaving the
---    caller to refuse the operation rather than raise into a player's session.
---    Neither path silently swallows the condition.
+-- 3. Shared fail-loud helper: dev build raises so the author sees it
+--    immediately; release build prints and returns, leaving the caller to
+--    refuse rather than raise into a player's session. Neither path swallows
+--    the condition.
 function F:RaiseDevError(message)
     message = "Foundry-1.0: " .. tostring(message)
     if self.IS_DEV_BUILD then
@@ -53,10 +49,9 @@ function F:RaiseDevError(message)
     end
 end
 
--- 4. Module registry and access. Module files register
---    themselves as they load (the TOC loads this bootstrap first). Consumers
---    reach a module directly (F.Commands) on the common path, or defensively
---    through :HasModule / :RequireModule.
+-- 4. Module registry and access. Modules register themselves as they load
+--    (this bootstrap loads first per the TOC). Consumers reach a module
+--    directly (F.Commands), or defensively via :HasModule / :RequireModule.
 local modules = {}
 
 function F:RegisterModule(name, module)
@@ -94,21 +89,16 @@ function F:RequireModule(name, minApiVersion)
 end
 
 -- 5. Bootstrap gate: if a copy of this major version already claimed the runtime
---    symbol (a standalone or an earlier-loading consumer's embed), this copy must
---    NOT overwrite it. The first copy to load wins and serves everyone; later copies
---    load nothing. Replacing the table would create a second live library instance
---    (split-brain dispatcher; double DB logout strip = save corruption). §2.2a + §2.3.
+--    symbol, this copy must NOT overwrite it -- first-loaded wins, later copies
+--    load nothing. Overwriting would create a second live instance (split-brain
+--    dispatcher; double DB logout strip = save corruption). §2.2a + §2.3.
 local existing = _G.Foundry_1_0
 if existing then
-    -- Dev diagnostic when a genuinely different copy is suppressed. Three gates:
-    -- the winner's IS_DEV_BUILD (release builds stay silent), token identity (NOT
-    -- version string) so the same copy loaded twice doesn't fire spuriously, and an
-    -- API_VERSION skew so a same-version multi-embed dev setup (several addons each
-    -- shipping the identical Foundry) stays silent — only a real version mismatch
-    -- speaks up. This is dev-noise tuning ONLY, not production graft protection:
-    -- gated on the winner's IS_DEV_BUILD, it never fires on a real graft (a live
-    -- release standalone won); DB.lua's RaiseDevError graft-guard is the sole guard
-    -- for the consequential DB graft.
+    -- Dev-only diagnostic (noise tuning, not graft protection -- DB.lua's own
+    -- graft-guard covers that). Three gates: winner's IS_DEV_BUILD (silent in
+    -- release), token identity (not version string, so the same copy loaded
+    -- twice stays silent), and an API_VERSION skew (so an identical
+    -- same-version multi-embed stays silent -- only a real mismatch speaks up).
     if existing.IS_DEV_BUILD and existing._LOAD_TOKEN ~= F._LOAD_TOKEN
         and existing.API_VERSION ~= F.API_VERSION then
         existing:RaiseDevError("a redundant embedded Foundry-1.0 copy was suppressed; "

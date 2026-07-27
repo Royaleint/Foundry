@@ -42,19 +42,17 @@ local liveKeys = {}
 --------------------------------------------------------------------------------
 -- Per-type dispatchers (FND-029)
 --
--- TooltipDataProcessor.AddTooltipPostCall has no removal API: every registered
--- callback is invoked (through a taint-barrier securecallfunction) on every
--- matching tooltip render for the rest of the session. Registering one
--- callback per controller therefore accumulates permanent per-render cost
--- across New→Destroy→New cycles. Instead, exactly ONE post-call is registered
--- per tooltip type for the module lifetime, dispatching into a mutable list of
--- live controllers -- Destroy actually stops a controller's cost.
+-- AddTooltipPostCall has no removal API: every registered callback runs
+-- (through a taint-barrier securecallfunction) on every matching render for
+-- the rest of the session, so one callback per controller would accumulate
+-- permanent cost across New→Destroy→New cycles. Instead exactly ONE post-call
+-- is registered per tooltip type for the module lifetime, dispatching into a
+-- mutable list of live controllers -- Destroy actually stops the cost.
 --
 -- The dispatch loop is allocation-free and re-entrancy-safe: destroyed
 -- controllers are swept lazily at their own loop position, so Destroy stays
--- O(1) and a handler destroying any controller (itself included) mid-dispatch
--- cannot corrupt the iteration. A destroyed controller's emptied table lingers
--- in the list only until the next render of its type sweeps it.
+-- O(1) and a handler destroying any controller mid-dispatch (itself included)
+-- cannot corrupt the iteration.
 --------------------------------------------------------------------------------
 
 local dispatchers = {}   -- tooltipType → array of live controllers
@@ -162,21 +160,18 @@ function Tooltip:New(config)
         return
     end
 
-    -- 1. Validate type.
     local tooltipType = config.type
     if type(tooltipType) ~= "number" then
         F:RaiseDevError("Tooltip:New: config.type must be a number (Enum.TooltipDataType value)")
         return
     end
 
-    -- 2. Validate handler.
     local handler = config.handler
     if type(handler) ~= "function" then
         F:RaiseDevError("Tooltip:New: config.handler must be a function")
         return
     end
 
-    -- 3. Validate and build the optional tooltips whitelist.
     local tooltips = config.tooltips
     local filter = nil
     if tooltips ~= nil then
@@ -196,7 +191,6 @@ function Tooltip:New(config)
         end
     end
 
-    -- 4. Resolve name; validate if explicitly supplied.
     local name = config.name
     if name ~= nil then
         if type(name) ~= "string" or name == "" then
@@ -207,22 +201,20 @@ function Tooltip:New(config)
         name = tostring(tooltipType)
     end
 
-    -- 5. Duplicate-key check.
     if liveKeys[name] then
         F:RaiseDevError("Tooltip:New: a live controller already owns the name '"
             .. name .. "'; :Destroy() it before re-registering")
         return
     end
 
-    -- 6. Feature-detect TooltipDataProcessor (Retail-only).
     if not hasTooltipDataProcessor() then
         F:RaiseDevError("Tooltip:New: TooltipDataProcessor is not available on this client; "
             .. "Foundry.Tooltip requires Retail 10.0.2 or later")
         return
     end
 
-    -- 7. Construct controller before registering so the upvalue captured in the
-    --    callback closure is the fully-initialised controller.
+    -- Construct before registering so the upvalue the callback closure
+    -- captures is the fully-initialised controller.
     local c = setmetatable({}, Controller)
     c._type               = tooltipType
     c._handler            = handler
@@ -231,13 +223,10 @@ function Tooltip:New(config)
     c._destroyed          = false
     c._isTooltipController = true
 
-    -- 8. Join the per-type dispatcher (registered once per tooltip type for
-    --    the module lifetime; see the FND-029 block above). The dispatcher
-    --    skips destroyed controllers, so :Destroy() silences all future
-    --    deliveries without any public unregister call. Sweep destroyed husks
-    --    here too: the dispatcher only sweeps when its type renders, so
-    --    New/Destroy cycles on a never-rendering type would otherwise grow
-    --    the list without bound.
+    -- Join the per-type dispatcher (see FND-029 above): Destroy silences
+    -- future deliveries without an unregister call. Sweep destroyed husks
+    -- here too -- the dispatcher only sweeps on render, so New/Destroy
+    -- cycles on a never-rendering type would otherwise grow unbounded.
     local list = ensureDispatcher(tooltipType)
     local i = 1
     while i <= #list do
@@ -245,7 +234,6 @@ function Tooltip:New(config)
     end
     list[#list + 1] = c
 
-    -- 9. Register the key.
     liveKeys[name] = true
 
     return c
