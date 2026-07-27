@@ -521,4 +521,71 @@ test("release build: absent TDP prints and returns nil, does not raise", functio
     T.outputContains("TooltipDataProcessor is not available", "release printed the diagnostic")
 end)
 
+--------------------------------------------------------------------------------
+-- Single dispatcher per type (FND-029): New/Destroy cycles must not accumulate
+-- TooltipDataProcessor registrations, and dispatch reaches only live
+-- controllers.
+--------------------------------------------------------------------------------
+
+test("New/Destroy cycles register exactly one post-call per tooltip type", function()
+    local F = T.fresh()
+    local state = installTDP()
+    -- No fire() between cycles: name reclaim happens at :Destroy (liveKeys is
+    -- freed immediately), and cycling WITHOUT an intervening render exercises
+    -- the :New-side husk sweep -- the list must not grow across cycles.
+    for _ = 1, 3 do
+        local c = F.Tooltip:New(valid())
+        c:Destroy()
+    end
+    local live = F.Tooltip:New(valid())
+    T.eq(type(live), "table", "controller handle returned after the cycles")
+    T.eq(#state.postCalls, 1,
+        "three New/Destroy cycles plus a live controller: still one registration")
+    local hits = 0
+    F.Tooltip:New(valid({ type = SPELL_TYPE, name = "s",
+        handler = function() hits = hits + 1 end }))
+    T.eq(#state.postCalls, 2, "a second TYPE still gets its own dispatcher")
+    fire(state, 2, makeTooltip(), {})
+    T.eq(hits, 1, "the new type's controller dispatches")
+end)
+
+test("dispatch reaches only live controllers; Destroy stops one, not both", function()
+    local F = T.fresh()
+    local state = installTDP()
+    local aHits, bHits = 0, 0
+    local a = F.Tooltip:New(valid({ name = "a", handler = function() aHits = aHits + 1 end }))
+    local b = F.Tooltip:New(valid({ name = "b", handler = function() bHits = bHits + 1 end }))
+    T.eq(#state.postCalls, 1, "same type: both controllers share one registration")
+    fire(state, 1, makeTooltip(), {})
+    T.eq(aHits, 1, "a fired"); T.eq(bHits, 1, "b fired")
+    a:Destroy()
+    fire(state, 1, makeTooltip(), {})
+    T.eq(aHits, 1, "destroyed a no longer fires")
+    T.eq(bHits, 2, "live b still fires")
+    -- Re-New of the destroyed name dispatches through the NEW handler.
+    local a2Hits = 0
+    F.Tooltip:New(valid({ name = "a", handler = function() a2Hits = a2Hits + 1 end }))
+    fire(state, 1, makeTooltip(), {})
+    T.eq(a2Hits, 1, "reclaimed name dispatches via its new handler")
+    T.eq(bHits, 3, "b unaffected")
+    T.eq(type(b), "table", "b handle intact")
+end)
+
+test("a handler destroying its own controller mid-dispatch is safe", function()
+    local F = T.fresh()
+    local state = installTDP()
+    local selfDestroyed, laterHits = false, 0
+    local c
+    c = F.Tooltip:New(valid({ name = "self", handler = function()
+        c:Destroy()
+        selfDestroyed = true
+    end }))
+    F.Tooltip:New(valid({ name = "after", handler = function() laterHits = laterHits + 1 end }))
+    fire(state, 1, makeTooltip(), {})
+    T.truthy(selfDestroyed, "self-destroying handler ran")
+    T.eq(laterHits, 1, "controller after the self-destroyer still dispatched")
+    fire(state, 1, makeTooltip(), {})
+    T.eq(laterHits, 2, "later fires skip the destroyed controller cleanly")
+end)
+
 return tests

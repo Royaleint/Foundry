@@ -40,6 +40,50 @@ end
 local liveKeys = {}
 
 --------------------------------------------------------------------------------
+-- Per-type dispatchers (FND-029)
+--
+-- TooltipDataProcessor.AddTooltipPostCall has no removal API: every registered
+-- callback is invoked (through a taint-barrier securecallfunction) on every
+-- matching tooltip render for the rest of the session. Registering one
+-- callback per controller therefore accumulates permanent per-render cost
+-- across New→Destroy→New cycles. Instead, exactly ONE post-call is registered
+-- per tooltip type for the module lifetime, dispatching into a mutable list of
+-- live controllers -- Destroy actually stops a controller's cost.
+--
+-- The dispatch loop is allocation-free and re-entrancy-safe: destroyed
+-- controllers are swept lazily at their own loop position, so Destroy stays
+-- O(1) and a handler destroying any controller (itself included) mid-dispatch
+-- cannot corrupt the iteration. A destroyed controller's emptied table lingers
+-- in the list only until the next render of its type sweeps it.
+--------------------------------------------------------------------------------
+
+local dispatchers = {}   -- tooltipType → array of live controllers
+
+local function ensureDispatcher(tooltipType)
+    local list = dispatchers[tooltipType]
+    if list then return list end
+    list = {}
+    -- Native call first, bookkeeping after (the FND-026 atomicity rule): if
+    -- AddTooltipPostCall rejects, no dispatcher entry is recorded.
+    _G.TooltipDataProcessor.AddTooltipPostCall(tooltipType, function(tooltip, data)
+        local i = 1
+        while i <= #list do
+            local c = list[i]
+            if c._destroyed then
+                table.remove(list, i)
+            else
+                if not c._filter or c._filter[tooltip] then
+                    c._handler(tooltip, data)
+                end
+                i = i + 1
+            end
+        end
+    end)
+    dispatchers[tooltipType] = list
+    return list
+end
+
+--------------------------------------------------------------------------------
 -- Line emitters (module-level helpers)
 --
 -- Thin convenience wrappers for the two patterns consumers repeat most often.
@@ -83,11 +127,10 @@ function Controller:GetNativeHandles()
     }
 end
 
--- Marks the controller destroyed, frees the duplicate-refusal key, and disables
--- the registered callback in-place. TooltipDataProcessor.AddTooltipPostCall has
--- no public removal counterpart; the registered wrapper checks _destroyed on
--- every invocation and returns immediately when set. Idempotent: a second
--- :Destroy() is a silent no-op.
+-- Marks the controller destroyed and frees the duplicate-refusal key. The
+-- shared per-type dispatcher skips destroyed controllers and sweeps them from
+-- its list on the next render of that type. Idempotent: a second :Destroy()
+-- is a silent no-op.
 function Controller:Destroy()
     if self._destroyed then return end
     liveKeys[self._name] = nil
@@ -188,14 +231,19 @@ function Tooltip:New(config)
     c._destroyed          = false
     c._isTooltipController = true
 
-    -- 8. Register with TooltipDataProcessor. The wrapper holds c by upvalue so
-    --    :Destroy() (which nils c._handler and sets c._destroyed) silences all
-    --    future deliveries without any public unregister call.
-    _G.TooltipDataProcessor.AddTooltipPostCall(tooltipType, function(tooltip, data)
-        if c._destroyed then return end
-        if c._filter and not c._filter[tooltip] then return end
-        c._handler(tooltip, data)
-    end)
+    -- 8. Join the per-type dispatcher (registered once per tooltip type for
+    --    the module lifetime; see the FND-029 block above). The dispatcher
+    --    skips destroyed controllers, so :Destroy() silences all future
+    --    deliveries without any public unregister call. Sweep destroyed husks
+    --    here too: the dispatcher only sweeps when its type renders, so
+    --    New/Destroy cycles on a never-rendering type would otherwise grow
+    --    the list without bound.
+    local list = ensureDispatcher(tooltipType)
+    local i = 1
+    while i <= #list do
+        if list[i]._destroyed then table.remove(list, i) else i = i + 1 end
+    end
+    list[#list + 1] = c
 
     -- 9. Register the key.
     liveKeys[name] = true
