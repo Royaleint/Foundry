@@ -4,6 +4,13 @@ All notable changes to Foundry-1.0 are recorded here.
 
 ## [Unreleased]
 
+## [1.0.102] - 2026-07-26
+
+### Changed
+- **Updated supported game versions.** The library now declares Classic Era
+  1.15.9 and TBC Anniversary 2.5.6, so it no longer shows as out of date on
+  those clients. No code changes; every module behaves exactly as in 1.0.101.
+
 ## [1.0.101] - 2026-07-08
 
 ### Fixed
