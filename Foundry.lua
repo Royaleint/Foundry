@@ -95,10 +95,14 @@ end
 local existing = _G.Foundry_1_0
 if existing then
     -- Dev-only diagnostic (noise tuning, not graft protection -- DB.lua's own
-    -- graft-guard covers that). Three gates: winner's IS_DEV_BUILD (silent in
-    -- release), token identity (not version string, so the same copy loaded
-    -- twice stays silent), and an API_VERSION skew (so an identical
-    -- same-version multi-embed stays silent -- only a real mismatch speaks up).
+    -- graft-guard covers that). Two LIVE gates: winner's IS_DEV_BUILD (silent
+    -- in release) and the API_VERSION skew (an identical same-version
+    -- multi-embed stays silent -- only a real mismatch speaks up). The
+    -- _LOAD_TOKEN inequality is constant-true -- a fresh token is minted per
+    -- chunk execution, so two loads never share one -- and the field is kept
+    -- only as the §2.2c per-load identity marker (FND-036). Suppression rests
+    -- entirely on the API_VERSION check; do not relax it expecting the token
+    -- comparison to filter anything.
     if existing.IS_DEV_BUILD and existing._LOAD_TOKEN ~= F._LOAD_TOKEN
         and existing.API_VERSION ~= F.API_VERSION then
         existing:RaiseDevError("a redundant embedded Foundry-1.0 copy was suppressed; "
