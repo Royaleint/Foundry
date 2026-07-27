@@ -1585,4 +1585,57 @@ test("GetNativeHandles snapshots the bucket onFire closure for each member event
     T.eq(h.handlers["E1"], h.handlers["E2"], "both member events share the one onFire closure")
 end)
 
+--------------------------------------------------------------------------------
+-- Native-throw atomicity (FND-026): Midnight's RegisterEvent throws on an
+-- unknown/removed event name. The error must propagate with the controller
+-- unchanged -- no phantom IsRegistered, and a corrected retry must succeed.
+--------------------------------------------------------------------------------
+
+-- register-throw-atomic
+test("Register: a throwing native register leaves no state and retry succeeds", function()
+    local F = T.fresh()
+    local c = F.Events:New("A")
+    T.throwOnRegister = { LEARNED_SPELL_IN_TAB = true }
+    local ok = pcall(function() c:Register("LEARNED_SPELL_IN_TAB", noop) end)
+    T.falsy(ok, "native throw propagates out of Register")
+    T.falsy(c:IsRegistered("LEARNED_SPELL_IN_TAB"),
+        "no phantom registration after the throw")
+    T.eq(#T.frames[1].calls.RegisterEvent, 0, "frame holds no subscription")
+    -- The poisoned-slot regression: a corrected retry for a valid name (and
+    -- even the same name once the client accepts it) must not be refused.
+    c:Register("SPELLS_CHANGED", noop)
+    T.truthy(c:IsRegistered("SPELLS_CHANGED"), "corrected retry succeeds")
+    T.throwOnRegister = nil
+    c:Register("LEARNED_SPELL_IN_TAB", noop)
+    T.truthy(c:IsRegistered("LEARNED_SPELL_IN_TAB"),
+        "same-name retry succeeds once the native call accepts")
+end)
+
+-- registerunit-throw-atomic
+test("RegisterUnit: a throwing native register leaves no state and retry succeeds", function()
+    local F = T.fresh()
+    local c = F.Events:New("A")
+    T.throwOnRegister = { UNIT_GONE = true }
+    local ok = pcall(function() c:RegisterUnit("UNIT_GONE", noop, "player") end)
+    T.falsy(ok, "native throw propagates out of RegisterUnit")
+    T.falsy(c:IsRegistered("UNIT_GONE"), "no phantom registration after the throw")
+    T.eq(#T.frames[1].calls.RegisterUnitEvent, 0, "frame holds no unit subscription")
+    T.throwOnRegister = nil
+    c:RegisterUnit("UNIT_GONE", noop, "player")
+    T.truthy(c:IsRegistered("UNIT_GONE"), "retry succeeds after the throw is cleared")
+end)
+
+-- registeronce-throw-atomic
+test("RegisterOnce: a throwing native register leaves no state and retry succeeds", function()
+    local F = T.fresh()
+    local c = F.Events:New("A")
+    T.throwOnRegister = { GONE_EVENT = true }
+    local ok = pcall(function() c:RegisterOnce("GONE_EVENT", noop) end)
+    T.falsy(ok, "native throw propagates out of RegisterOnce")
+    T.falsy(c:IsRegistered("GONE_EVENT"), "no phantom once-registration after the throw")
+    T.throwOnRegister = nil
+    c:RegisterOnce("GONE_EVENT", noop)
+    T.truthy(c:IsRegistered("GONE_EVENT"), "retry succeeds after the throw is cleared")
+end)
+
 return tests

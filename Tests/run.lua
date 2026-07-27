@@ -120,6 +120,10 @@ function T.installMocks(tocVersion)
     -- The existing event-frame buckets and OnEvent plumbing are unchanged, so the
     -- Commands/Events/Lifecycle/DB suites are unaffected.
     T.frames = {}
+    -- Midnight-throw simulation (FND-026): event names in this set make the
+    -- stub's RegisterEvent/RegisterUnitEvent error, mirroring Retail 12.0+
+    -- rejecting unknown/removed event names. Reset here so no case leaks it.
+    T.throwOnRegister = nil
     _G.CreateFrame = function(kind, name, parent, template)
         local frame = {}
         frame._kind = kind
@@ -140,6 +144,9 @@ function T.installMocks(tocVersion)
             SetPoint = {},
         }
         function frame:RegisterEvent(event)
+            if T.throwOnRegister and T.throwOnRegister[event] then
+                error("Attempted to register unknown event \"" .. event .. "\"")
+            end
             self.calls.RegisterEvent[#self.calls.RegisterEvent + 1] = { event }
         end
         function frame:RegisterUnitEvent(...)
@@ -148,6 +155,9 @@ function T.installMocks(tocVersion)
             -- controller forwarded unit2 or omitted it.
             local n = select("#", ...)
             local event, unit1, unit2 = ...
+            if T.throwOnRegister and T.throwOnRegister[event] then
+                error("Attempted to register unknown event \"" .. event .. "\"")
+            end
             self.calls.RegisterUnitEvent[#self.calls.RegisterUnitEvent + 1] =
                 { event = event, unit1 = unit1, unit2 = unit2, n = n }
         end

@@ -29,6 +29,9 @@ Controller.__index = Controller
 -- rejected (Foundry prefers a refused operation over a silent overwrite),
 -- leaving the existing registration unchanged. Validation is atomic -- a
 -- rejected call mutates neither the handler table nor the native frame.
+-- The native register runs BEFORE any bookkeeping: Midnight's RegisterEvent
+-- throws on an unknown/removed event name, and that error must propagate with
+-- the controller unchanged (no phantom IsRegistered, retry stays possible).
 function Controller:Register(event, handler)
     if self._destroyed then
         F:RaiseDevError("Events:Register called on a destroyed controller")
@@ -49,8 +52,8 @@ function Controller:Register(event, handler)
         return
     end
 
-    self._handlers[event] = handler
     self._frame:RegisterEvent(event)
+    self._handlers[event] = handler
 end
 
 -- Register a unit-filtered frame event. Identical to :Register but subscribes
@@ -86,12 +89,12 @@ function Controller:RegisterUnit(event, handler, unit1, unit2)
         return
     end
 
-    self._handlers[event] = handler
     if unit2 ~= nil then
         self._frame:RegisterUnitEvent(event, unit1, unit2)
     else
         self._frame:RegisterUnitEvent(event, unit1)
     end
+    self._handlers[event] = handler
 end
 
 -- Register a handler that auto-unregisters after its first fire, so it runs
@@ -126,8 +129,8 @@ function Controller:RegisterOnce(event, handler)
         handler(ev, ...)
     end
 
-    self._handlers[event] = once
     self._frame:RegisterEvent(event)
+    self._handlers[event] = once
 end
 
 --------------------------------------------------------------------------------
