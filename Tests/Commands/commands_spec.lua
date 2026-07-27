@@ -447,4 +447,40 @@ test("printer and unknownMessage compose: custom message via custom printer", fu
         .. table.concat(captured, " | ") .. ")")
 end)
 
+--------------------------------------------------------------------------------
+-- Destroy idempotence and successor protection (FND-028)
+--------------------------------------------------------------------------------
+
+-- 41
+test("Destroy is idempotent: a second Destroy cannot kill a successor's command", function()
+    local F = T.fresh()
+    local hit = false
+    local stale = F.Commands:New({ name = "MyAddon", slashes = { "/ma" } })
+    stale:Destroy()
+    -- The name is legitimately free again; a fresh controller reclaims it.
+    local successor = F.Commands:New({ name = "MyAddon", slashes = { "/ma" },
+        defaultHandler = function() hit = true end })
+    T.eq(type(successor), "table", "successor controller returned")
+    T.eq(type(_G.SlashCmdList["MYADDON"]), "function", "successor registered")
+    -- The stale controller's second Destroy must be a no-op, not a re-teardown.
+    stale:Destroy()
+    T.eq(type(_G.SlashCmdList["MYADDON"]), "function",
+        "successor's SlashCmdList entry survives the stale double-Destroy")
+    -- Invoke through SlashCmdList itself -- the actual player path -- rather
+    -- than Dispatch, so the check exercises the entry the stale Destroy nils.
+    _G.SlashCmdList["MYADDON"]("")
+    T.truthy(hit, "successor's /command still dispatches via SlashCmdList")
+end)
+
+-- 42
+test("Unregister/PrintHelp/GetNativeHandles raise on a destroyed controller", function()
+    local F = T.fresh()
+    local c = F.Commands:New({ name = "T", slashes = { "/t" } })
+    c:Register({ name = "foo", handler = function() end })
+    c:Destroy()
+    T.raises(function() c:Unregister("foo") end, "Unregister on destroyed raises")
+    T.raises(function() c:PrintHelp() end, "PrintHelp on destroyed raises")
+    T.raises(function() c:GetNativeHandles() end, "GetNativeHandles on destroyed raises")
+end)
+
 return tests

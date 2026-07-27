@@ -150,6 +150,10 @@ end
 
 -- Remove a subcommand by its primary name or any alias. Idempotent.
 function Controller:Unregister(name)
+    if self._destroyed then
+        F:RaiseDevError("Commands:Unregister called on a destroyed controller")
+        return
+    end
     if type(name) ~= "string" then
         F:RaiseDevError("Commands:Unregister: name must be a string")
         return
@@ -240,6 +244,10 @@ end
 
 -- Emit the auto-generated help.
 function Controller:PrintHelp()
+    if self._destroyed then
+        F:RaiseDevError("Commands:PrintHelp called on a destroyed controller")
+        return
+    end
     local seen, list = {}, {}
     for _, entry in pairs(self._byName) do
         if not seen[entry] then
@@ -281,6 +289,10 @@ end
 
 -- The progressive-disclosure escape hatch.
 function Controller:GetNativeHandles()
+    if self._destroyed then
+        F:RaiseDevError("Commands:GetNativeHandles called on a destroyed controller")
+        return
+    end
     local globals = {}
     for i = 1, #self._slashGlobals do
         globals[i] = self._slashGlobals[i]
@@ -292,10 +304,15 @@ function Controller:GetNativeHandles()
     }
 end
 
--- Tear down every slash registration this controller owns.
+-- Tear down every slash registration this controller owns. Idempotent: a
+-- second Destroy is a no-op. The slash-list key is cleared during teardown so
+-- a stale controller can never nil SlashCmdList for a name a fresh :New has
+-- legitimately reclaimed since.
 function Controller:Destroy()
+    if self._destroyed then return end
     if self._slashListKey then
         SlashCmdList[self._slashListKey] = nil
+        self._slashListKey = nil
     end
     for i = 1, #self._slashGlobals do
         _G[self._slashGlobals[i]] = nil
@@ -392,6 +409,7 @@ function Commands:New(config)
     c._slashListKey = key
     c._slashes = slashes
     c._slashGlobals = {}
+    c._destroyed = false
 
     for i = 1, #slashes do
         local g = "SLASH_" .. key .. i
