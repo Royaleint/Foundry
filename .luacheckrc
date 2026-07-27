@@ -23,7 +23,7 @@ read_globals = {
     "ScrollUtil",
     "CreateScrollBoxListLinearView",
     "CreateDataProvider",
-    "TooltipDataProcessor",  -- Foundry.Tooltip drives this (Retail-only post-call hook system).
+    "TooltipDataProcessor",  -- Foundry.Tooltip drives this (ships on Retail, Classic Era, and Pandaria Classic; FND-031).
     -- Foundry.Menu bridges the Blizzard_Menu system (present on all supported flavors).
     "MenuUtil",              -- Entry points: CreateContextMenu; SetupMenu on DropdownButton.
     "Menu",                  -- Raw escape hatch via GetNativeHandles().menu; may be nil on some clients.

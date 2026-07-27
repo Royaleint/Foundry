@@ -1,6 +1,6 @@
 -- Foundry.Tooltip behavior tests. Loaded by Tests/run.lua, which passes the
 -- harness table T. Returns a list of { name, fn } cases covering the v1 public
--- contract: feature detection (Retail-only), atomic :New validation, handler
+-- contract: feature detection (cross-flavor; FND-031), atomic :New validation, handler
 -- dispatch, tooltip whitelist filter, :Destroy disable-in-place, :GetNativeHandles,
 -- duplicate-key refusal, line emitters, and version pins.
 --
@@ -121,7 +121,7 @@ test("controller carries _isTooltipController marker", function()
 end)
 
 --------------------------------------------------------------------------------
--- Feature detection: Retail-only
+-- Feature detection: fails loud when TooltipDataProcessor is absent
 --------------------------------------------------------------------------------
 
 test("New: raises when TooltipDataProcessor is absent (Classic-family client)", function()

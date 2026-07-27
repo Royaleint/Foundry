@@ -1,14 +1,16 @@
 -- Foundry.Tooltip
 --
--- A thin bridge over Blizzard's modern tooltip-hook system (TooltipDataProcessor,
--- Retail 10.0.2+). :New(config) registers a typed post-call handler, applies an
--- optional tooltip-frame whitelist, and returns a controller with :Destroy() and
+-- A thin bridge over Blizzard's modern tooltip-hook system (TooltipDataProcessor).
+-- :New(config) registers a typed post-call handler, applies an optional
+-- tooltip-frame whitelist, and returns a controller with :Destroy() and
 -- :GetNativeHandles(). Two line-emitter helpers are provided as module-level
 -- functions. TooltipDataProcessor has no public unregister API; :Destroy() disables
 -- the registered callback in-place rather than removing it from the dispatch list.
 --
--- Retail-only: fails loud when TooltipDataProcessor is absent. Classic Era and
--- Pandaria Classic do not carry TooltipDataProcessor; there is no OnTooltipSetItem
+-- Cross-flavor (FND-031): TooltipDataProcessor ships on Retail 10.0.2+, Classic
+-- Era 1.15.x, and Pandaria Classic 5.5.x (verified in Blizzard source), so the
+-- module works on every supported flavor. Availability is feature-detected at
+-- :New and fails loud when genuinely absent; there is no OnTooltipSetItem
 -- fallback (global tooltip hijacks are out of scope per Charter §3.3).
 
 local F = _G.Foundry_1_0
@@ -24,7 +26,7 @@ local Tooltip = {}
 Tooltip.API_VERSION = 1
 
 --------------------------------------------------------------------------------
--- Feature detection (Retail-only surface; checked at :New, never at file scope)
+-- Feature detection (checked at :New, never at file scope)
 --------------------------------------------------------------------------------
 
 local function hasTooltipDataProcessor()
@@ -208,8 +210,9 @@ function Tooltip:New(config)
     end
 
     if not hasTooltipDataProcessor() then
-        F:RaiseDevError("Tooltip:New: TooltipDataProcessor is not available on this client; "
-            .. "Foundry.Tooltip requires Retail 10.0.2 or later")
+        F:RaiseDevError("Tooltip:New: TooltipDataProcessor is not available on this client "
+            .. "(it ships on Retail 10.0.2+, Classic Era 1.15.x, and Pandaria Classic "
+            .. "5.5.x); Foundry.Tooltip is unavailable here")
         return
     end
 
