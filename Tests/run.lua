@@ -321,6 +321,10 @@ function T.installMocks(tocVersion)
     -- which invokes cb exactly once and only if the handle was never cancelled
     -- (one-shot, like the real C_Timer.NewTimer firing).
     T.timers = {}
+    -- Deterministic clock for the trailing-edge deadline logic (FND-033):
+    -- Events.lua reads GetTime(); tests advance T.now explicitly.
+    T.now = 0
+    _G.GetTime = function() return T.now end
     _G.C_Timer = {
         NewTimer = function(interval, callback)
             local handle = {

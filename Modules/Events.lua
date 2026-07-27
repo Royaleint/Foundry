@@ -190,6 +190,7 @@ end
 function Bucket:_teardown()
     if self._cancelled then return end
     self._cancelled = true
+    self._deadline = nil
     if self._timer then
         self._timer:Cancel()
         self._timer = nil
@@ -298,34 +299,54 @@ function Controller:RegisterBucket(spec)
     bucket._edge = edge
     bucket._handler = spec.handler
     bucket._timer = nil
+    bucket._deadline = nil
     bucket._cancelled = false
+
+    -- Hot-path locals, captured once per bucket (FND-033).
+    local newTimer = C_Timer.NewTimer
+    local getTime = GetTime
 
     -- Flush: clear the pending state BEFORE invoking handler (mirrors the
     -- RegisterOnce free-before-invoke order), so a handler that re-triggers a
     -- member event opens a fresh window safely and IsPending() reads false from
     -- inside the handler. Guarded against a stray post-teardown fire.
+    --
+    -- Trailing edge re-arms instead of delivering while the deadline is still
+    -- ahead (FND-033): fires during the window only move bucket._deadline, so
+    -- a storm allocates one timer per interval, not one per event, and no
+    -- cancelled C-side timers pile up awaiting their expiry.
     local function flush()
         if bucket._cancelled then return end
+        local deadline = bucket._deadline
+        if deadline then
+            local remaining = deadline - getTime()
+            if remaining > 0 then
+                bucket._timer = newTimer(remaining, flush)
+                return
+            end
+        end
         bucket._timer = nil
+        bucket._deadline = nil
         bucket._handler()
     end
 
     -- One shared OnFire closure across every member event. Leading: the first
     -- fire opens the window (creates the timer); fires while a flush is already
-    -- pending are absorbed (the timer is left alone) so the window is anchored to
-    -- the FIRST fire. Trailing: every fire cancels and reschedules, anchoring the
+    -- pending are absorbed so the window is anchored to the FIRST fire.
+    -- Trailing: every fire moves the deadline to now + interval, anchoring the
     -- window to the LAST fire -- the flush runs once the events go quiet for
-    -- interval. handler receives NO arguments (no arg-aggregation).
+    -- interval (delivery is the re-arming flush above, allocation-free per
+    -- fire). handler receives NO arguments (no arg-aggregation).
     local function onFire()
         if bucket._cancelled then return end
         if edge == "leading" then
             if bucket._timer then return end
-            bucket._timer = C_Timer.NewTimer(bucket._interval, flush)
+            bucket._timer = newTimer(bucket._interval, flush)
         else
-            if bucket._timer then
-                bucket._timer:Cancel()
+            bucket._deadline = getTime() + bucket._interval
+            if not bucket._timer then
+                bucket._timer = newTimer(bucket._interval, flush)
             end
-            bucket._timer = C_Timer.NewTimer(bucket._interval, flush)
         end
     end
 

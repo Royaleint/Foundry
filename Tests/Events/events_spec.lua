@@ -1258,8 +1258,8 @@ test("leading bucket: a handler that re-triggers a member event opens a fresh wi
     T.eq(hits, 2, "the fresh window flushes once")
 end)
 
--- bucket-trailing-reschedules
-test("trailing bucket: each fire reschedules; the old timer is cancelled and never flushes", function()
+-- bucket-trailing-deadline (FND-033: deadline + re-arm, not cancel-per-fire)
+test("trailing bucket: fires move the deadline without allocating; flush re-arms once", function()
     local F = T.fresh()
     local c = F.Events:New("A")
     local fr = T.frames[1]
@@ -1267,19 +1267,62 @@ test("trailing bucket: each fire reschedules; the old timer is cancelled and nev
     local b = c:RegisterBucket({ events = "E", interval = 0.2, edge = "trailing",
         handler = function() hits = hits + 1 end })
 
+    T.now = 0
     T.Fire(fr, "E")
-    local t1 = T.timers[#T.timers]
-    T.Fire(fr, "E")  -- cancels t1, schedules t2
-    local t2 = T.timers[#T.timers]
-    T.truthy(t1 ~= t2, "a second timer was scheduled on the reschedule")
-    T.truthy(t1:IsCancelled(), "the first timer was cancelled by the reschedule")
+    T.eq(#T.timers, 1, "first fire schedules the window timer")
+    local t1 = T.timers[1]
+    -- Storm: further fires move the deadline only -- no allocation, no cancel.
+    T.now = 0.1; T.Fire(fr, "E")
+    T.now = 0.15; T.Fire(fr, "E")
+    T.eq(#T.timers, 1, "storm fires allocate no new timers")
+    T.falsy(t1:IsCancelled(), "the window timer is never cancelled by a fire")
 
-    -- The stale timer must not flush; only the live one does, exactly once.
+    -- The timer expires at 0.2 with the deadline at 0.35: flush must re-arm
+    -- for the remainder instead of delivering.
+    T.now = 0.2
     T.FireTimer(t1)
-    T.eq(hits, 0, "the cancelled timer does not flush the handler")
+    T.eq(hits, 0, "flush before the deadline re-arms instead of delivering")
+    T.eq(#T.timers, 2, "exactly one re-arm timer was scheduled")
+    local t2 = T.timers[2]
+    T.truthy(b:IsPending(), "still pending across the re-arm")
+
+    -- Quiet past the deadline: the re-armed timer delivers exactly once,
+    -- at last-fire + interval (trailing semantics unchanged).
+    T.now = 0.35
     T.FireTimer(t2)
-    T.eq(hits, 1, "the live timer flushes the handler once after the events go quiet")
+    T.eq(hits, 1, "the re-armed timer flushes the handler once after quiet")
     T.eq(b:IsPending(), false, "pending cleared after the trailing flush")
+
+    -- A fresh fire after delivery opens a new window with a new timer.
+    T.now = 1.0
+    T.Fire(fr, "E")
+    T.eq(#T.timers, 3, "post-delivery fire opens a fresh window")
+    T.now = 1.2
+    T.FireTimer(T.timers[3])
+    T.eq(hits, 2, "second window delivers")
+end)
+
+-- bucket-trailing-cancel-mid-rearm (pins _teardown's deadline clear and the
+-- cancelled-guard on the re-arm path)
+test("trailing bucket: Cancel during a re-armed window kills the pending flush", function()
+    local F = T.fresh()
+    local c = F.Events:New("A")
+    local fr = T.frames[1]
+    local hits = 0
+    local b = c:RegisterBucket({ events = "E", interval = 0.2, edge = "trailing",
+        handler = function() hits = hits + 1 end })
+    T.now = 0
+    T.Fire(fr, "E")
+    T.now = 0.1; T.Fire(fr, "E")           -- deadline now 0.3
+    T.now = 0.2; T.FireTimer(T.timers[1])  -- expires early -> re-arms
+    T.eq(#T.timers, 2, "re-arm scheduled")
+    b:Cancel()
+    T.eq(b:IsPending(), false, "not pending after Cancel")
+    T.truthy(T.timers[2]:IsCancelled(), "the re-armed timer was cancelled")
+    -- Even a stray firing of the (cancelled) handle must not deliver.
+    T.now = 0.3
+    T.FireTimer(T.timers[2])
+    T.eq(hits, 0, "no delivery after Cancel, even past the old deadline")
 end)
 
 -- bucket-multi-event
