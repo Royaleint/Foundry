@@ -738,6 +738,30 @@ test("malformed: value-level type-mismatch-under-table-default is preserve-and-s
     T.raises(function() local _ = db.global end, "dev mismatch diagnostic", "conflicts with its table-typed default")
 end)
 
+-- malformed-mismatch-flags-section-before-defaults (FND-035)
+test("malformed: a dev mismatch raise mid-materialize still flags the section for the strip", function()
+    -- The dev-build onMismatch raise aborts materialize mid-applyDefaults. The
+    -- section MUST already be flagged materialized by then: defaults written
+    -- before the raise would otherwise be skipped by the logout strip and
+    -- freeze onto disk as phantom user data. The flag assertion is
+    -- deterministic; the post-logout check is belt-and-braces (pairs order
+    -- decides how many defaults were written before the raise, but under the
+    -- fix all written ones strip either way).
+    local F = freshLoaded()
+    _G.TestDB = { profileKeys = { [CHARKEY] = "Default" }, global = { sub = 5 } }
+    local db = newHS(F, { defaults = { global = { good = 1, sub = { inner = 1 } } } })
+    T.raises(function() local _ = db.global end, "dev mismatch diagnostic",
+        "conflicts with its table-typed default")
+    local h = db:GetNativeHandles()
+    T.truthy(h.materialized.global,
+        "global is flagged materialized despite the mid-apply raise")
+    fireLogout()
+    T.eq(_G.TestDB.global and _G.TestDB.global.good, nil,
+        "a default written before the raise does not freeze onto disk")
+    T.eq(_G.TestDB.global and _G.TestDB.global.sub, 5,
+        "the preserved mismatched scalar survives the strip")
+end)
+
 -- malformed-value-type-mismatch-preserve-release
 test("malformed: value-level type-mismatch preserves the stored scalar (release, no raise)", function()
     local F = freshLoaded("1.0.0")
@@ -1722,19 +1746,42 @@ test("destroy: Destroy -> logout -> change a default -> reload, the NEW default 
     T.eq(db2.global.opt, "NEW", "the new default wins (the strip prevented the phantom-deviation freeze)")
 end)
 
--- destroy-double-strip-idempotent
-test("destroy: Destroy then re-:New then double logout is idempotent over concrete defaults", function()
+-- destroy-stale-excluded-newest-strips-twice
+test("destroy: re-:New excludes the stale store; the newest store's strip is idempotent across two logouts", function()
     local F = freshLoaded()
     local db1 = newHS(F, { defaults = { global = { a = 1 } } })
     db1.global.dyn = "v1"
     db1:Destroy()
-    -- Re-:New the same sv (now allowed since the slot freed). The OLD store remains
-    -- in `stores` and is stripped too -- double-strip must be safe.
+    -- Re-:New the same sv (allowed since the slot freed). Under the FND-030
+    -- newest-per-sv rule the OLD store is excluded from the strip set; only
+    -- db2's store strips. Fire logout twice: a repeated post-logout seam must
+    -- re-strip idempotently (the genuine remaining double-strip path).
     local db2 = F.DB:New({ name = "TestAddon", sv = "TestDB", defaultProfile = true, defaults = { global = { a = 1 } } })
     local _ = db2.global
     fireLogout()
-    T.eq(_G.TestDB.global.dyn, "v1", "dynamic key survived the double-strip")
-    T.eq(_G.TestDB.global.a, nil, "default-equal stripped exactly once (idempotent)")
+    fireLogout()
+    T.eq(_G.TestDB.global.dyn, "v1", "dynamic key survived both strips")
+    T.eq(_G.TestDB.global.a, nil, "default-equal stripped; second strip a no-op (idempotent)")
+end)
+
+-- destroy-stale-defaults-no-user-deletion (FND-030)
+test("destroy: a stale store's changed-out defaults cannot delete a user value at logout", function()
+    local F = freshLoaded()
+    local db1 = newHS(F, { defaults = { global = { opt = "OLD" } } })
+    local _ = db1.global   -- materialize under the OLD defaults
+    db1:Destroy()
+    -- Re-:New the same sv with a CHANGED default for the same slot, then the
+    -- user deliberately sets the slot to the OLD default's value -- under the
+    -- live defaults that is an ordinary, deviating choice.
+    local db2 = F.DB:New({ name = "TestAddon", sv = "TestDB", defaultProfile = true,
+        defaults = { global = { opt = "NEW" } } })
+    db2.global.opt = "OLD"
+    fireLogout()
+    -- Only the newest store per sv strips (FND-030). Under the old all-stores
+    -- rule the stale store's walk removed opt because it equals the OLD
+    -- default -- silent deletion of a deliberate user choice.
+    T.eq(_G.TestDB.global.opt, "OLD",
+        "user value equal to a stale default survives the logout strip")
 end)
 
 --------------------------------------------------------------------------------

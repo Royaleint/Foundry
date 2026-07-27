@@ -38,10 +38,9 @@ function Controller:_print(line)
     end
 end
 
--- Register a subcommand. Validation is atomic: the primary name and every alias
--- are validated into a temporary set before any mutation, so a bad alias leaves
--- the controller unchanged rather than half-registered: Foundry prefers a
--- refused operation over a half-applied one.
+-- Register a subcommand. Validation is atomic: the primary name and every
+-- alias are validated into a temporary set before any mutation, so a bad
+-- alias leaves the controller unchanged rather than half-registered.
 function Controller:Register(spec)
     if self._destroyed then
         F:RaiseDevError("Commands:Register called on a destroyed controller")
@@ -77,6 +76,14 @@ function Controller:Register(spec)
     if spec.args ~= nil and type(spec.args) ~= "string" then
         F:RaiseDevError("Commands:Register: spec.args, when supplied, must be a "
             .. "string (got " .. type(spec.args) .. ")")
+        return
+    end
+    -- help has the identical deferred-error exposure (FND-034): a table stored
+    -- here would print a raw pointer into the player's chat at render time.
+    if spec.help ~= nil and type(spec.help) ~= "string"
+        and type(spec.help) ~= "function" then
+        F:RaiseDevError("Commands:Register: spec.help, when supplied, must be a "
+            .. "string or a function (got " .. type(spec.help) .. ")")
         return
     end
     if primary == "help" or primary:find("^help%s") then
@@ -150,6 +157,10 @@ end
 
 -- Remove a subcommand by its primary name or any alias. Idempotent.
 function Controller:Unregister(name)
+    if self._destroyed then
+        F:RaiseDevError("Commands:Unregister called on a destroyed controller")
+        return
+    end
     if type(name) ~= "string" then
         F:RaiseDevError("Commands:Unregister: name must be a string")
         return
@@ -240,6 +251,10 @@ end
 
 -- Emit the auto-generated help.
 function Controller:PrintHelp()
+    if self._destroyed then
+        F:RaiseDevError("Commands:PrintHelp called on a destroyed controller")
+        return
+    end
     local seen, list = {}, {}
     for _, entry in pairs(self._byName) do
         if not seen[entry] then
@@ -255,6 +270,7 @@ function Controller:PrintHelp()
     end
 
     local slash = self._slashes[1]
+    local helpFaultRaised, helpFault = false, nil
     for _, entry in ipairs(list) do
         local line = slash .. " " .. entry.display
         if #entry.aliasDisplays > 0 then
@@ -270,17 +286,43 @@ function Controller:PrintHelp()
         end
         local help = entry.help
         if type(help) == "function" then
-            help = help()
+            -- A raising help function must not abort the render mid-list from
+            -- the player typing the bare slash command (FND-034): its line
+            -- falls back to no help text and the error surfaces once after
+            -- the loop. A non-string return is refused the same way rather
+            -- than tostring-ing a pointer into chat. Gate on the RAISED flag,
+            -- never the error value's truthiness (§3.4.1).
+            local ok, result = pcall(help)
+            if ok and type(result) == "string" then
+                help = result
+            else
+                if not helpFaultRaised then
+                    helpFaultRaised = true
+                    helpFault = ok
+                        and ("help function for '" .. entry.name
+                            .. "' returned a " .. type(result) .. ", not a string")
+                        or ("help function for '" .. entry.name
+                            .. "' raised: " .. tostring(result))
+                end
+                help = nil
+            end
         end
         if help and help ~= "" then
             line = line .. "  -- " .. tostring(help)
         end
         self:_print(line)
     end
+    if helpFaultRaised then
+        F:RaiseDevError("Commands:PrintHelp: " .. helpFault)
+    end
 end
 
 -- The progressive-disclosure escape hatch.
 function Controller:GetNativeHandles()
+    if self._destroyed then
+        F:RaiseDevError("Commands:GetNativeHandles called on a destroyed controller")
+        return
+    end
     local globals = {}
     for i = 1, #self._slashGlobals do
         globals[i] = self._slashGlobals[i]
@@ -292,10 +334,15 @@ function Controller:GetNativeHandles()
     }
 end
 
--- Tear down every slash registration this controller owns.
+-- Tear down every slash registration this controller owns. Idempotent: a
+-- second Destroy is a no-op. The slash-list key is cleared during teardown so
+-- a stale controller can never nil SlashCmdList for a name a fresh :New has
+-- legitimately reclaimed since.
 function Controller:Destroy()
+    if self._destroyed then return end
     if self._slashListKey then
         SlashCmdList[self._slashListKey] = nil
+        self._slashListKey = nil
     end
     for i = 1, #self._slashGlobals do
         _G[self._slashGlobals[i]] = nil
@@ -392,6 +439,7 @@ function Commands:New(config)
     c._slashListKey = key
     c._slashes = slashes
     c._slashGlobals = {}
+    c._destroyed = false
 
     for i = 1, #slashes do
         local g = "SLASH_" .. key .. i

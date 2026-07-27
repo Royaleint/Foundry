@@ -397,14 +397,17 @@ test("duplicate name defaults to title, explicit name= overrides", function()
     end, "explicit name duplicate", "a live controller already owns the name")
 end)
 
-test("duplicate key freed on :Destroy; third :New with same name succeeds", function()
+test("duplicate key freed on :Destroy; a same-name :New succeeds again", function()
     local F = T.fresh()
     installModern()
-    local c1 = F.Settings:New(valid({ title = "Addon" }))
+    -- Same frame across the cycle: re-registration re-binds the cached
+    -- category (FND-032) rather than registering a duplicate.
+    local frame = makeFrame()
+    local c1 = F.Settings:New(valid({ title = "Addon", frame = frame }))
     T.truthy(c1, "first registration")
     c1:Destroy()
     -- After destroy, the key is free — re-registration must succeed.
-    local c2 = F.Settings:New(valid({ title = "Addon" }))
+    local c2 = F.Settings:New(valid({ title = "Addon", frame = frame }))
     T.truthy(c2, "re-registration after :Destroy succeeds")
 end)
 
@@ -564,13 +567,16 @@ end)
 test(":Destroy marks controller destroyed and frees the duplicate-refusal key", function()
     local F = T.fresh()
     installModern()
-    local c = F.Settings:New(valid({ title = "Addon" }))
+    -- Same frame across the cycle: the freed key re-binds the cached
+    -- category (FND-032) rather than registering a duplicate.
+    local frame = makeFrame()
+    local c = F.Settings:New(valid({ title = "Addon", frame = frame }))
     T.truthy(c, "controller created")
     T.falsy(c._destroyed, "not destroyed before :Destroy")
     c:Destroy()
     T.truthy(c._destroyed, "_destroyed set to true")
     -- Key freed: a new registration with the same name must succeed.
-    local c2 = F.Settings:New(valid({ title = "Addon" }))
+    local c2 = F.Settings:New(valid({ title = "Addon", frame = frame }))
     T.truthy(c2, "re-registration after :Destroy succeeds")
 end)
 
@@ -705,6 +711,69 @@ test("release build: a validation error prints and returns nil, does not raise",
     local c = F.Settings:New(valid({ title = "" }))
     T.eq(c, nil, "release :New returns nil on bad config")
     T.outputContains("config.title must be a non-empty string", "release printed the diagnostic")
+end)
+
+--------------------------------------------------------------------------------
+-- Registered-category re-bind (FND-032): New/Destroy cycles must not register
+-- a duplicate options-panel category.
+--------------------------------------------------------------------------------
+
+test("New/Destroy/New with matching inputs re-binds; no duplicate registration", function()
+    local F = T.fresh()
+    local state = installModern()
+    local frame = makeFrame()
+    local a = F.Settings:New({ title = "MyAddon", frame = frame })
+    T.eq(#state.registerRootCalls, 1, "first New registers")
+    a:Destroy()
+    local b = F.Settings:New({ title = "MyAddon", frame = frame })
+    T.eq(#state.registerRootCalls, 1, "re-New registers NOTHING (re-bound)")
+    T.eq(#state.registerAddOnCalls, 1, "RegisterAddOnCategory not repeated")
+    -- The re-bound controller is fully functional against the cached category.
+    T.eq(b:GetCategoryID(), 35, "re-bound controller resolves the category ID")
+    b:Open()
+    T.eq(#state.openCalls, 1, "Open drives the cached category")
+    T.eq(state.openCalls[1].categoryID, 35, "opened at the cached category's ID")
+end)
+
+test("re-New with a DIFFERENT frame is refused (category is stuck)", function()
+    local F = T.fresh()
+    local state = installModern()
+    local a = F.Settings:New({ title = "MyAddon", frame = makeFrame() })
+    a:Destroy()
+    T.raises(function()
+        F.Settings:New({ title = "MyAddon", frame = makeFrame() })
+    end, "different frame refused", "must reuse the same registration inputs")
+    T.eq(#state.registerRootCalls, 1, "no second registration attempted")
+end)
+
+test("subcategory re-bind requires the same parent category and registers nothing", function()
+    local F = T.fresh()
+    local state = installModern()
+    local parentFrame, childFrame = makeFrame(), makeFrame()
+    local parent = F.Settings:New({ title = "Parent", frame = parentFrame })
+    local child = F.Settings:New({ title = "Child", frame = childFrame, parent = parent })
+    T.eq(#state.registerSubCalls, 1, "child registered once")
+    child:Destroy()
+    local child2 = F.Settings:New({ title = "Child", frame = childFrame, parent = parent })
+    T.eq(#state.registerSubCalls, 1, "child re-bind registers nothing")
+    T.eq(child2:GetCategoryID(), 36, "re-bound child resolves its category")
+end)
+
+test("cycling the PARENT does not break a child re-bind (category identity survives)", function()
+    local F = T.fresh()
+    local state = installModern()
+    local parentFrame, childFrame = makeFrame(), makeFrame()
+    local parent = F.Settings:New({ title = "Parent", frame = parentFrame })
+    local child = F.Settings:New({ title = "Child", frame = childFrame, parent = parent })
+    child:Destroy()
+    parent:Destroy()
+    -- The re-bound parent carries the SAME cached category object, so the
+    -- child's parent-identity comparison still matches.
+    local parent2 = F.Settings:New({ title = "Parent", frame = parentFrame })
+    local child2 = F.Settings:New({ title = "Child", frame = childFrame, parent = parent2 })
+    T.eq(#state.registerRootCalls, 1, "parent never re-registered")
+    T.eq(#state.registerSubCalls, 1, "child never re-registered")
+    T.eq(child2:GetCategoryID(), 36, "child re-bound through the cycled parent")
 end)
 
 return tests

@@ -28,6 +28,16 @@ Settings.API_VERSION = 1
 
 local liveKeys = {}
 
+-- Registered-category cache (FND-032). Blizzard provides no way to unregister
+-- an options category, so a name's first successful registration is permanent
+-- for the session. A later :New for the same name re-binds the cached Blizzard
+-- objects when the registration inputs match (same frame, title, mode, parent
+-- category) -- the player keeps exactly one panel entry across
+-- New/Destroy/New cycles -- and is refused when they differ, since the stuck
+-- category can neither be reused for different inputs nor removed.
+-- name -> { category, layout, frame, title, mode, parentCategory }
+local registeredCategories = {}
+
 --------------------------------------------------------------------------------
 -- Path selection (feature detection, not version checks or pcall)
 --------------------------------------------------------------------------------
@@ -145,21 +155,18 @@ function Settings:New(config)
         return
     end
 
-    -- 1. Validate title.
     local title = config.title
     if type(title) ~= "string" or title == "" then
         F:RaiseDevError("Settings:New: config.title must be a non-empty string")
         return
     end
 
-    -- 2. Validate frame (must be a real WoW frame: a table with GetObjectType).
     local frame = config.frame
     if type(frame) ~= "table" or type(frame.GetObjectType) ~= "function" then
         F:RaiseDevError("Settings:New: config.frame must be a WoW frame (table with GetObjectType)")
         return
     end
 
-    -- 3. Validate parent: nil or a live (non-destroyed) Foundry.Settings controller.
     local parent = config.parent
     if parent ~= nil then
         if type(parent) ~= "table"
@@ -171,7 +178,6 @@ function Settings:New(config)
         end
     end
 
-    -- 4. Resolve name (duplicate-refusal key); validate if explicitly supplied.
     local name = config.name
     if name ~= nil then
         if type(name) ~= "string" or name == "" then
@@ -182,19 +188,33 @@ function Settings:New(config)
         name = title
     end
 
-    -- 5. Duplicate-key check.
     if liveKeys[name] then
         F:RaiseDevError("Settings:New: a live controller already owns the name '"
             .. name .. "'; :Destroy() it before re-registering")
         return
     end
 
-    -- 6. Path selection and registration.
     local category
     local layout
     local mode
 
-    if hasModernSettings() then
+    -- Re-bind path (FND-032): this name already registered a Blizzard category
+    -- this session. Reuse it when the inputs match; refuse when they differ.
+    local cached = registeredCategories[name]
+    if cached then
+        local parentCategory = parent and parent._category or nil
+        local mismatch = (cached.frame ~= frame and "frame")
+            or (cached.title ~= title and "title")
+            or (cached.parentCategory ~= parentCategory and "parent")
+        if mismatch then
+            F:RaiseDevError("Settings:New: name '" .. name .. "' already registered a "
+                .. "Blizzard category this session with a different " .. mismatch
+                .. "; categories cannot be unregistered, so a re-:New must reuse "
+                .. "the same registration inputs")
+            return
+        end
+        category, layout, mode = cached.category, cached.layout, cached.mode
+    elseif hasModernSettings() then
         -- Modern path: feature-detected, no pcall (fail-loud per house style).
         if parent then
             -- On the modern path, the parent must also have been registered via the
@@ -233,7 +253,18 @@ function Settings:New(config)
         return
     end
 
-    -- 7. Construct controller.
+    -- Record the permanent registration so a later same-name :New re-binds it
+    -- instead of registering a duplicate (FND-032). A cached re-bind rewrites
+    -- the identical record.
+    registeredCategories[name] = {
+        category       = category,
+        layout         = layout,
+        frame          = frame,
+        title          = title,
+        mode           = mode,
+        parentCategory = parent and parent._category or nil,
+    }
+
     local c = setmetatable({}, Controller)
     c._category            = category
     c._layout              = layout
@@ -243,7 +274,6 @@ function Settings:New(config)
     c._destroyed           = false
     c._isSettingsController = true
 
-    -- 8. Register the key in the live-key registry.
     liveKeys[name] = true
 
     return c

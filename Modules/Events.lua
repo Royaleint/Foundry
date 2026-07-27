@@ -26,9 +26,11 @@ local Controller = {}
 Controller.__index = Controller
 
 -- Register a standard frame event. One handler per event: a duplicate is
--- rejected (Foundry prefers a refused operation over a silent overwrite),
--- leaving the existing registration unchanged. Validation is atomic -- a
--- rejected call mutates neither the handler table nor the native frame.
+-- rejected, leaving the existing registration unchanged. Validation is atomic
+-- -- a rejected call mutates neither the handler table nor the native frame.
+-- The native register runs BEFORE any bookkeeping: Midnight's RegisterEvent
+-- throws on an unknown/removed event name, and that error must propagate with
+-- the controller unchanged (no phantom IsRegistered, retry stays possible).
 function Controller:Register(event, handler)
     if self._destroyed then
         F:RaiseDevError("Events:Register called on a destroyed controller")
@@ -49,8 +51,8 @@ function Controller:Register(event, handler)
         return
     end
 
-    self._handlers[event] = handler
     self._frame:RegisterEvent(event)
+    self._handlers[event] = handler
 end
 
 -- Register a unit-filtered frame event. Identical to :Register but subscribes
@@ -86,12 +88,12 @@ function Controller:RegisterUnit(event, handler, unit1, unit2)
         return
     end
 
-    self._handlers[event] = handler
     if unit2 ~= nil then
         self._frame:RegisterUnitEvent(event, unit1, unit2)
     else
         self._frame:RegisterUnitEvent(event, unit1)
     end
+    self._handlers[event] = handler
 end
 
 -- Register a handler that auto-unregisters after its first fire, so it runs
@@ -126,8 +128,8 @@ function Controller:RegisterOnce(event, handler)
         handler(ev, ...)
     end
 
-    self._handlers[event] = once
     self._frame:RegisterEvent(event)
+    self._handlers[event] = once
 end
 
 --------------------------------------------------------------------------------
@@ -135,20 +137,17 @@ end
 --------------------------------------------------------------------------------
 
 -- A bucket coalesces a burst of WoW events into a single delayed handler call,
--- the same settle-pattern Blizzard ships for SOME systems as a "_DELAYED" event
--- (e.g. BAG_UPDATE_DELAYED). RegisterBucket gives that coalescing to any event
--- that lacks a native _DELAYED twin.
+-- the same settle-pattern Blizzard ships for some systems as a "_DELAYED"
+-- event (e.g. BAG_UPDATE_DELAYED), for any event lacking a native twin.
 --
--- SCOPE BOUNDARY: a Blizzard-event-coalescing wrapper, NOT a general scheduler --
--- it collapses a burst of WoW event fires into one handler call and nothing more
--- (no combat-gating, debounce-by-key, or repeating ticker; those are C_Timer's).
--- The feature is anchored strictly to Blizzard's own _DELAYED precedent.
+-- SCOPE: a Blizzard-event-coalescing wrapper, NOT a general scheduler -- one
+-- handler call per quiet-window, nothing more (no combat-gating,
+-- debounce-by-key, or repeating ticker; those are C_Timer's).
 --
--- A bucket is HANDLE-based, not event-keyed: a multi-event bucket cannot be
--- keyed by a single event name, so RegisterBucket returns a handle object and
--- the caller drives it via bucket:Cancel() / bucket:IsPending(). The bucket
--- still OCCUPIES one handler slot per member event on the controller's shared
--- frame, so the module's one-handler-per-event rule keeps holding: a later
+-- HANDLE-based, not event-keyed: a multi-event bucket can't be keyed by a
+-- single event name, so RegisterBucket returns a handle (:Cancel/:IsPending).
+-- The bucket still occupies one handler slot per member event on the shared
+-- frame, so the one-handler-per-event rule keeps holding: a later
 -- Register/RegisterUnit/RegisterOnce (or another bucket) on an owned event is
 -- refused by the existing self._handlers[event] duplicate check.
 local Bucket = {}
@@ -191,6 +190,7 @@ end
 function Bucket:_teardown()
     if self._cancelled then return end
     self._cancelled = true
+    self._deadline = nil
     if self._timer then
         self._timer:Cancel()
         self._timer = nil
@@ -206,12 +206,11 @@ end
 --   handler  -- the function called once per window, with NO arguments.
 -- Returns a bucket HANDLE exposing :Cancel() and :IsPending().
 --
--- Validation is atomic and mirrors Register/RegisterUnit: every check runs and
--- a rejected call mutates neither the handler table, the bucket bookkeeping, nor
--- the native frame. In particular, ALL member events are checked for a prior
--- registration BEFORE any event is registered, so a duplicate anywhere in the
--- list refuses the whole bucket cleanly (Foundry prefers a refused operation
--- over a silent overwrite).
+-- Validation is atomic and mirrors Register/RegisterUnit: every check runs
+-- and a rejected call mutates neither the handler table, the bucket
+-- bookkeeping, nor the native frame. ALL member events are checked for a
+-- prior registration BEFORE any event is registered, so a duplicate anywhere
+-- in the list refuses the whole bucket cleanly.
 function Controller:RegisterBucket(spec)
     if self._destroyed then
         F:RaiseDevError("Events:RegisterBucket called on a destroyed controller")
@@ -300,42 +299,80 @@ function Controller:RegisterBucket(spec)
     bucket._edge = edge
     bucket._handler = spec.handler
     bucket._timer = nil
+    bucket._deadline = nil
     bucket._cancelled = false
+
+    -- Hot-path locals, captured once per bucket (FND-033).
+    local newTimer = C_Timer.NewTimer
+    local getTime = GetTime
 
     -- Flush: clear the pending state BEFORE invoking handler (mirrors the
     -- RegisterOnce free-before-invoke order), so a handler that re-triggers a
     -- member event opens a fresh window safely and IsPending() reads false from
     -- inside the handler. Guarded against a stray post-teardown fire.
+    --
+    -- Trailing edge re-arms instead of delivering while the deadline is still
+    -- ahead (FND-033): fires during the window only move bucket._deadline, so
+    -- a storm allocates one timer per interval, not one per event, and no
+    -- cancelled C-side timers pile up awaiting their expiry.
     local function flush()
         if bucket._cancelled then return end
+        local deadline = bucket._deadline
+        if deadline then
+            local remaining = deadline - getTime()
+            if remaining > 0 then
+                bucket._timer = newTimer(remaining, flush)
+                return
+            end
+        end
         bucket._timer = nil
+        bucket._deadline = nil
         bucket._handler()
     end
 
     -- One shared OnFire closure across every member event. Leading: the first
     -- fire opens the window (creates the timer); fires while a flush is already
-    -- pending are absorbed (the timer is left alone) so the window is anchored to
-    -- the FIRST fire. Trailing: every fire cancels and reschedules, anchoring the
+    -- pending are absorbed so the window is anchored to the FIRST fire.
+    -- Trailing: every fire moves the deadline to now + interval, anchoring the
     -- window to the LAST fire -- the flush runs once the events go quiet for
-    -- interval. handler receives NO arguments (no arg-aggregation).
+    -- interval (delivery is the re-arming flush above, allocation-free per
+    -- fire). handler receives NO arguments (no arg-aggregation).
     local function onFire()
         if bucket._cancelled then return end
         if edge == "leading" then
             if bucket._timer then return end
-            bucket._timer = C_Timer.NewTimer(bucket._interval, flush)
+            bucket._timer = newTimer(bucket._interval, flush)
         else
-            if bucket._timer then
-                bucket._timer:Cancel()
+            bucket._deadline = getTime() + bucket._interval
+            if not bucket._timer then
+                bucket._timer = newTimer(bucket._interval, flush)
             end
-            bucket._timer = C_Timer.NewTimer(bucket._interval, flush)
         end
     end
 
+    -- Native-first with rollback (FND-027, pairing with FND-026's ordering
+    -- rule): register every member event on the frame BEFORE any bookkeeping.
+    -- If the client rejects a name mid-loop (Midnight throws on unknown or
+    -- removed events), natively unregister the members that did register and
+    -- rethrow -- the error propagates with the controller unchanged, never
+    -- leaving live events wired to a bucket handle the caller never received.
+    local registered = 0
+    local ok, nativeErr = pcall(function()
+        for i = 1, #list do
+            self._frame:RegisterEvent(list[i])
+            registered = i
+        end
+    end)
+    if not ok then
+        for i = 1, registered do
+            self._frame:UnregisterEvent(list[i])
+        end
+        error(nativeErr, 0)
+    end
+
     for i = 1, #list do
-        local event = list[i]
-        self._handlers[event] = onFire
-        self._bucketEvents[event] = bucket
-        self._frame:RegisterEvent(event)
+        self._handlers[list[i]] = onFire
+        self._bucketEvents[list[i]] = bucket
     end
     self._buckets[#self._buckets + 1] = bucket
 

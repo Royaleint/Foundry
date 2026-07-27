@@ -39,13 +39,11 @@ local loginControllers = {}   -- controller -> true  (set: who wants login/logou
 local loginFired = false      -- central "PLAYER_LOGIN already fired" flag
 local postLogout = {}          -- array of private post-logout callbacks (Cycle-3 DB strip seam)
 
--- Surface a captured hook error through F:RaiseDevError. The captured value may
--- be ANY Lua value -- INCLUDING a falsy one (a hook that called error(nil),
--- error(false), or bare error()). The dispatcher must NEVER decide whether to
--- surface by testing the captured value's truthiness -- that silently swallows a
--- falsy error (a Charter §3.4.1 fail-loud violation). The boolean "raised" flag
--- returned by each _fire* is the sole gate; this helper normalizes the value into
--- a non-empty diagnostic so a surfaced error is always meaningful.
+-- Surface a captured hook error through F:RaiseDevError. The captured value
+-- may be ANY Lua value, including a falsy one (error(nil), error(false), bare
+-- error()). Surfacing must gate on the boolean "raised" flag each _fire*
+-- returns, never on the value's truthiness -- truthiness would silently
+-- swallow a falsy error (Charter §3.4.1).
 local function surfaceHookError(phase, err)
     F:RaiseDevError("Lifecycle: a '" .. phase .. "' phase hook errored: " .. tostring(err))
 end
@@ -60,10 +58,10 @@ local function ensureDispatcher()
     frame:Hide()
 
     -- Demux by event name, then (for ADDON_LOADED) by addon name. Each _fire*
-    -- CAPTURES-AND-RETURNS its subscriber's error (never throws inline); the
+    -- captures-and-returns its subscriber's error (never throws inline); the
     -- dispatcher surfaces captured errors only AFTER the fan-out completes, so
-    -- one bad hook cannot abort the loop and starve the other consumers' phases
-    -- (the locked continue-on-error contract).
+    -- one bad hook cannot abort the loop and starve other consumers' phases
+    -- (continue-on-error contract).
     frame:SetScript("OnEvent", function(_, event, ...)
         if event == "ADDON_LOADED" then
             local loadedName = ...
@@ -102,13 +100,11 @@ local function ensureDispatcher()
             -- Post-logout fan-out (private seam). Runs strictly AFTER the consumer
             -- logout fan-out completes -- so a consumer's final writes are in place
             -- before the DB strip walks them (spec §6.4 contract 2) -- and strictly
-            -- BEFORE the deferred surfacing below: in a dev build surfaceHookError
-            -- raises, which would abort this branch and skip the strip whenever a
-            -- consumer logout hook errored, defeating the continue-on-error contract
-            -- the strip depends on (spec §6.4 contract 1). Each callback is captured
-            -- so one cannot starve another or the surfacing; a raised post-logout
-            -- callback is surfaced after the loop on its own gate (the registrant --
-            -- DB -- owns finer pcall-per-store isolation beneath this).
+            -- BEFORE the deferred surfacing below: surfacing first would raise (dev
+            -- build) and skip the strip whenever a consumer logout hook errored,
+            -- defeating the continue-on-error contract the strip depends on (§6.4
+            -- contract 1). Each callback is captured so one cannot starve another;
+            -- DB owns finer pcall-per-store isolation beneath this.
             local plRaised, plFirstErr = false, nil
             for i = 1, #postLogout do
                 local ok, e = pcall(postLogout[i])
@@ -124,12 +120,11 @@ local function ensureDispatcher()
     frame:RegisterEvent("PLAYER_LOGOUT")
 
     -- Late-creation catch-up (the login analogue of OnAddonLoaded's
-    -- C_AddOns.IsAddOnLoaded probe): if the FIRST controller of the whole
-    -- session is created after PLAYER_LOGIN (an all-Load-on-Demand consumer),
-    -- the one-shot event has already fired and will never reach this frame, so
-    -- loginFired would stay false and every OnLogin handler would be silently
-    -- dropped. IsLoggedIn() is authoritative for that state; seed the central
-    -- flag from it at the moment the dispatcher is born.
+    -- IsAddOnLoaded probe): if the first controller of the session is created
+    -- after PLAYER_LOGIN (an all-Load-on-Demand consumer), the one-shot event
+    -- has already fired and will never reach this frame. Seed loginFired from
+    -- the authoritative IsLoggedIn() at dispatcher-creation time so OnLogin
+    -- handlers aren't silently dropped.
     if type(IsLoggedIn) == "function" and IsLoggedIn() then
         loginFired = true
     end
@@ -137,14 +132,12 @@ local function ensureDispatcher()
     dispatcher = frame
 end
 
--- Private post-logout-fan-out registration seam (spec §6.4). Internal surface
--- only -- the dot-call underscore name keeps it off
--- the public controller API, so Lifecycle.API_VERSION stays 1 (the _TestFire
--- precedent). Foundry.DB registers its logout strip here exactly once, at its
--- first :New. It calls ensureDispatcher() itself so the dispatcher and its
--- PLAYER_LOGOUT registration exist even for a DB-only consumer that never calls
--- Lifecycle:New -- otherwise that consumer's strip would never be delivered
--- (spec §6.4 contract 1 holds Lifecycle-controller-or-not). The registered
+-- Private post-logout-fan-out registration seam (spec §6.4). The underscore
+-- name keeps it off the public API, so Lifecycle.API_VERSION stays 1 (the
+-- _TestFire precedent). Foundry.DB registers its logout strip here exactly
+-- once, at its first :New, and calls ensureDispatcher() itself so the
+-- PLAYER_LOGOUT registration exists even for a DB-only consumer that never
+-- calls Lifecycle:New (§6.4 contract 1 holds regardless). Registered
 -- callbacks run after the consumer logout fan-out and before deferred error
 -- surfacing (see the PLAYER_LOGOUT branch above).
 function Lifecycle._RegisterPostLogout(fn)
@@ -163,17 +156,14 @@ end
 local Controller = {}
 Controller.__index = Controller
 
--- Private fire wrappers the dispatcher calls. Each pcall-wraps the SUBSCRIBER's
--- handler and RETURNS (raised, err): a boolean RAISED flag plus the captured
--- value -- which may itself be FALSY (a hook that called error(nil), error(false),
--- or bare error()). The dispatcher gates surfacing on the RAISED flag, never the
--- value's truthiness, so a falsy error is never silently swallowed. The wrapper
--- never calls RaiseDevError itself un-pcall'd: in a dev build RaiseDevError
--- error()s, which would abort the dispatcher's fan-out loop and starve the
--- remaining subscribers. The dispatcher surfaces the captured error AFTER the
--- fan-out. A controller unsubscribed mid-loop (Destroy) is skipped. Each phase is
--- one-shot: the hook is cleared before invocation so a second signal does not
--- re-fire it.
+-- Private fire wrappers the dispatcher calls. Each pcall-wraps the subscriber's
+-- handler and returns (raised, err): a boolean flag plus the captured value,
+-- which may itself be falsy. The dispatcher gates surfacing on the flag, never
+-- the value's truthiness, so a falsy error is never swallowed, and surfaces it
+-- only AFTER the fan-out completes (an un-pcall'd RaiseDevError here would
+-- abort the loop and starve remaining subscribers). A controller unsubscribed
+-- mid-loop (Destroy) is skipped. Each phase is one-shot: the hook is cleared
+-- before invocation so a second signal does not re-fire it.
 
 function Controller:_fireAddonLoaded()
     if self._destroyed then return false end
@@ -228,15 +218,14 @@ function Controller:OnAddonLoaded(handler)
     self._registered.addonLoaded = true
     self._hooks.addonLoaded = handler
 
-    -- Load-on-Demand catch-up: fire now ONLY if the addon has FINISHED loading.
-    -- C_AddOns.IsAddOnLoaded returns TWO booleans, (loadedOrLoading, loaded): the
-    -- FIRST is true while the addon is still LOADING. Gating on it would fire the
-    -- addon-loaded hook mid-load -- BEFORE SavedVariables are available -- which
-    -- defeats the hook's whole purpose (a consumer registering for its OWN addon
-    -- during that addon's own file load is exactly this case). Gate on the SECOND
-    -- value (finished loading). A still-loading or not-yet-loaded addon stays
-    -- enrolled in byAddonName and fires on the real ADDON_LOADED. The catch-up is
-    -- synchronous inside this registration call.
+    -- Load-on-Demand catch-up, synchronous inside this registration call (the
+    -- hook can fire before this method returns -- re-entrancy-relevant timing):
+    -- fire now ONLY if the addon has FINISHED loading.
+    -- IsAddOnLoaded returns (loadedOrLoading, loaded); the first is true while
+    -- still loading, and gating on it would fire the hook before SavedVariables
+    -- are available -- defeating the hook's purpose for a consumer registering
+    -- during its own addon's load. Gate on the second (finished) value; a
+    -- still-loading addon stays enrolled and fires on the real ADDON_LOADED.
     local alreadyLoaded = false
     if C_AddOns and C_AddOns.IsAddOnLoaded then
         local _, loaded = C_AddOns.IsAddOnLoaded(self._addonName)
@@ -304,11 +293,10 @@ function Controller:OnLogout(handler)
     loginControllers[self] = true
 end
 
--- The progressive-disclosure escape hatch. Returns the live SHARED dispatcher
--- frame and a shallow read-only snapshot of this controller's hook set. Mutating
--- the snapshot cannot affect live dispatch; the frame, by contrast, is the live
--- shared object (two controllers' .frame return the same identity by design --
--- the inverse of Events' per-controller frame).
+-- The escape hatch. Returns the live SHARED dispatcher frame and a shallow
+-- read-only snapshot of this controller's hook set; mutating the snapshot
+-- cannot affect live dispatch. Two controllers' .frame return the same
+-- identity by design -- the inverse of Events' per-controller frame.
 function Controller:GetNativeHandles()
     if self._destroyed then
         F:RaiseDevError("Lifecycle:GetNativeHandles called on a destroyed controller")
@@ -326,13 +314,10 @@ function Controller:GetNativeHandles()
 end
 
 -- Tear down: unsubscribe from every dispatcher table, release refs, mark
--- destroyed. After this, every controller method fails loudly in dev /
--- refuses-and-prints in release (mirrors Events' destroyed-controller guard).
--- Releasing the addonName from ownedNames lets a later :New reuse it.
--- Explicitly DOES NOT fire the logout hook: Destroy opts the owner out of all
--- remaining phases, including logout. The shared dispatcher frame is never
--- destroyed by a controller's Destroy -- it is library state, kept alive for the
--- session. Double-Destroy refuses.
+-- destroyed. Releasing addonName from ownedNames lets a later :New reuse it.
+-- Explicitly DOES NOT fire the logout hook -- Destroy opts the owner out of
+-- all remaining phases, including logout. The shared dispatcher frame is
+-- never destroyed here; it is library state, kept alive for the session.
 function Controller:Destroy()
     if self._destroyed then
         F:RaiseDevError("Lifecycle:Destroy called on a destroyed controller")
@@ -351,15 +336,15 @@ end
 -- Factory
 --------------------------------------------------------------------------------
 
--- Create a per-owner controller. PRIMARY form adopts an EXISTING table: owner is
--- the consumer's real addon table (Homestead's HA.Addon, BawrSpam's NS). The
--- secondary form (omit/pass nil owner) yields a plain {} controller-only object.
--- GUARDRAIL: Lifecycle writes NOTHING into owner; all bookkeeping lives on the
--- controller and the dispatcher upvalues. addonName is the TOC addon name used
--- as the ADDON_LOADED demux key. A second :New for an addonName that already
--- owns a live Lifecycle is rejected via RaiseDevError (checks the PERSISTENT
--- ownedNames registry, not the one-shot byAddonName demux, so the guard holds
--- for the controller's whole life -- before OR after its addon-loaded fires).
+-- Create a per-owner controller. Primary form adopts an EXISTING table: owner
+-- is the consumer's real addon table (Homestead's HA.Addon, BawrSpam's NS).
+-- The secondary form (nil owner) yields a plain {} controller-only object.
+-- Lifecycle writes NOTHING into owner; all bookkeeping lives on the controller
+-- and the dispatcher upvalues. addonName is the TOC name used as the
+-- ADDON_LOADED demux key. A second :New for an addonName that already owns a
+-- live Lifecycle is rejected -- checked against the PERSISTENT ownedNames
+-- registry, not the one-shot byAddonName demux, so the guard holds for the
+-- controller's whole life.
 function Lifecycle:New(owner, addonName)
     if owner ~= nil and type(owner) ~= "table" then
         F:RaiseDevError("Lifecycle:New: owner, when supplied, must be a table")
@@ -381,16 +366,14 @@ function Lifecycle:New(owner, addonName)
     c._owner = owner or {}
     c._addonName = addonName
     c._hooks = {}
-    -- _registered persists a phase's registration for the controller's whole life,
-    -- separate from _hooks (which the one-shot fire CLEARS). The re-register guard
-    -- checks _registered, so a SECOND OnX is rejected even AFTER its phase fired --
-    -- the cleared _hooks slot must not silently reopen registration.
+    -- _registered persists a phase's registration for the controller's whole
+    -- life, separate from _hooks (which the one-shot fire clears) -- a second
+    -- OnX is rejected even after its phase fired.
     c._registered = { addonLoaded = false, login = false, logout = false }
     c._destroyed = false
 
-    -- Enrol for the PENDING ADDON_LOADED demux and the PERSISTENT re-register
-    -- registry. If the addon is already loaded, OnAddonLoaded's catch-up clears
-    -- the byAddonName entry at hook-registration time.
+    -- Enrol for the pending ADDON_LOADED demux and the persistent re-register
+    -- registry; OnAddonLoaded's catch-up clears byAddonName if already loaded.
     byAddonName[addonName] = c
     ownedNames[addonName] = c
 
@@ -402,16 +385,15 @@ end
 --------------------------------------------------------------------------------
 
 -- The in-game analogue of the out-of-game harness's T.Fire: drive a startup
--- phase through the LIVE shared dispatcher's real OnEvent path WITHOUT touching
--- the frame's event registration (no fake RegisterEvent, no second frame). This
--- exists so the otherwise-unobservable phases (ADDON_LOADED cannot replay without
--- a client restart; PLAYER_LOGOUT ends the session) can be exercised by the
--- dev-gated Lifecycle self-test (Dev/LifecycleSelfTest.lua).
+-- phase through the LIVE shared dispatcher's real OnEvent path without
+-- touching the frame's event registration. Exists so the otherwise-
+-- unobservable phases (ADDON_LOADED can't replay without a client restart;
+-- PLAYER_LOGOUT ends the session) can be exercised by the dev-gated Lifecycle
+-- self-test (Dev/LifecycleSelfTest.lua).
 --
--- TRIPLE-GATED below the public surface and HARD-gated on F.IS_DEV_BUILD: in a
--- release build it routes to F:RaiseDevError and does nothing, so it can never
--- become a player-reachable phase injector. It also refuses if no :New has yet
--- created the dispatcher (nothing to drive).
+-- Hard-gated on F.IS_DEV_BUILD: a release build routes to F:RaiseDevError and
+-- does nothing, so it can never become a player-reachable phase injector. It
+-- also refuses if no :New has yet created the dispatcher.
 --
 -- `phase` is one of "addon-loaded" | "login" | "logout"; for "addon-loaded",
 -- `addonName` is the demux key the dispatcher matches (mirrors the WoW payload).
