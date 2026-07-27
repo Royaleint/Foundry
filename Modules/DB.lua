@@ -77,7 +77,8 @@ local controllerStore = {}
 -- plain record capturing the sv name, the resolved sv table, the defaults table,
 -- and the per-section materialization flags -- everything the logout strip needs,
 -- independent of whether a live controller still exists. Live, Destroyed, and
--- §8.2 step-6 refused stores all land here, so the strip runs for all of them.
+-- §8.2 step-6 refused stores all land here; at logout the newest store per sv
+-- table strips (FND-030; see onLogout for the rule and its rationale).
 local stores = {}
 
 -- One-time guard: DB registers its single strip callback with Lifecycle's
@@ -224,9 +225,10 @@ end
 -- The logout strip (rides Lifecycle's post-logout seam)
 --------------------------------------------------------------------------------
 
--- Strip one store. Idempotent over concrete defaults, so a Destroyed-then-
--- re-:New'd store double-stripping is safe. Reads only the captured refs, never
--- a controller, so it runs for live, Destroyed, and refused stores alike.
+-- Strip one store. Idempotent over concrete defaults, so a repeated
+-- post-logout seam re-stripping the newest store is safe. Reads only the
+-- captured refs, never a controller, so it runs for live, Destroyed, and
+-- refused stores alike (newest-per-sv selection happens in onLogout).
 local function stripStore(store)
     local sv = store.sv
     if type(sv) ~= "table" then return end
@@ -292,9 +294,30 @@ end
 -- another's; surface once after the loop, gated on the RAISED flag (never the
 -- error VALUE's truthiness -- the §3.4.1 falsy-error rule). A store registering
 -- a new store mid-strip (via re-:New) is intentionally not in this snapshot.
+--
+-- Newest-store-per-sv rule (FND-030): only the LAST-constructed store for each
+-- sv TABLE strips. A Destroyed store whose sv was re-:New'd with CHANGED
+-- defaults must not strip: its stale defaults would delete any stored value
+-- the user deliberately set that happens to equal an OLD default -- silent
+-- save-data deletion, the failure the module header rules out. The newer
+-- store's defaults are authoritative for that sv. The trade (spec §2.2
+-- re-decided): a stale old-default value the user never touched now freezes
+-- as ordinary data instead of being stripped -- wrong-but-safe, and
+-- indistinguishable from a deliberate choice anyway. The same exclusion
+-- applies with IDENTICAL defaults when only materialization differs: a
+-- section only the stale store materialized freezes its default-equal values
+-- this logout (they match current defaults and strip on any later logout
+-- that materializes the section). A Destroyed store with NO successor still
+-- strips exactly as before (skipping it would freeze its own materialized
+-- defaults -- the phantom-deviation trap).
 local function onLogout()
+    local newest = {}
+    for i = 1, #stores do newest[stores[i].sv] = stores[i] end
     local snapshot, n = {}, 0
-    for i = 1, #stores do n = n + 1; snapshot[n] = stores[i] end
+    for i = 1, #stores do
+        local s = stores[i]
+        if newest[s.sv] == s then n = n + 1; snapshot[n] = s end
+    end
     local raised, firstErr = false, nil
     for i = 1, n do
         local ok, err = pcall(stripStore, snapshot[i])
@@ -429,8 +452,10 @@ function Controller.Destroy(self)
     -- deletes or mutates saved data; the consumer's section references stay valid
     -- as fully-merged plain tables. The store's END-OF-SESSION strip duty SURVIVES
     -- this -- the store stays in `stores` and the logout strip still runs over it
-    -- via the captured refs (skipping it would freeze stale materialized defaults
-    -- onto disk: the phantom-deviation trap, spec §2.2).
+    -- via the captured refs -- UNLESS a later :New covers the same sv, in which
+    -- case the newest store strips instead (FND-030; see onLogout): a stale
+    -- store's changed-out defaults deleting user data outranks the
+    -- phantom-deviation trap (spec §2.2).
     store.destroyed = true
     if liveControllers[store.svName] == self then
         liveControllers[store.svName] = nil
@@ -844,7 +869,8 @@ function DB:New(config)
                 -- A raised error (gated on the RAISED flag, never value
                 -- truthiness) refuses construction -- a half-migrated store is
                 -- never handed out. The store stays in `stores` so its
-                -- (possibly partially-written) SV is still stripped at logout.
+                -- (possibly partially-written) SV is still stripped at logout
+                -- (by this store or a successor's, per the newest-per-sv rule).
                 store.destroyed = true
                 liveControllers[config.sv] = nil
                 refuse("DB:New: schema.migrate raised; construction "
