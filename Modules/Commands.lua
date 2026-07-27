@@ -78,6 +78,14 @@ function Controller:Register(spec)
             .. "string (got " .. type(spec.args) .. ")")
         return
     end
+    -- help has the identical deferred-error exposure (FND-034): a table stored
+    -- here would print a raw pointer into the player's chat at render time.
+    if spec.help ~= nil and type(spec.help) ~= "string"
+        and type(spec.help) ~= "function" then
+        F:RaiseDevError("Commands:Register: spec.help, when supplied, must be a "
+            .. "string or a function (got " .. type(spec.help) .. ")")
+        return
+    end
     if primary == "help" or primary:find("^help%s") then
         F:RaiseDevError("Commands:Register: subcommand name '" .. spec.name
             .. "' is reserved: 'help' and any 'help '-prefixed name route to "
@@ -262,6 +270,7 @@ function Controller:PrintHelp()
     end
 
     local slash = self._slashes[1]
+    local helpFaultRaised, helpFault = false, nil
     for _, entry in ipairs(list) do
         local line = slash .. " " .. entry.display
         if #entry.aliasDisplays > 0 then
@@ -277,12 +286,34 @@ function Controller:PrintHelp()
         end
         local help = entry.help
         if type(help) == "function" then
-            help = help()
+            -- A raising help function must not abort the render mid-list from
+            -- the player typing the bare slash command (FND-034): its line
+            -- falls back to no help text and the error surfaces once after
+            -- the loop. A non-string return is refused the same way rather
+            -- than tostring-ing a pointer into chat. Gate on the RAISED flag,
+            -- never the error value's truthiness (§3.4.1).
+            local ok, result = pcall(help)
+            if ok and type(result) == "string" then
+                help = result
+            else
+                if not helpFaultRaised then
+                    helpFaultRaised = true
+                    helpFault = ok
+                        and ("help function for '" .. entry.name
+                            .. "' returned a " .. type(result) .. ", not a string")
+                        or ("help function for '" .. entry.name
+                            .. "' raised: " .. tostring(result))
+                end
+                help = nil
+            end
         end
         if help and help ~= "" then
             line = line .. "  -- " .. tostring(help)
         end
         self:_print(line)
+    end
+    if helpFaultRaised then
+        F:RaiseDevError("Commands:PrintHelp: " .. helpFault)
     end
 end
 
