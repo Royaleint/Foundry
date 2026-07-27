@@ -1625,6 +1625,38 @@ test("RegisterUnit: a throwing native register leaves no state and retry succeed
     T.truthy(c:IsRegistered("UNIT_GONE"), "retry succeeds after the throw is cleared")
 end)
 
+-- registerbucket-throw-rollback
+test("RegisterBucket: a mid-loop native throw rolls back and retry succeeds", function()
+    local F = T.fresh()
+    local c = F.Events:New("A")
+    T.throwOnRegister = { E3_GONE = true }
+    local ok = pcall(function()
+        c:RegisterBucket({ events = { "E1", "E2", "E3_GONE" },
+            interval = 0.2, handler = noop })
+    end)
+    T.falsy(ok, "native throw propagates out of RegisterBucket")
+    local fr = T.frames[1]
+    -- E1 and E2 registered natively before the throw; both must be rolled back.
+    T.eq(#fr.calls.RegisterEvent, 2, "two members registered before the throw")
+    T.eq(#fr.calls.UnregisterEvent, 2, "both rolled back natively")
+    T.eq(fr.calls.UnregisterEvent[1][1], "E1", "E1 unregistered")
+    T.eq(fr.calls.UnregisterEvent[2][1], "E2", "E2 unregistered")
+    -- No bookkeeping survived: no phantom slots, no orphan onFire dispatch.
+    T.falsy(c:IsRegistered("E1"), "E1 slot empty after rollback")
+    T.falsy(c:IsRegistered("E2"), "E2 slot empty after rollback")
+    T.eq(c:GetNativeHandles().handlers["E1"], nil, "no orphan handler for E1")
+    -- Belt-and-braces: the nil-handler assertion above is the real check;
+    -- this just proves dispatch stays quiet (no error) for the rolled-back name.
+    T.Fire(fr, "E1")
+    -- A corrected retry over the same member names must not be refused.
+    T.throwOnRegister = nil
+    local b = c:RegisterBucket({ events = { "E1", "E2", "E3_GONE" },
+        interval = 0.2, handler = noop })
+    T.eq(type(b), "table", "corrected retry returns the bucket handle")
+    T.truthy(c:IsRegistered("E1"), "retry registered E1")
+    T.truthy(c:IsRegistered("E3_GONE"), "retry registered the formerly-bad name")
+end)
+
 -- registeronce-throw-atomic
 test("RegisterOnce: a throwing native register leaves no state and retry succeeds", function()
     local F = T.fresh()

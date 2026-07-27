@@ -334,11 +334,29 @@ function Controller:RegisterBucket(spec)
         end
     end
 
+    -- Native-first with rollback (FND-027, pairing with FND-026's ordering
+    -- rule): register every member event on the frame BEFORE any bookkeeping.
+    -- If the client rejects a name mid-loop (Midnight throws on unknown or
+    -- removed events), natively unregister the members that did register and
+    -- rethrow -- the error propagates with the controller unchanged, never
+    -- leaving live events wired to a bucket handle the caller never received.
+    local registered = 0
+    local ok, nativeErr = pcall(function()
+        for i = 1, #list do
+            self._frame:RegisterEvent(list[i])
+            registered = i
+        end
+    end)
+    if not ok then
+        for i = 1, registered do
+            self._frame:UnregisterEvent(list[i])
+        end
+        error(nativeErr, 0)
+    end
+
     for i = 1, #list do
-        local event = list[i]
-        self._handlers[event] = onFire
-        self._bucketEvents[event] = bucket
-        self._frame:RegisterEvent(event)
+        self._handlers[list[i]] = onFire
+        self._bucketEvents[list[i]] = bucket
     end
     self._buckets[#self._buckets + 1] = bucket
 

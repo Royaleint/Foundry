@@ -153,11 +153,11 @@ function T.installMocks(tocVersion)
             -- Capture the true passed-arg count via varargs: a fixed parameter
             -- list would make select("#") always report 3, hiding whether the
             -- controller forwarded unit2 or omitted it.
-            local n = select("#", ...)
             local event, unit1, unit2 = ...
             if T.throwOnRegister and T.throwOnRegister[event] then
                 error("Attempted to register unknown event \"" .. event .. "\"")
             end
+            local n = select("#", ...)
             self.calls.RegisterUnitEvent[#self.calls.RegisterUnitEvent + 1] =
                 { event = event, unit1 = unit1, unit2 = unit2, n = n }
         end
