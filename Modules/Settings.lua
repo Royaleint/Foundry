@@ -28,6 +28,16 @@ Settings.API_VERSION = 1
 
 local liveKeys = {}
 
+-- Registered-category cache (FND-032). Blizzard provides no way to unregister
+-- an options category, so a name's first successful registration is permanent
+-- for the session. A later :New for the same name re-binds the cached Blizzard
+-- objects when the registration inputs match (same frame, title, mode, parent
+-- category) -- the player keeps exactly one panel entry across
+-- New/Destroy/New cycles -- and is refused when they differ, since the stuck
+-- category can neither be reused for different inputs nor removed.
+-- name -> { category, layout, frame, title, mode, parentCategory }
+local registeredCategories = {}
+
 --------------------------------------------------------------------------------
 -- Path selection (feature detection, not version checks or pcall)
 --------------------------------------------------------------------------------
@@ -188,7 +198,23 @@ function Settings:New(config)
     local layout
     local mode
 
-    if hasModernSettings() then
+    -- Re-bind path (FND-032): this name already registered a Blizzard category
+    -- this session. Reuse it when the inputs match; refuse when they differ.
+    local cached = registeredCategories[name]
+    if cached then
+        local parentCategory = parent and parent._category or nil
+        local mismatch = (cached.frame ~= frame and "frame")
+            or (cached.title ~= title and "title")
+            or (cached.parentCategory ~= parentCategory and "parent")
+        if mismatch then
+            F:RaiseDevError("Settings:New: name '" .. name .. "' already registered a "
+                .. "Blizzard category this session with a different " .. mismatch
+                .. "; categories cannot be unregistered, so a re-:New must reuse "
+                .. "the same registration inputs")
+            return
+        end
+        category, layout, mode = cached.category, cached.layout, cached.mode
+    elseif hasModernSettings() then
         -- Modern path: feature-detected, no pcall (fail-loud per house style).
         if parent then
             -- On the modern path, the parent must also have been registered via the
@@ -226,6 +252,18 @@ function Settings:New(config)
         F:RaiseDevError("Settings:New: no supported options-registration API on this client")
         return
     end
+
+    -- Record the permanent registration so a later same-name :New re-binds it
+    -- instead of registering a duplicate (FND-032). A cached re-bind rewrites
+    -- the identical record.
+    registeredCategories[name] = {
+        category       = category,
+        layout         = layout,
+        frame          = frame,
+        title          = title,
+        mode           = mode,
+        parentCategory = parent and parent._category or nil,
+    }
 
     local c = setmetatable({}, Controller)
     c._category            = category
