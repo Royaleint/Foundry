@@ -4,6 +4,77 @@ All notable changes to Foundry-1.0 are recorded here.
 
 ## [Unreleased]
 
+## [1.0.103] - 2026-08-01
+
+This release fixes a run of quiet problems. One of them could delete settings your
+addon had already saved. Another slowly made every tooltip in the game a little
+more expensive to draw, for everyone, not just for the addon that caused it.
+Neither announces itself, so it is worth updating even if nothing here sounds
+familiar.
+
+### Fixed
+- **DB: a re-created store can no longer delete saved data at logout.** Calling
+  `:New` again on the same SavedVariables table with a changed defaults table
+  left the old store registered alongside the new one. At logout the stale store
+  still ran its own default-stripping pass and deleted any stored value that
+  matched one of its *old* defaults, quietly destroying real user data. Only the
+  newest store for a given table strips now.
+- **Tooltip: create and destroy cycles no longer slow down every tooltip render.**
+  Every `:New` used to install a fresh tooltip post-call that the game never
+  removes, so ordinary create and destroy cycles permanently added work to every
+  tooltip render for the entire client, not just for the addon that did it. This
+  came from documented, correct use of the module, not from misuse. Foundry now
+  registers exactly one post-call per tooltip type and routes internally.
+- **Commands: destroying a controller twice no longer kills a replacement's
+  slash command.** A stale controller's second `:Destroy()` cleared the slash
+  handler for a name a fresh `:New` had legitimately reclaimed. The replacement's
+  globals survived, so the game still accepted the command and simply did nothing
+  for the rest of the session. `:Destroy()` is properly idempotent now, and
+  teardown can no longer reach a successor's registration.
+- **Events: a rejected event registration no longer leaves a dead subscription.**
+  The handler was recorded before the game's own registration call. When that
+  call refuses an event name, which Midnight does for events that were removed or
+  renamed, the error escaped with the handler already stored: `IsRegistered`
+  reported true for a subscription that would never fire, and a corrected retry
+  was refused as a duplicate. Registration is now all-or-nothing.
+- **Events: `RegisterBucket` rolls back cleanly when one member event fails.**
+  A refusal partway through the list used to leave the earlier events live and
+  pointed at a handler the caller never received a handle for, so nothing could
+  cancel it and a pending flush could still fire. A failed bucket now unwinds
+  completely.
+- **Settings: re-creating a panel after `:Destroy()` no longer duplicates the
+  options category.** The player saw the addon listed twice in Interface Options
+  for the rest of the session. The existing category is cached and re-bound
+  instead of registered a second time. Note the new refusal that comes with this:
+  for a name that already registered a category this session, a re-creation
+  supplying a different frame, title, or parent is refused and returns nil,
+  because a registered category can neither be reused for different inputs nor
+  removed once the game has it.
+- **Commands: a bad `help` value is caught at `Register` instead of in chat.**
+  A table printed a raw pointer to the player, and a `help` function that threw
+  escaped when someone typed the bare slash command. `help` is now validated as a
+  string or function up front, and the function form is called defensively at
+  render with a fallback line.
+- **A development-build path no longer freezes defaults onto disk.** A type
+  mismatch raised partway through preparing a section could leave freshly written
+  defaults behind as though they were user data. This path exists only in
+  development builds and never affected a packaged release.
+
+### Changed
+- **Tooltip works on more clients than it claimed, and now says so.** The module
+  header and its refusal message both described it as Retail-only, but the
+  underlying game system also ships on Classic Era 1.15.x and Pandaria Classic
+  5.5.x. The incorrect refusal was steering those consumers back toward the
+  hand-rolled global tooltip hooks this library exists to replace. To be precise
+  about the boundary, since it moved: the module works on Retail 10.0.2+, Classic
+  Era 1.15.x, and Pandaria Classic 5.5.x, and it is genuinely unavailable on TBC
+  Classic 2.5.x, where it still refuses.
+- **Events: trailing-edge buckets are cheaper under events that fire in bursts.**
+  Each member event fired used to allocate, schedule, and cancel a timer. Under
+  something like unit auras in a raid that meant hundreds of cycles a second to
+  protect a handler running about five times a second. Buckets now track a
+  deadline and re-arm a single timer per window.
+
 ## [1.0.102] - 2026-07-26
 
 ### Changed
