@@ -1,0 +1,41 @@
+{
+  "runtime.version": "Lua 5.1",
+  "runtime.builtin": {
+    "basic": "disable",
+    "debug": "disable",
+    "io": "disable",
+    "math": "disable",
+    "os": "disable",
+    "package": "disable",
+    "string": "disable",
+    "table": "disable",
+    "utf8": "disable"
+  },
+  "workspace.library": [
+    "../BawrLabs/mcp-servers/wow-api/vendor/ketho-wow-api/Annotations/Core",
+    "../BawrLabs/mcp-servers/wow-api/vendor/ketho-wow-api/Annotations/FrameXML"
+  ],
+  "workspace.ignoreDir": [
+    "Tests",
+    ".worktrees",
+    "Foundry_Dev",
+    ".claude"
+  ],
+  "diagnostics.globals": [
+    "SlashCmdList",
+
+    "CreateFrame",
+    "C_Timer",
+    "GetTime",
+    "C_AddOns",
+    "IsLoggedIn",
+    "UnitName",
+    "GetRealmName",
+    "ScrollUtil",
+    "CreateScrollBoxListLinearView",
+    "CreateDataProvider",
+    "TooltipDataProcessor",
+    "MenuUtil",
+    "Menu"
+  ]
+}
