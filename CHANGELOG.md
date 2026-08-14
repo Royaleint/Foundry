@@ -4,6 +4,14 @@ All notable changes to Foundry-1.0 are recorded here.
 
 ## [Unreleased]
 
+## [1.0.104] - 2026-08-14
+
+### Changed
+- **Updated for patch 12.1.** Foundry is now flagged compatible with the 12.1
+  retail client, so it no longer shows as out of date. Everything in the game's
+  toolkit Foundry builds on was re-checked after the patch went live and is
+  unchanged, so no code changes were needed.
+
 ## [1.0.103] - 2026-08-01
 
 This release fixes a run of quiet problems. One of them could delete settings your
