@@ -32,9 +32,11 @@ ignore:
   - Foundry-1.0_DevBuild.toc
   - .gitattributes
   - .luacheckrc
+  - .luarc.json
   - .pkgmeta
   - .wiki
   - README.md
   - CHANGELOG.md
   - RELEASE_NOTES.html
+  - RELEASE_NOTES.md
   - Tests
