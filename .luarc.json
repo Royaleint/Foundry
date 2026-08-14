@@ -11,10 +11,6 @@
     "table": "disable",
     "utf8": "disable"
   },
-  "workspace.library": [
-    "../BawrLabs/mcp-servers/wow-api/vendor/ketho-wow-api/Annotations/Core",
-    "../BawrLabs/mcp-servers/wow-api/vendor/ketho-wow-api/Annotations/FrameXML"
-  ],
   "workspace.ignoreDir": [
     "Tests",
     ".worktrees",
