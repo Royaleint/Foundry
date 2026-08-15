@@ -21,3 +21,6 @@ Foundry-1.0_DevBuild.toc
 # Private dev environment (separate repo: Royaleint/Foundry_Dev) — tracker,
 # plans, and dev notes. Never part of the public code repo's history.
 Foundry_Dev/
+
+# Local agent instructions.
+/AGENTS.md
