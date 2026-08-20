@@ -37,7 +37,7 @@ local byAddonName = {}        -- addonName -> controller  (PENDING ADDON_LOADED 
 local ownedNames = {}         -- addonName -> controller  (PERSISTENT: lives until Destroy; backs re-register rejection)
 local loginControllers = {}   -- controller -> true  (set: who wants login/logout phases)
 local loginFired = false      -- central "PLAYER_LOGIN already fired" flag
-local postLogout = {}          -- array of private post-logout callbacks (Cycle-3 DB strip seam)
+local postLogout = {}          -- array of private post-logout callbacks (DB strip seam)
 
 -- Surface a captured hook error through F:RaiseDevError. The captured value
 -- may be ANY Lua value, including a falsy one (error(nil), error(false), bare

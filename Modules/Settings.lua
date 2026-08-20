@@ -245,7 +245,7 @@ function Settings:New(config)
         -- parent-child nesting; a child registers as a sibling). This branch is
         -- forward-compat insurance only — nil on all currently-runnable supported
         -- flavors (Classic Era 1.15.x, Pandaria Classic 5.5.x, Retail all expose
-        -- modern Settings). Covered by headless test stub; no in-game Gate-2 path.
+        -- modern Settings). Covered by headless test stub; no in-game verification path.
         _G.InterfaceOptions_AddCategory(frame)
         mode = "interface-options"
     else
