@@ -5,6 +5,8 @@
 -- per consumer owns a single hidden frame and an event -> handler table, so
 -- registration, dispatch, and teardown all live in one place. The native
 -- primitive stays reachable underneath via :GetNativeHandles().
+-- When C_EventUtils is available, invalid event names are refused before the
+-- native call; clients without it retain native registration semantics.
 
 local F = _G.Foundry_1_0
 if not F then
@@ -24,6 +26,14 @@ Events.API_VERSION = 2
 
 local Controller = {}
 Controller.__index = Controller
+
+-- Modern clients can reject a retired event before the native registration
+-- call. Keep the check at registration time so older clients without this API
+-- retain the native throw-first behavior.
+local function isEventValid(event)
+    local eventUtils = _G.C_EventUtils
+    return not eventUtils or not eventUtils.IsEventValid or eventUtils.IsEventValid(event)
+end
 
 -- Register a standard frame event. One handler per event: a duplicate is
 -- rejected, leaving the existing registration unchanged. Validation is atomic
@@ -48,6 +58,10 @@ function Controller:Register(event, handler)
     if self._handlers[event] then
         F:RaiseDevError("Events:Register: event '" .. event
             .. "' is already registered; Unregister it first to replace the handler")
+        return
+    end
+    if not isEventValid(event) then
+        F:RaiseDevError("Events:Register: '" .. event .. "' is not a valid event on this client")
         return
     end
 
@@ -87,6 +101,10 @@ function Controller:RegisterUnit(event, handler, unit1, unit2)
             .. "' is already registered; Unregister it first to replace the handler")
         return
     end
+    if not isEventValid(event) then
+        F:RaiseDevError("Events:RegisterUnit: '" .. event .. "' is not a valid event on this client")
+        return
+    end
 
     if unit2 ~= nil then
         self._frame:RegisterUnitEvent(event, unit1, unit2)
@@ -118,6 +136,10 @@ function Controller:RegisterOnce(event, handler)
     if self._handlers[event] then
         F:RaiseDevError("Events:RegisterOnce: event '" .. event
             .. "' is already registered; Unregister it first to replace the handler")
+        return
+    end
+    if not isEventValid(event) then
+        F:RaiseDevError("Events:RegisterOnce: '" .. event .. "' is not a valid event on this client")
         return
     end
 
@@ -288,6 +310,16 @@ function Controller:RegisterBucket(spec)
         if self._handlers[list[i]] then
             F:RaiseDevError("Events:RegisterBucket: event '" .. list[i]
                 .. "' is already registered; Unregister it (or Cancel its bucket) first")
+            return
+        end
+    end
+
+    -- Validate every member before the native loop, so a rejected bucket stays
+    -- atomic even when an earlier member would otherwise be registered first.
+    for i = 1, #list do
+        if not isEventValid(list[i]) then
+            F:RaiseDevError("Events:RegisterBucket: '" .. list[i]
+                .. "' is not a valid event on this client")
             return
         end
     end

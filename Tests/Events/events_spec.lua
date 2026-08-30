@@ -1634,6 +1634,61 @@ end)
 -- unchanged -- no phantom IsRegistered, and a corrected retry must succeed.
 --------------------------------------------------------------------------------
 
+local function rejectRetiredEvent()
+    _G.C_EventUtils = {
+        IsEventValid = function(event)
+            return event ~= "RETIRED_EVENT"
+        end,
+    }
+end
+
+-- eventutils-register-refusal
+test("Register: C_EventUtils refuses an invalid event before native registration", function()
+    local F = T.fresh()
+    local c = F.Events:New("A")
+    rejectRetiredEvent()
+    local ok = pcall(function() c:Register("RETIRED_EVENT", noop) end)
+    T.falsy(ok, "dev error refuses the invalid event")
+    T.falsy(c:IsRegistered("RETIRED_EVENT"), "no handler is recorded")
+    T.eq(#T.frames[1].calls.RegisterEvent, 0, "native RegisterEvent is not called")
+end)
+
+-- eventutils-registerunit-refusal
+test("RegisterUnit: C_EventUtils refuses an invalid event before native registration", function()
+    local F = T.fresh()
+    local c = F.Events:New("A")
+    rejectRetiredEvent()
+    local ok = pcall(function() c:RegisterUnit("RETIRED_EVENT", noop, "player") end)
+    T.falsy(ok, "dev error refuses the invalid event")
+    T.falsy(c:IsRegistered("RETIRED_EVENT"), "no handler is recorded")
+    T.eq(#T.frames[1].calls.RegisterUnitEvent, 0, "native RegisterUnitEvent is not called")
+end)
+
+-- eventutils-registeronce-refusal
+test("RegisterOnce: C_EventUtils refuses an invalid event before native registration", function()
+    local F = T.fresh()
+    local c = F.Events:New("A")
+    rejectRetiredEvent()
+    local ok = pcall(function() c:RegisterOnce("RETIRED_EVENT", noop) end)
+    T.falsy(ok, "dev error refuses the invalid event")
+    T.falsy(c:IsRegistered("RETIRED_EVENT"), "no handler is recorded")
+    T.eq(#T.frames[1].calls.RegisterEvent, 0, "native RegisterEvent is not called")
+end)
+
+-- eventutils-registerbucket-refusal
+test("RegisterBucket: C_EventUtils refuses every invalid member before native registration", function()
+    local F = T.fresh()
+    local c = F.Events:New("A")
+    rejectRetiredEvent()
+    local ok = pcall(function()
+        c:RegisterBucket({ events = { "VALID_EVENT", "RETIRED_EVENT" }, interval = 0.2, handler = noop })
+    end)
+    T.falsy(ok, "dev error refuses the invalid member")
+    T.falsy(c:IsRegistered("VALID_EVENT"), "no valid member is partially recorded")
+    T.falsy(c:IsRegistered("RETIRED_EVENT"), "no invalid member is recorded")
+    T.eq(#T.frames[1].calls.RegisterEvent, 0, "no native member registration occurs")
+end)
+
 -- register-throw-atomic
 test("Register: a throwing native register leaves no state and retry succeeds", function()
     local F = T.fresh()
