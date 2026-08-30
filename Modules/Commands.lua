@@ -15,7 +15,42 @@ end
 if F:HasModule("Commands") then return end
 
 local Commands = {}
-Commands.API_VERSION = 1
+Commands.API_VERSION = 2
+Commands.Guards = {}
+
+local restrictionTypes = {
+    { key = "Combat", name = "combat" },
+    { key = "Encounter", name = "encounter" },
+    { key = "ChallengeMode", name = "challenge mode" },
+    { key = "PvPMatch", name = "PvP match" },
+    { key = "Map", name = "map" },
+    { key = "Chat", name = "chat" },
+}
+
+-- Refuse commands while any client-reported addon restriction is active. On
+-- clients without the modern restriction namespace, retain the established
+-- combat-only behavior.
+function Commands.Guards.NotRestricted()
+    local restrictedActions = _G.C_RestrictedActions
+    local enum = _G.Enum
+    local types = enum and enum.AddOnRestrictionType
+    if restrictedActions and type(restrictedActions.IsAddOnRestrictionActive) == "function" and types then
+        for i = 1, #restrictionTypes do
+            local restriction = restrictionTypes[i]
+            local restrictionType = types[restriction.key]
+            if restrictionType ~= nil and restrictedActions.IsAddOnRestrictionActive(restrictionType) then
+                return false, "Commands are unavailable while " .. restriction.name .. " restrictions are active."
+            end
+        end
+        return true
+    end
+
+    local inCombatLockdown = _G.InCombatLockdown
+    if type(inCombatLockdown) == "function" and inCombatLockdown() then
+        return false, "Commands are unavailable while combat restrictions are active."
+    end
+    return true
+end
 
 -- Trim leading and trailing whitespace; internal whitespace is preserved.
 local function trim(s)
@@ -340,6 +375,10 @@ end
 -- legitimately reclaimed since.
 function Controller:Destroy()
     if self._destroyed then return end
+    if self._restrictionEvents then
+        self._restrictionEvents:Destroy()
+        self._restrictionEvents = nil
+    end
     if self._slashListKey then
         SlashCmdList[self._slashListKey] = nil
         self._slashListKey = nil
@@ -384,6 +423,10 @@ function Commands:New(config)
         and type(config.unknownMessage) ~= "string"
         and type(config.unknownMessage) ~= "function" then
         F:RaiseDevError("Commands:New: unknownMessage must be a string or a function")
+        return
+    end
+    if config.restrictionNotice ~= nil and type(config.restrictionNotice) ~= "boolean" then
+        F:RaiseDevError("Commands:New: restrictionNotice must be a boolean")
         return
     end
 
@@ -449,6 +492,34 @@ function Commands:New(config)
 
     SlashCmdList[key] = function(msg)
         c:Dispatch(msg)
+    end
+
+    -- Opt-in only: consumers that use the built-in guard without this setting
+    -- get no extra frame and no unsolicited chat output. The event is checked
+    -- dynamically so clients that do not expose it remain silent.
+    if config.restrictionNotice then
+        local eventUtils = _G.C_EventUtils
+        if eventUtils and type(eventUtils.IsEventValid) == "function"
+            and eventUtils.IsEventValid("ADDON_RESTRICTION_STATE_CHANGED") then
+            local eventController = F.Events:New("Commands:" .. config.name)
+            eventController:Register("ADDON_RESTRICTION_STATE_CHANGED", function(_, restrictionType, state)
+                local enum = _G.Enum
+                local states = enum and enum.AddOnRestrictionState
+                if states and state == states.Activating then
+                    local name = "addon"
+                    local types = enum.AddOnRestrictionType
+                    for i = 1, #restrictionTypes do
+                        local restriction = restrictionTypes[i]
+                        if types and types[restriction.key] == restrictionType then
+                            name = restriction.name
+                            break
+                        end
+                    end
+                    c:_print("Commands are about to be paused while " .. name .. " restrictions activate.")
+                end
+            end)
+            c._restrictionEvents = eventController
+        end
     end
 
     return c

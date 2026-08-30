@@ -8,6 +8,29 @@ local T = ...
 local tests = {}
 local function test(name, fn) tests[#tests + 1] = { name = name, fn = fn } end
 
+local function installRestrictions(active)
+    _G.Enum = {
+        AddOnRestrictionType = {
+            Combat = 0, Encounter = 1, ChallengeMode = 2,
+            PvPMatch = 3, Map = 4, Chat = 5,
+        },
+        AddOnRestrictionState = { Inactive = 0, Activating = 1, Active = 2 },
+    }
+    _G.C_RestrictedActions = {
+        IsAddOnRestrictionActive = function(restrictionType)
+            return active and active[restrictionType] == true
+        end,
+    }
+end
+
+local function enableRestrictionNotice()
+    _G.C_EventUtils = {
+        IsEventValid = function(event)
+            return event == "ADDON_RESTRICTION_STATE_CHANGED"
+        end,
+    }
+end
+
 -- 1
 test("New returns a controller exposing the public methods", function()
     local F = T.fresh()
@@ -219,6 +242,58 @@ test("guard returning true passes through to normal dispatch", function()
     T.truthy(hit, "passes through")
 end)
 
+-- restriction-guard-published
+test("Guards.NotRestricted refuses every active client restriction with a readable reason", function()
+    local F = T.fresh()
+    T.eq(type(F.Commands.Guards), "table", "Guards table is published")
+    T.eq(type(F.Commands.Guards.NotRestricted), "function", "NotRestricted is published")
+    for restrictionType, name in pairs({
+        [0] = "combat", [1] = "encounter", [2] = "challenge mode",
+        [3] = "PvP match", [4] = "map", [5] = "chat",
+    }) do
+        installRestrictions({ [restrictionType] = true })
+        local allowed, reason = F.Commands.Guards.NotRestricted()
+        T.falsy(allowed, "active " .. name .. " restriction blocks commands")
+        T.truthy(reason:find(name, 1, true), "reason names the active " .. name .. " restriction")
+    end
+end)
+
+-- restriction-guard-fallback
+test("Guards.NotRestricted falls back to InCombatLockdown without C_RestrictedActions", function()
+    local F = T.fresh()
+    _G.InCombatLockdown = function() return true end
+    local allowed, reason = F.Commands.Guards.NotRestricted()
+    T.falsy(allowed, "combat fallback blocks commands")
+    T.truthy(reason:find("combat", 1, true), "fallback reason names combat")
+end)
+
+-- restriction-notice-opt-in
+test("restrictionNotice subscribes through Events and prints only while activating", function()
+    local F = T.fresh()
+    installRestrictions()
+    enableRestrictionNotice()
+    local c = F.Commands:New({ name = "T", slashes = { "/t" }, restrictionNotice = true })
+    T.eq(#T.frames, 1, "opt-in creates one Events controller frame")
+    local fr = T.frames[1]
+    T.eq(fr.calls.RegisterEvent[1][1], "ADDON_RESTRICTION_STATE_CHANGED", "notice event registered")
+    T.Fire(fr, "ADDON_RESTRICTION_STATE_CHANGED", 0, _G.Enum.AddOnRestrictionState.Active)
+    T.eq(#T.output, 0, "active state alone does not print a notice")
+    T.Fire(fr, "ADDON_RESTRICTION_STATE_CHANGED", 0, _G.Enum.AddOnRestrictionState.Activating)
+    T.outputContains("Commands are about to be paused", "activating state prints the notice")
+    c:Destroy()
+    T.Fire(fr, "ADDON_RESTRICTION_STATE_CHANGED", 0, _G.Enum.AddOnRestrictionState.Activating)
+    T.eq(#T.output, 1, "destroyed controller no longer receives notices")
+end)
+
+-- restriction-notice-opt-out
+test("controllers without restrictionNotice add no event subscription", function()
+    local F = T.fresh()
+    installRestrictions()
+    enableRestrictionNotice()
+    F.Commands:New({ name = "T", slashes = { "/t" } })
+    T.eq(#T.frames, 0, "no Events controller is created without opt-in")
+end)
+
 -- 19
 test("GetNativeHandles returns the contracted single-table shape", function()
     local F = T.fresh()
@@ -351,6 +426,7 @@ test("HasModule / RequireModule behavior", function()
     T.truthy(F:HasModule("Commands"), "has Commands")
     T.falsy(F:HasModule("Nope"), "does not have Nope")
     T.eq(F:RequireModule("Commands"), F.Commands, "RequireModule returns the module")
+    T.eq(F:RequireModule("Commands", 2), F.Commands, "Commands exposes restriction API version 2")
     T.raises(function() F:RequireModule("Nope") end, "missing module raises in both builds")
     T.raises(function() F:RequireModule("Commands", 99) end, "below-min API raises")
 end)
