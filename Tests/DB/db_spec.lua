@@ -122,9 +122,10 @@ test("harness: Foundry.DB module loads and registers under the harness", functio
     local F = T.fresh()
     T.eq(type(F.DB), "table", "DB module loaded")
     T.eq(type(F.DB.New), "function", "DB:New present")
-    T.eq(F.DB.API_VERSION, 1, "DB.API_VERSION == 1")
+    T.eq(F.DB.API_VERSION, 2, "DB.API_VERSION == 2")
     T.truthy(F:HasModule("DB"), "DB registered")
     T.eq(F:RequireModule("DB", 1), F.DB, "RequireModule('DB',1) returns the module")
+    T.eq(F:RequireModule("DB", 2), F.DB, "RequireModule('DB',2) exposes the size-warning hook")
     -- Identity mocks present.
     T.eq(type(_G.UnitName), "function", "UnitName mock present")
     T.eq(type(_G.GetRealmName), "function", "GetRealmName mock present")
@@ -135,10 +136,10 @@ end)
 --------------------------------------------------------------------------------
 
 -- version-pins-library-and-module
-test("version-pins: F.API_VERSION == 6 and DB.API_VERSION == 1", function()
+test("version-pins: F.API_VERSION == 6 and DB.API_VERSION == 2", function()
     local F = T.fresh()
     T.eq(F.API_VERSION, 6, "library API_VERSION is 6 (DB 3 -> 4, List 4 -> 5, Settings/RegisterBucket 5 -> 6)")
-    T.eq(F.DB.API_VERSION, 1, "DB per-module marker == 1")
+    T.eq(F.DB.API_VERSION, 2, "DB per-module marker == 2 (size-warning hook added, FND-046)")
     -- Sibling markers unchanged.
     T.eq(F.Commands.API_VERSION, 2, "Commands marker == 2 (restriction guard added, FND-045)")
     T.eq(F.Events.API_VERSION, 2, "Events marker == 2 (RegisterBucket added, FND-008)")
@@ -1826,6 +1827,138 @@ test("ready-hook: OnReady on a destroyed controller refuses", function()
 end)
 
 --------------------------------------------------------------------------------
+-- saved-variables-too-large hook (FND-046)
+--------------------------------------------------------------------------------
+
+test("size-warning: SAVED_VARIABLES_TOO_LARGE reaches only the matching addon's DB callback", function()
+    local F = freshLoaded()
+    T.loadedAddons["AddonA"] = true
+    T.loadedAddons["AddonB"] = true
+    local dbA = F.DB:New({ name = "AddonA", sv = "DB_A", defaultProfile = true })
+    local dbB = F.DB:New({ name = "AddonB", sv = "DB_B", defaultProfile = true })
+    local gotA, gotB = nil, nil
+    dbA:OnSavedVariablesTooLarge(function(db, addon, sv)
+        gotA = { db = db, addon = addon, sv = sv }
+    end)
+    dbB:OnSavedVariablesTooLarge(function()
+        gotB = true
+    end)
+
+    local ok, err = pcall(function()
+        T.Fire(T.frames[#T.frames], "SAVED_VARIABLES_TOO_LARGE", "AddonA")
+    end)
+    T.truthy(not ok, "the Foundry dev diagnostic surfaces after callback delivery")
+    T.truthy(tostring(err):find("AddonA", 1, true), "diagnostic names the addon")
+    T.truthy(tostring(err):find("DB_A", 1, true), "diagnostic names the SavedVariables global")
+    T.truthy(rawequal(gotA.db, dbA), "matching callback receives its controller")
+    T.eq(gotA.addon, "AddonA", "matching callback receives the addon name")
+    T.eq(gotA.sv, "DB_A", "matching callback receives the SavedVariables global")
+    T.eq(gotB, nil, "unrelated DB callback was not invoked")
+end)
+
+test("size-warning: Destroyed DB controllers no longer receive the client warning", function()
+    local F = freshLoaded()
+    local db = newHS(F)
+    local calls = 0
+    db:OnSavedVariablesTooLarge(function() calls = calls + 1 end)
+    db:Destroy()
+    T.Fire(T.frames[#T.frames], "SAVED_VARIABLES_TOO_LARGE", "TestAddon")
+    T.eq(calls, 0, "destroyed controller was excluded")
+end)
+
+test("size-warning: one failing callback does not starve sibling DBs or hide their globals", function()
+    local F = freshLoaded()
+    T.loadedAddons["Owner"] = true
+    local dbA = F.DB:New({ name = "Owner", sv = "DB_A", defaultProfile = true })
+    local dbB = F.DB:New({ name = "Owner", sv = "DB_B", defaultProfile = true })
+    local delivered = false
+    dbA:OnSavedVariablesTooLarge(function() error("callback boom") end)
+    dbB:OnSavedVariablesTooLarge(function() delivered = true end)
+
+    local ok, err = pcall(function()
+        T.Fire(T.frames[#T.frames], "SAVED_VARIABLES_TOO_LARGE", "Owner")
+    end)
+    T.falsy(ok, "the size warning still surfaces")
+    T.truthy(delivered, "sibling callback ran after the failing callback")
+    T.truthy(tostring(err):find("DB_A", 1, true), "diagnostic names the first SavedVariables global")
+    T.truthy(tostring(err):find("DB_B", 1, true), "diagnostic names the second SavedVariables global")
+    T.truthy(tostring(err):find("callback boom", 1, true), "diagnostic includes the callback failure")
+end)
+
+test("size-warning: callback destruction does not skip a live sibling DB", function()
+    local F = freshLoaded()
+    T.loadedAddons["Owner"] = true
+    local dbA = F.DB:New({ name = "Owner", sv = "DB_A", defaultProfile = true })
+    local dbB = F.DB:New({ name = "Owner", sv = "DB_B", defaultProfile = true })
+    local delivered = false
+    dbA:OnSavedVariablesTooLarge(function(db) db:Destroy() end)
+    dbB:OnSavedVariablesTooLarge(function() delivered = true end)
+
+    local ok, err = pcall(function()
+        T.Fire(T.frames[#T.frames], "SAVED_VARIABLES_TOO_LARGE", "Owner")
+    end)
+    T.falsy(ok, "the size warning still surfaces")
+    T.truthy(delivered, "live sibling callback ran after the first DB destroyed itself")
+    T.truthy(tostring(err):find("DB_B", 1, true), "diagnostic includes the still-live sibling global")
+end)
+
+test("size-warning: callback destruction cannot silence a snapshotted sibling DB", function()
+    local F = freshLoaded()
+    T.loadedAddons["Owner"] = true
+    local dbA = F.DB:New({ name = "Owner", sv = "DB_A", defaultProfile = true })
+    local dbB = F.DB:New({ name = "Owner", sv = "DB_B", defaultProfile = true })
+    local delivered = 0
+    dbA:OnSavedVariablesTooLarge(function() dbB:Destroy() end)
+    dbB:OnSavedVariablesTooLarge(function() delivered = delivered + 1 end)
+
+    local ok, err = pcall(function()
+        T.Fire(T.frames[#T.frames], "SAVED_VARIABLES_TOO_LARGE", "Owner")
+    end)
+    T.falsy(ok, "the size warning still surfaces")
+    T.eq(delivered, 1, "snapshotted sibling callback ran despite mid-dispatch Destroy")
+    T.truthy(tostring(err):find("DB_B", 1, true), "diagnostic includes the snapshotted sibling global")
+end)
+
+test("size-warning: callback registration during delivery waits for the next warning", function()
+    local F = freshLoaded()
+    T.loadedAddons["Owner"] = true
+    local dbA = F.DB:New({ name = "Owner", sv = "DB_A", defaultProfile = true })
+    local dbB = F.DB:New({ name = "Owner", sv = "DB_B", defaultProfile = true })
+    local primaryCalls, lateCalls = 0, 0
+    dbA:OnSavedVariablesTooLarge(function()
+        primaryCalls = primaryCalls + 1
+        if primaryCalls == 1 then
+            dbB:OnSavedVariablesTooLarge(function() lateCalls = lateCalls + 1 end)
+        end
+    end)
+
+    pcall(function()
+        T.Fire(T.frames[#T.frames], "SAVED_VARIABLES_TOO_LARGE", "Owner")
+    end)
+    T.eq(primaryCalls, 1, "the original callback ran for the first warning")
+    T.eq(lateCalls, 0, "the callback registered during delivery did not run immediately")
+
+    pcall(function()
+        T.Fire(T.frames[#T.frames], "SAVED_VARIABLES_TOO_LARGE", "Owner")
+    end)
+    T.eq(primaryCalls, 2, "the original callback ran for the second warning")
+    T.eq(lateCalls, 1, "the new callback became eligible for the later warning")
+end)
+
+test("size-warning: a callback erroring nil is recorded as a callback failure", function()
+    local F = freshLoaded()
+    local db = newHS(F)
+    db:OnSavedVariablesTooLarge(function() error(nil) end)
+
+    local ok, err = pcall(function()
+        T.Fire(T.frames[#T.frames], "SAVED_VARIABLES_TOO_LARGE", "TestAddon")
+    end)
+    T.falsy(ok, "the size warning still surfaces")
+    T.truthy(tostring(err):find("a size-warning callback errored", 1, true),
+        "diagnostic records the nil-valued callback failure")
+end)
+
+--------------------------------------------------------------------------------
 -- shared-defaults (spec §9 shared-defaults): one defaults table, two controllers
 --------------------------------------------------------------------------------
 
@@ -1961,6 +2094,7 @@ local function bootOnly(tocVersion)
 end
 
 local SEAM_SUBSTR = "post-logout seam"
+local EVENTS_SUBSTR = "requires Foundry.Events"
 
 -- NEGATIVE (guard fires), dev build: a seam-less Lifecycle stub -> loading DB.lua
 -- RAISES at load (dev RaiseDevError), DB does not register, F.DB stays nil.
@@ -1991,6 +2125,16 @@ test("graft-guard: release build, seam-less Lifecycle -> DB stands down (prints,
     F.Lifecycle = { _RegisterPostLogout = nil }
     T.loadModule("Modules/DB.lua")   -- release: print + return, no raise
     T.outputContains(SEAM_SUBSTR, "release build prints the seam diagnostic")
+    T.falsy(F:HasModule("DB"), "DB did not register")
+    T.eq(F.DB, nil, "F.DB is absent")
+end)
+
+test("graft-guard: dev build, missing Events -> DB stands down (raises, no register)", function()
+    local F = bootOnly("@project-version@")
+    F.Lifecycle = { _RegisterPostLogout = function() end }
+    F.Events = nil
+    T.raises(function() T.loadModule("Modules/DB.lua") end,
+        "DB load must raise in dev when Events is absent", EVENTS_SUBSTR)
     T.falsy(F:HasModule("DB"), "DB did not register")
     T.eq(F.DB, nil, "F.DB is absent")
 end)

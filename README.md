@@ -85,6 +85,15 @@ commands:Register({
 })
 ```
 
+### SavedVariables size warning
+
+Use `db:OnSavedVariablesTooLarge(handler)` to react if the client refuses to
+save the owning addon's SavedVariables because they are too large. The handler
+receives `(db, addonName, savedVariablesGlobal)`. It fires only for that
+addon's live DB controllers; Foundry also emits a diagnostic naming the addon
+and SavedVariables global. This is a report-only hook: Foundry does not
+estimate sizes or add work to normal writes.
+
 Full API reference: [the Foundry wiki](https://github.com/Royaleint/Foundry/wiki).
 
 If you embed Foundry inside your own addon package, include
