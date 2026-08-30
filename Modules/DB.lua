@@ -43,9 +43,16 @@ if type(F.Lifecycle) ~= "table"
         .. "Foundry addon to at least this version. DB is unavailable this session.")
     return
 end
+if type(F.Events) ~= "table" or type(F.Events.New) ~= "function" then
+    F:RaiseDevError("DB requires Foundry.Events, which the Foundry core serving this "
+        .. "session does not provide. This embedded Foundry is " .. tostring(F.VERSION)
+        .. " but an older standalone Foundry addon won the runtime. Update the "
+        .. "standalone Foundry addon to at least this version. DB is unavailable this session.")
+    return
+end
 
 local DB = {}
-DB.API_VERSION = 1
+DB.API_VERSION = 2
 
 --------------------------------------------------------------------------------
 -- Shared private state (one set of upvalues per loaded library, lazy)
@@ -54,6 +61,11 @@ DB.API_VERSION = 1
 -- live (un-Destroyed) controllers keyed by sv name -- backs the one-live-per-sv
 -- rejection. A Destroyed controller releases its slot so a later :New may reuse it.
 local liveControllers = {}
+
+-- Live controllers by owning addon name, in DB construction order. One addon
+-- may own more than one SavedVariables global, while the client warning names
+-- only the addon; notify every live DB that belongs to that addon.
+local liveControllersByAddon = {}
 
 -- Controller -> store association, held OFF the controller in a file-local
 -- side table (Defect 2). The store must NOT live at a present controller
@@ -77,6 +89,10 @@ local stores = {}
 -- One-time guard: DB registers its single strip callback with Lifecycle's
 -- post-logout seam exactly once, at the first :New.
 local postLogoutRegistered = false
+
+-- DB owns one library-scoped listener for the client warning. It is created on
+-- the first DB so there is no frame at all for consumers that do not use DB.
+local sizeWarningEvents = nil
 
 -- The three managed section names and the SV sub-tables they live under. char
 -- and profile are keyed maps; global is flat (no key layer).
@@ -108,7 +124,7 @@ local DENY_LIST = {
 -- fields. Writes to any of these fail through __newindex.
 local RESERVED = {
     profile = true, char = true, global = true, sv = true,
-    OnReady = true, GetNativeHandles = true, Destroy = true,
+    OnReady = true, OnSavedVariablesTooLarge = true, GetNativeHandles = true, Destroy = true,
 }
 
 local REFERENCE_TAIL = "; see the DB Reference page"
@@ -124,6 +140,57 @@ local REFERENCE_TAIL = "; see the DB Reference page"
 -- __newindex, 3 = the consumer line that triggered it).
 local function refuse(msg)
     error("Foundry-1.0: " .. tostring(msg), 3)
+end
+
+local function onSavedVariablesTooLarge(_, addonName)
+    local controllers = liveControllersByAddon[addonName]
+    if not controllers then return end
+    local svNames, callbackFailed, callbackErr = {}, false, nil
+    -- Snapshot recipients and their handlers before invoking consumer code. A
+    -- callback may Destroy() a DB or register another handler; the snapshot
+    -- preserves the complete dispatch set at signal entry. Destroy affects a
+    -- later client warning, not the callbacks already captured for this one.
+    local snapshot = {}
+    for i = 1, #controllers do
+        local controller = controllers[i]
+        local store = controllerStore[controller]
+        local handlers = {}
+        if store and not store.destroyed then
+            for j = 1, #store.sizeWarningHandlers do
+                handlers[j] = store.sizeWarningHandlers[j]
+            end
+            svNames[#svNames + 1] = store.svName
+        end
+        snapshot[i] = { controller = controller, store = store, handlers = handlers }
+    end
+    for i = 1, #snapshot do
+        local recipient = snapshot[i]
+        local controller, store = recipient.controller, recipient.store
+        if store then
+            for j = 1, #recipient.handlers do
+                local handler = recipient.handlers[j]
+                local ok, err = pcall(handler, controller, addonName, store.svName)
+                if not ok then
+                    if not callbackFailed then callbackErr = err end
+                    callbackFailed = true
+                end
+            end
+        end
+    end
+    if #svNames > 0 then
+        local message = "DB: addon '" .. addonName .. "' SavedVariables globals '"
+            .. table.concat(svNames, "', '") .. "' were too large for the client to save"
+        if callbackFailed then
+            message = message .. "; a size-warning callback errored: " .. tostring(callbackErr)
+        end
+        F:RaiseDevError(message)
+    end
+end
+
+local function registerSizeWarning()
+    if sizeWarningEvents then return end
+    sizeWarningEvents = F.Events:New("Foundry.DB")
+    sizeWarningEvents:Register("SAVED_VARIABLES_TOO_LARGE", onSavedVariablesTooLarge)
 end
 
 --------------------------------------------------------------------------------
@@ -411,6 +478,25 @@ function Controller.OnReady(self, handler)
     handler(self)
 end
 
+-- Register a handler for the client's end-of-session SavedVariables size
+-- warning. Unlike OnReady, this is event-driven: it runs only when the client
+-- reports that this DB's owning addon could not be saved.
+function Controller.OnSavedVariablesTooLarge(self, handler)
+    local store = controllerStore[self]
+    if store == nil then
+        refuse("DB:OnSavedVariablesTooLarge called on a non-controller value")
+    end
+    if store.destroyed then
+        F:RaiseDevError("DB:OnSavedVariablesTooLarge called on a destroyed controller")
+        return
+    end
+    if type(handler) ~= "function" then
+        F:RaiseDevError("DB:OnSavedVariablesTooLarge: handler must be a function")
+        return
+    end
+    store.sizeWarningHandlers[#store.sizeWarningHandlers + 1] = handler
+end
+
 function Controller.GetNativeHandles(self)
     local store = controllerStore[self]
     -- Non-controller value: see Controller.OnReady.
@@ -454,6 +540,19 @@ function Controller.Destroy(self)
     if liveControllers[store.svName] == self then
         liveControllers[store.svName] = nil
     end
+    local byAddon = liveControllersByAddon[store.addonName]
+    if byAddon then
+        for i = #byAddon, 1, -1 do
+            if byAddon[i] == self then
+                table.remove(byAddon, i)
+                break
+            end
+        end
+        if #byAddon == 0 then
+            liveControllersByAddon[store.addonName] = nil
+        end
+    end
+    store.sizeWarningHandlers = {}
 end
 
 -- The controller metatable. __index: section names -> materialized section;
@@ -798,6 +897,7 @@ function DB:New(config)
 
     -- Build the store record (the strip's view of this db, controller-independent).
     local store = {
+        addonName = config.name,
         svName = config.sv,
         sv = sv,
         defaults = config.defaults,
@@ -805,6 +905,7 @@ function DB:New(config)
         profileKey = profileKey,
         sections = {},        -- section name -> live table (the cache)
         materialized = {},    -- section name -> true once a read begins (strip-owned; FND-035)
+        sizeWarningHandlers = {},
         destroyed = false,
     }
     -- A loud dev diagnostic for each value-level type mismatch (D2 preserve-skip).
@@ -873,6 +974,14 @@ function DB:New(config)
             writeStamp(sv, schemaPath, schema.version)
         end
     end
+
+    local byAddon = liveControllersByAddon[config.name]
+    if not byAddon then
+        byAddon = {}
+        liveControllersByAddon[config.name] = byAddon
+    end
+    byAddon[#byAddon + 1] = c
+    registerSizeWarning()
 
     return c
 end
