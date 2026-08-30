@@ -2,14 +2,17 @@
 --
 -- The AceAddon-3.0 replacement: addon-object creation plus correctly-timed
 -- startup callbacks. A single Foundry-private dispatcher frame owns the three
--- WoW startup signals (ADDON_LOADED / PLAYER_LOGIN / PLAYER_LOGOUT) once for the
+-- core WoW startup signals (ADDON_LOADED / PLAYER_LOGIN / PLAYER_LOGOUT), plus
+-- ADDONS_UNLOADING where the client validates it, once for the
 -- whole library; per-owner controllers subscribe to phase hooks over it. This
 -- keeps 100+ consumers O(1) per startup signal (ADDON_LOADED is demuxed by
 -- addon name, never a wake-up storm). The native dispatcher frame stays
 -- reachable underneath via :GetNativeHandles().
 --
 -- Three HONEST raw-signal hooks, named after the WoW events they bridge:
--- :OnAddonLoaded, :OnLogin, :OnLogout. There is deliberately no "ready" hook
+-- :OnAddonLoaded, :OnLogin, :OnUnloading, :OnLogout. OnUnloading is available
+-- only where ADDONS_UNLOADING is a valid client event; it does not promise an
+-- ordering relation with PLAYER_LOGOUT. There is deliberately no "ready" hook
 -- (DB loaded + defaults + migrations) -- that guarantee cannot be true until
 -- Foundry.DB lands; naming one now would imply a guarantee not yet carried.
 
@@ -23,7 +26,7 @@ end
 if F:HasModule("Lifecycle") then return end
 
 local Lifecycle = {}
-Lifecycle.API_VERSION = 1
+Lifecycle.API_VERSION = 2
 
 --------------------------------------------------------------------------------
 -- Shared private dispatcher (one set of upvalues per loaded library)
@@ -36,6 +39,8 @@ local dispatcher = nil       -- the single CreateFrame("Frame"), created on firs
 local byAddonName = {}        -- addonName -> controller  (PENDING ADDON_LOADED demux only; cleared one-shot on fire)
 local ownedNames = {}         -- addonName -> controller  (PERSISTENT: lives until Destroy; backs re-register rejection)
 local loginControllers = {}   -- controller -> true  (set: who wants login/logout phases)
+local unloadingControllers = {} -- registration-ordered controllers who want the pre-unload phase
+local unloadingSupported = false
 local loginFired = false      -- central "PLAYER_LOGIN already fired" flag
 local postLogout = {}          -- array of private post-logout callbacks (DB strip seam)
 
@@ -89,6 +94,19 @@ local function ensureDispatcher()
                 if r and not raised then raised, firstErr = true, e end
             end
             if raised then surfaceHookError("login", firstErr) end  -- surface ONLY after the full fan-out
+        elseif event == "ADDONS_UNLOADING" and unloadingSupported then
+            local closingClient = ...
+            local snapshot, n = {}, 0
+            for i = 1, #unloadingControllers do
+                n = n + 1
+                snapshot[n] = unloadingControllers[i]
+            end
+            local raised, firstErr = false, nil
+            for i = 1, n do
+                local r, e = snapshot[i]:_fireUnloading(closingClient)
+                if r and not raised then raised, firstErr = true, e end
+            end
+            if raised then surfaceHookError("unloading", firstErr) end
         elseif event == "PLAYER_LOGOUT" then
             local snapshot, n = {}, 0
             for c in pairs(loginControllers) do n = n + 1; snapshot[n] = c end
@@ -118,6 +136,12 @@ local function ensureDispatcher()
     frame:RegisterEvent("ADDON_LOADED")
     frame:RegisterEvent("PLAYER_LOGIN")
     frame:RegisterEvent("PLAYER_LOGOUT")
+    local eventUtils = _G.C_EventUtils
+    if eventUtils and type(eventUtils.IsEventValid) == "function"
+        and eventUtils.IsEventValid("ADDONS_UNLOADING") then
+        frame:RegisterEvent("ADDONS_UNLOADING")
+        unloadingSupported = true
+    end
 
     -- Late-creation catch-up (the login analogue of OnAddonLoaded's
     -- IsAddOnLoaded probe): if the first controller of the session is created
@@ -133,7 +157,7 @@ local function ensureDispatcher()
 end
 
 -- Private post-logout-fan-out registration seam (spec §6.4). The underscore
--- name keeps it off the public API, so Lifecycle.API_VERSION stays 1 (the
+-- name keeps it off the public API, so it does not affect Lifecycle.API_VERSION (the
 -- _TestFire precedent). Foundry.DB registers its logout strip here exactly
 -- once, at its first :New, and calls ensureDispatcher() itself so the
 -- PLAYER_LOGOUT registration exists even for a DB-only consumer that never
@@ -191,6 +215,16 @@ function Controller:_fireLogout()
     if not fn then return false end
     self._hooks.logout = nil
     local ok, err = pcall(fn, self._owner)
+    if not ok then return true, err end
+    return false
+end
+
+function Controller:_fireUnloading(closingClient)
+    if self._destroyed then return false end
+    local fn = self._hooks.unloading
+    if not fn then return false end
+    self._hooks.unloading = nil
+    local ok, err = pcall(fn, self._owner, closingClient)
     if not ok then return true, err end
     return false
 end
@@ -293,6 +327,30 @@ function Controller:OnLogout(handler)
     loginControllers[self] = true
 end
 
+-- Register the one-shot pre-unload hook. It fires when the client emits
+-- ADDONS_UNLOADING, passing its closingClient boolean. Clients that do not
+-- expose a valid ADDONS_UNLOADING event keep the hook silent. This hook and
+-- OnLogout bridge distinct native events; no ordering relation is promised.
+function Controller:OnUnloading(handler)
+    if self._destroyed then
+        F:RaiseDevError("Lifecycle:OnUnloading called on a destroyed controller")
+        return
+    end
+    if type(handler) ~= "function" then
+        F:RaiseDevError("Lifecycle:OnUnloading: handler must be a function")
+        return
+    end
+    if self._registered.unloading then
+        F:RaiseDevError("Lifecycle:OnUnloading: an unloading hook is already registered for '"
+            .. self._addonName .. "'; one hook per phase per controller")
+        return
+    end
+
+    self._registered.unloading = true
+    self._hooks.unloading = handler
+    unloadingControllers[#unloadingControllers + 1] = self
+end
+
 -- The escape hatch. Returns the live SHARED dispatcher frame and a shallow
 -- read-only snapshot of this controller's hook set; mutating the snapshot
 -- cannot affect live dispatch. Two controllers' .frame return the same
@@ -306,6 +364,7 @@ function Controller:GetNativeHandles()
         addonLoaded = self._hooks.addonLoaded,
         login = self._hooks.login,
         logout = self._hooks.logout,
+        unloading = self._hooks.unloading,
     }
     return {
         frame = dispatcher,
@@ -326,6 +385,12 @@ function Controller:Destroy()
     byAddonName[self._addonName] = nil
     ownedNames[self._addonName] = nil
     loginControllers[self] = nil
+    for i = #unloadingControllers, 1, -1 do
+        if unloadingControllers[i] == self then
+            table.remove(unloadingControllers, i)
+            break
+        end
+    end
     self._hooks = {}
     self._registered = {}
     self._owner = nil
@@ -369,7 +434,7 @@ function Lifecycle:New(owner, addonName)
     -- _registered persists a phase's registration for the controller's whole
     -- life, separate from _hooks (which the one-shot fire clears) -- a second
     -- OnX is rejected even after its phase fired.
-    c._registered = { addonLoaded = false, login = false, logout = false }
+    c._registered = { addonLoaded = false, login = false, logout = false, unloading = false }
     c._destroyed = false
 
     -- Enrol for the pending ADDON_LOADED demux and the persistent re-register

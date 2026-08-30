@@ -44,6 +44,14 @@ local function dispatcherFrame()
     return T.frames[1]
 end
 
+local function enableUnloadingEvent()
+    _G.C_EventUtils = {
+        IsEventValid = function(event)
+            return event == "ADDONS_UNLOADING"
+        end,
+    }
+end
+
 --------------------------------------------------------------------------------
 -- Harness / bootstrap / module-reg
 --------------------------------------------------------------------------------
@@ -79,9 +87,9 @@ test("HasModule / RequireModule behavior for Lifecycle; additive version markers
     T.truthy(F:HasModule("Lifecycle"), "has Lifecycle")
     T.eq(F:RequireModule("Lifecycle"), F.Lifecycle, "RequireModule returns the module")
     T.eq(F:RequireModule("Lifecycle", 1), F.Lifecycle, "RequireModule min=1 returns the module")
+    T.eq(F:RequireModule("Lifecycle", 2), F.Lifecycle, "RequireModule min=2 returns the unloading hook API")
     T.raises(function() F:RequireModule("Lifecycle", 99) end, "above-max API raises", "API version")
-    -- Per-MODULE marker is 1 (matches Commands/Events precedent; does not change).
-    T.eq(F.Lifecycle.API_VERSION, 1, "Lifecycle.API_VERSION == 1")
+    T.eq(F.Lifecycle.API_VERSION, 2, "Lifecycle.API_VERSION == 2 (OnUnloading added, FND-044)")
     -- Library-wide version only ever bumps ADDITIVELY (2 -> 3 when Lifecycle shipped).
     T.eq(F.API_VERSION, 6, "library API_VERSION == 6 (additive bumps only)")
     -- Sibling modules still register and keep their own markers.
@@ -252,6 +260,71 @@ test("PLAYER_LOGIN / PLAYER_LOGOUT fan out to every login/logout controller once
     T.eq(hits.login, 3, "all three login hooks fired once")
     T.Fire(fr, "PLAYER_LOGOUT")
     T.eq(hits.logout, 3, "all three logout hooks fired once")
+end)
+
+-- unloading-supported-dispatch
+test("OnUnloading receives the closing-client flag from the shared dispatcher", function()
+    local F = T.fresh()
+    enableUnloadingEvent()
+    local c = F.Lifecycle:New(nil, "AddonA")
+    T.eq(type(c.OnUnloading), "function", "OnUnloading is published")
+    local closingClient
+    c:OnUnloading(function(_, closing) closingClient = closing end)
+    T.Fire(dispatcherFrame(), "ADDONS_UNLOADING", false)
+    T.eq(closingClient, false, "reload forwards closingClient == false")
+end)
+
+test("OnUnloading delivers subscribers in registration order", function()
+    local F = T.fresh()
+    enableUnloadingEvent()
+    local order = {}
+    for i = 1, 12 do
+        local c = F.Lifecycle:New(nil, "Addon" .. i)
+        c:OnUnloading(function() order[#order + 1] = i end)
+    end
+    T.Fire(dispatcherFrame(), "ADDONS_UNLOADING", true)
+    for i = 1, 12 do
+        T.eq(order[i], i, "subscriber " .. i .. " fired in registration order")
+    end
+end)
+
+-- unloading-registration-once
+test("the shared dispatcher registers ADDONS_UNLOADING exactly once when supported", function()
+    local F = T.fresh()
+    enableUnloadingEvent()
+    F.Lifecycle:New(nil, "AddonA")
+    F.Lifecycle:New(nil, "AddonB")
+    local seen = 0
+    for _, rec in ipairs(dispatcherFrame().calls.RegisterEvent) do
+        if rec[1] == "ADDONS_UNLOADING" then seen = seen + 1 end
+    end
+    T.eq(seen, 1, "ADDONS_UNLOADING is registered once for the library")
+end)
+
+-- unloading-unsupported-silent
+test("OnUnloading stays silent when the client does not support ADDONS_UNLOADING", function()
+    local F = T.fresh()
+    _G.C_EventUtils = { IsEventValid = function() return false end }
+    local c = F.Lifecycle:New(nil, "AddonA")
+    local hits = 0
+    c:OnUnloading(function() hits = hits + 1 end)
+    T.Fire(dispatcherFrame(), "ADDONS_UNLOADING", true)
+    T.eq(hits, 0, "unsupported event does not fire the hook")
+end)
+
+-- unloading-does-not-replace-logout
+test("OnUnloading does not change PLAYER_LOGOUT delivery", function()
+    local F = T.fresh()
+    enableUnloadingEvent()
+    local c = F.Lifecycle:New(nil, "AddonA")
+    local unloading, logout = 0, 0
+    c:OnUnloading(function() unloading = unloading + 1 end)
+    c:OnLogout(function() logout = logout + 1 end)
+    T.Fire(dispatcherFrame(), "ADDONS_UNLOADING", true)
+    T.eq(unloading, 1, "unloading hook fires")
+    T.eq(logout, 0, "unloading does not imply logout")
+    T.Fire(dispatcherFrame(), "PLAYER_LOGOUT")
+    T.eq(logout, 1, "logout behavior is unchanged")
 end)
 
 -- o1-150-controllers
