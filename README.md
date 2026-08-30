@@ -40,6 +40,12 @@ Foundry-1.0 delivers a focused set of modules covering what most addons reach fo
 
 All eight modules are available now.
 
+### Restriction guard
+
+`Commands.Guards.NotRestricted` is an optional command guard for client restriction states: Combat, Encounter, Challenge Mode, PvP Match, Map, and Chat. It returns a readable refusal reason for the active state and falls back to the normal combat-lockdown check on clients without `C_RestrictedActions`.
+
+Set `restrictionNotice = true` when creating a Commands controller to print one notice as a restriction begins. Controllers without that opt-in do not register the notification event or print anything.
+
 ## Using Foundry
 
 If your addon depends on a standalone Foundry install only, your TOC can use:

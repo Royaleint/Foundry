@@ -42,6 +42,9 @@ function T.installMocks(tocVersion)
     _G.InterfaceOptionsFrame        = nil
     _G.TooltipDataProcessor = nil
     _G.C_EventUtils = nil
+    _G.C_RestrictedActions = nil
+    _G.Enum = nil
+    _G.InCombatLockdown = function() return false end
 
     _G.SlashCmdList = {}
 
