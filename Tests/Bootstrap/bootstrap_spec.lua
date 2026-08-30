@@ -55,6 +55,12 @@ local function currentApiVersion()
     return _G.Foundry_1_0.API_VERSION
 end
 
+test("bootstrap: SOURCE identifies the folder that supplied the winning Foundry copy", function()
+    T.installMocks("@project-version@")
+    T.loadModule("Foundry.lua")
+    T.eq(_G.Foundry_1_0.SOURCE, "Foundry-1.0", "SOURCE is the winning addon folder")
+end)
+
 local function containsAll(messages, ...)
     local needles = { ... }
     for _, needle in ipairs(needles) do

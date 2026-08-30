@@ -33,6 +33,7 @@ local isDevBuild = (tocVersion == nil)
 local F = {}
 F.IS_DEV_BUILD = isDevBuild
 F.VERSION = isDevBuild and DEV_VERSION or tocVersion
+F.SOURCE = ADDON_NAME
 F.API_VERSION = 6
 F._LOAD_TOKEN = {}   -- per-load identity token (guarded-embed §2.2c)
 
