@@ -3,9 +3,8 @@
 --
 -- Scope: the FND-007 #2 version-aware suppression diagnostic. When a copy of the
 -- major version already won _G.Foundry_1_0, a later-loading copy must suppress
--- itself (the bootstrap gate). In a DEV winner we emit a diagnostic, but ONLY on
--- an API_VERSION skew between the suppressed copy and the winner -- same-version
--- multi-embed dev setups stay silent, and a release winner never fires at all.
+-- itself (the bootstrap gate). A DEV winner emits a diagnostic only on API_VERSION
+-- skew; a release winner emits only when it suppresses an enabled DevBuild.
 --
 -- These cases inject a FAKE `existing` core into _G.Foundry_1_0 (with a capturing
 -- RaiseDevError) and then loadfile Foundry.lua against it via T.loadModule, so the
@@ -25,6 +24,7 @@ local function injectExisting(opts)
     local fake = {
         IS_DEV_BUILD = opts.IS_DEV_BUILD,
         API_VERSION = opts.API_VERSION,
+        VERSION = opts.VERSION,
         _LOAD_TOKEN = {},          -- a distinct token: never matches the fresh copy's
         captured = captured,
     }
@@ -100,16 +100,24 @@ test("suppression: dev winner with same API_VERSION is silent", function()
     T.eq(#fake.captured, 0, "no diagnostic on a same-version embed")
 end)
 
--- (iii) RELEASE winner -> SILENT regardless of version. Proves the branch is
--- DEV-ONLY noise tuning: a real production graft (live release standalone winning)
--- never fires. Exercised with a skew so only the IS_DEV_BUILD gate can keep it quiet.
-test("suppression: release winner is silent even with an API_VERSION skew", function()
+-- (iii) release-over-release stays silent regardless of API version skew.
+test("suppression: release winner is silent when it suppresses another release", function()
     local current = currentApiVersion()
-    loadBootstrap()
-    local fake = injectExisting({ IS_DEV_BUILD = false, API_VERSION = current - 1 })
+    loadBootstrap("1.0.105")
+    local fake = injectExisting({ IS_DEV_BUILD = false, API_VERSION = current - 1, VERSION = "1.0.104" })
     T.loadModule("Foundry.lua")
     T.eq(_G.Foundry_1_0, fake, "the winning copy stays installed")
-    T.eq(#fake.captured, 0, "release winner never fires -- not production graft protection")
+    T.eq(#fake.captured, 0, "release-over-release remains silent")
+end)
+
+test("suppression: release winner reports when it suppresses an enabled DevBuild", function()
+    local current = currentApiVersion()
+    loadBootstrap("@project-version@")
+    local fake = injectExisting({ IS_DEV_BUILD = false, API_VERSION = current, VERSION = "1.0.104" })
+    T.loadModule("Foundry.lua")
+    T.eq(#fake.captured, 1, "release winner prints exactly one DevBuild diagnostic")
+    local ok, missing = containsAll(fake.captured, "DevBuild", "1.0.104", "loaded nothing")
+    T.truthy(ok, "diagnostic names the release winner and the suppressed DevBuild (missing: " .. tostring(missing) .. ")")
 end)
 
 -- Red-without-change: case (ii) is the discriminator for the FND-007 #2 change,
