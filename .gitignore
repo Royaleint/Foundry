@@ -24,3 +24,6 @@ Foundry_Dev/
 
 # Local agent instructions.
 /AGENTS.md
+
+# Claude Code session state and studio commands (tracked in the private dev repo, never here).
+.claude/
