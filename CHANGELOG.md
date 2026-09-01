@@ -4,6 +4,57 @@ All notable changes to Foundry-1.0 are recorded here.
 
 ## [Unreleased]
 
+## [1.0.105] - 2026-09-01
+
+### Added
+- **Lifecycle: a new `OnUnloading` hook runs before SavedVariables are
+  written.** It fires on the client's pre-unload signal, so a consumer can act
+  before its data is saved, and the handler is told whether the client is
+  closing or the session is only unloading. Handlers run in the order they
+  were registered. This hook is available only where the client's pre-unload
+  event exists; it makes no promise about firing before or after the existing
+  logout hook.
+- **Commands: a built-in guard can refuse commands during an addon
+  restriction.** `Commands.Guards.NotRestricted` checks the client's own
+  addon-restriction state and blocks the command while a restriction is
+  active, with a clear message to the player. On older clients without that
+  check, it falls back to a plain combat-lockdown check. A consumer opts into
+  an additional chat notice, printed just before a restriction activates, by
+  passing `restrictionNotice` when creating the controller; without it, the
+  guard adds no extra frame and no unsolicited chat output. The notice is
+  independent of the guard: a controller that opts in without using
+  `NotRestricted` still prints it.
+- **DB: a new callback reports when SavedVariables could not be saved.** A
+  store can register a handler with `OnSavedVariablesTooLarge` and be told
+  when the client refuses to save its owning addon's SavedVariables for being
+  too large. Previously this condition was silent to the addon. The report
+  arrives at the end of the session, after the client has already declined
+  that save, so a handler can record or warn but cannot rescue it.
+- **Bootstrap: `Foundry_1_0.SOURCE` reports which addon's copy of the library
+  is serving.** It holds the addon folder name that supplied the currently
+  active copy, useful for diagnosing which of several embedded copies won.
+
+### Changed
+- **Events: event names are checked before registration.** `Register`,
+  `RegisterUnit`, `RegisterOnce`, and `RegisterBucket` now validate an event
+  name against the client's own event list before attempting to register it,
+  on clients that expose that check. An invalid name is refused immediately
+  with a clear message, and the registration does not happen, instead of
+  surfacing only through the client's own registration throw.
+- **Bootstrap: a suppressed development copy is now reported, not silent.**
+  When a released copy of the library loads first and an enabled development
+  copy would otherwise have served, the library now prints a clear message
+  through the serving copy, naming which copy is serving and stating that the
+  development copy loaded nothing. This only matters to a developer running a
+  development build alongside a release install; a normal player install is
+  unaffected.
+- A couple of internal code comments were reworded and the packaging ignore
+  list was tidied. No behavior change.
+
+Lifecycle, Commands, and DB each move to API_VERSION 2 with this release,
+reflecting the additions above. Events was already at 2. The library-level
+API_VERSION is unchanged; gate on the module numbers.
+
 ## [1.0.104] - 2026-08-14
 
 ### Changed
