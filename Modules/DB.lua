@@ -37,17 +37,24 @@ if type(F.Lifecycle) ~= "table"
     or type(F.Lifecycle._RegisterPostLogout) ~= "function" then
     F:RaiseDevError("DB requires Lifecycle's post-logout seam "
         .. "(F.Lifecycle._RegisterPostLogout), which the Foundry core serving this "
-        .. "session does not provide. This embedded Foundry is " .. tostring(F.VERSION)
-        .. " (API_VERSION " .. tostring(F.API_VERSION) .. "), but an older standalone "
-        .. "Foundry addon won the runtime and is serving everyone. Update the standalone "
-        .. "Foundry addon to at least this version. DB is unavailable this session.")
+        .. "session does not provide. The Foundry core serving this session reports "
+        .. "version " .. tostring(F.VERSION) .. " (API_VERSION " .. tostring(F.API_VERSION)
+        .. "), from " .. tostring(F.SOURCE) .. ". This has two possible causes: either "
+        .. "an older standalone Foundry addon won the runtime and is serving everyone "
+        .. "(update that addon to a newer version), or Foundry's files loaded in the "
+        .. "wrong order and Lifecycle has not run yet (load through Foundry-1.0.xml, "
+        .. "or list Lifecycle ahead of DB by hand). DB is unavailable this session.")
     return
 end
 if type(F.Events) ~= "table" or type(F.Events.New) ~= "function" then
     F:RaiseDevError("DB requires Foundry.Events, which the Foundry core serving this "
-        .. "session does not provide. This embedded Foundry is " .. tostring(F.VERSION)
-        .. " but an older standalone Foundry addon won the runtime. Update the "
-        .. "standalone Foundry addon to at least this version. DB is unavailable this session.")
+        .. "session does not provide. The Foundry core serving this session reports "
+        .. "version " .. tostring(F.VERSION) .. ", from " .. tostring(F.SOURCE)
+        .. ". This has two possible causes: either an older standalone Foundry addon "
+        .. "won the runtime and is serving everyone (update that addon to a newer "
+        .. "version), or Foundry's files loaded in the wrong order and Events has "
+        .. "not run yet (load through Foundry-1.0.xml, or list Events ahead of DB "
+        .. "by hand). DB is unavailable this session.")
     return
 end
 

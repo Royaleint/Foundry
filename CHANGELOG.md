@@ -18,6 +18,16 @@ All notable changes to Foundry-1.0 are recorded here.
   two disciplines that path requires: register once per tag, and read live
   state from inside the callback. No API changed.
 
+### Fixed
+- **DB's load-time error now names the load-order cause, not just an older
+  standalone.** If Foundry.Lifecycle or Foundry.Events is missing when DB
+  loads, the developer-facing error used to blame an older standalone
+  Foundry addon every time. That's only one of two real causes; the other
+  is Foundry's files loading in the wrong order (Lifecycle and Events both
+  need to load before DB). The message now names both, reports which
+  Foundry core is actually serving the session, and points at the fix for
+  each case.
+
 ## [1.0.105] - 2026-09-01
 
 ### Added
