@@ -4,6 +4,19 @@ All notable changes to Foundry-1.0 are recorded here.
 
 ## [Unreleased]
 
+### Added
+- **Foundry.Window**, a new module that makes a window draggable and
+  remembers where you left it. You create the frame and its title bar (or
+  any drag handle); `F.Window:Attach(win, config)` wires the drag, keeps the
+  window on screen, and saves its position into a table you own, falling
+  back to your default position if the saved record is empty or damaged
+  (the saved table itself must exist). Attach refuses a window that isn't
+  parented directly to UIParent, since the save and restore math is only
+  correct for that case. `F.Window:Reset(win)` puts a window back at its
+  default position without a reload. Window depends on nothing but the
+  Foundry bootstrap. Assert a minimum version with
+  `F:RequireModule("Window", 1)`.
+
 ### Changed
 - **Documentation: DB's load-time dependencies are now stated.** Foundry.DB
   has always required Foundry.Lifecycle to load, and since 1.0.105 it also
