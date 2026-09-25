@@ -46,6 +46,11 @@ function T.installMocks(tocVersion)
     _G.Enum = nil
     _G.InCombatLockdown = function() return false end
 
+    -- Sentinel identity Foundry.Window anchors caller frames to. A fresh table
+    -- per test so a stray reference from a prior test cannot pass an equality
+    -- check it shouldn't.
+    _G.UIParent = { _isUIParent = true }
+
     _G.SlashCmdList = {}
 
     -- Player/realm identity for Foundry.DB (spec §3.4: charKey = "Name - Realm").
@@ -146,7 +151,21 @@ function T.installMocks(tocVersion)
             Hide = {},
             Show = {},
             SetPoint = {},
+            ClearAllPoints = {},
+            SetMovable = {},
+            SetClampedToScreen = {},
+            RegisterForDrag = {},
+            EnableMouse = {},
+            StartMoving = {},
+            StopMovingOrSizing = {},
+            SetUserPlaced = {},
         }
+        -- Ordered cross-method call log (Foundry.Window): the drag-movement and
+        -- persistence methods below each append here in addition to their own
+        -- frame.calls bucket, so a test can assert call ORDER across methods
+        -- (e.g. SetUserPlaced(false) immediately after SetMovable(true)), which
+        -- a per-method call count cannot distinguish. Entries are { name, args... }.
+        frame._seq = {}
         function frame:RegisterEvent(event)
             if T.throwOnRegister and T.throwOnRegister[event] then
                 error("Attempted to register unknown event \"" .. event .. "\"")
@@ -193,12 +212,49 @@ function T.installMocks(tocVersion)
         function frame:IsShown()
             return self._shown
         end
-        -- Layout recorders (List anchors its ScrollBox/ScrollBar). No-op math; the
-        -- recorder only logs that the call happened with its args.
+        -- Layout recorders (List anchors its ScrollBox/ScrollBar; Window reads its
+        -- own writes back via GetPoint). SetPoint/ClearAllPoints track a single
+        -- _points record -- the precondition Window checks is that the frame has
+        -- exactly one anchor point, so the stub never needs more than one.
         function frame:SetPoint(...)
             self.calls.SetPoint[#self.calls.SetPoint + 1] = { ... }
+            local point, relativeTo, relPoint, x, y = ...
+            self._points = { point = point, relativeTo = relativeTo, relPoint = relPoint, x = x, y = y }
         end
-        function frame:ClearAllPoints() end
+        function frame:ClearAllPoints()
+            self.calls.ClearAllPoints[#self.calls.ClearAllPoints + 1] = {}
+            self._points = nil
+        end
+        -- GetPoint(index) returns the five-value shape (point, relativeTo,
+        -- relPoint, x, y) the real API returns; index is ignored since the
+        -- stub only ever tracks the one point SetPoint last wrote.
+        function frame:GetPoint()
+            local p = self._points
+            if not p then return nil end
+            return p.point, p.relativeTo, p.relPoint, p.x, p.y
+        end
+        function frame:GetParent()
+            return self._parent
+        end
+        -- Movement/persistence methods (Foundry.Window). Each is recorded in its
+        -- own frame.calls bucket AND appended to the ordered frame._seq log, since
+        -- Window's invariant (SetUserPlaced(false) immediately after SetMovable,
+        -- and again immediately after every StopMovingOrSizing before any save)
+        -- is a cross-method ORDERING property a per-method call count can't see.
+        local function recordSeq(name)
+            return function(self, ...)
+                self.calls[name][#self.calls[name] + 1] = { ... }
+                local entry = { name, ... }
+                self._seq[#self._seq + 1] = entry
+            end
+        end
+        frame.SetMovable          = recordSeq("SetMovable")
+        frame.SetClampedToScreen  = recordSeq("SetClampedToScreen")
+        frame.RegisterForDrag     = recordSeq("RegisterForDrag")
+        frame.EnableMouse         = recordSeq("EnableMouse")
+        frame.StartMoving         = recordSeq("StartMoving")
+        frame.StopMovingOrSizing  = recordSeq("StopMovingOrSizing")
+        frame.SetUserPlaced       = recordSeq("SetUserPlaced")
 
         -- WowScrollBoxList frames carry the ScrollBox-list surface List drives.
         -- SetDataProvider delegates to the view (so the factory-before-provider
@@ -432,6 +488,8 @@ function T.loadFoundry()
     tooltip("Foundry-1.0")
     local menu = assert(loadfile(foundryRoot .. "/Modules/Menu.lua"))
     menu("Foundry-1.0")
+    local window = assert(loadfile(foundryRoot .. "/Modules/Window.lua"))
+    window("Foundry-1.0")
     return _G.Foundry_1_0
 end
 
@@ -482,6 +540,7 @@ local suites = {
     { label = "Foundry.Settings",  cases = assert(loadfile(testsDir .. "/Settings/settings_spec.lua"))(T) },
     { label = "Foundry.Tooltip",   cases = assert(loadfile(testsDir .. "/Tooltip/tooltip_spec.lua"))(T) },
     { label = "Foundry.Menu",      cases = assert(loadfile(testsDir .. "/Menu/menu_spec.lua"))(T) },
+    { label = "Foundry.Window",    cases = assert(loadfile(testsDir .. "/Window/window_spec.lua"))(T) },
     { label = "Foundry.Packaging", cases = assert(loadfile(testsDir .. "/Packaging/packaging_spec.lua"))(T) },
 }
 

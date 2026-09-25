@@ -8,4 +8,5 @@
   <Script file="Modules\Settings.lua"/>
   <Script file="Modules\Tooltip.lua"/>
   <Script file="Modules\Menu.lua"/>
+  <Script file="Modules\Window.lua"/>
 </Ui>

@@ -22,3 +22,4 @@ Modules/List.lua
 Modules/Settings.lua
 Modules/Tooltip.lua
 Modules/Menu.lua
+Modules/Window.lua

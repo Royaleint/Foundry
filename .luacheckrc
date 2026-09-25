@@ -28,6 +28,7 @@ read_globals = {
     -- Foundry.Menu bridges the Blizzard_Menu system (present on all supported flavors).
     "MenuUtil",              -- Entry points: CreateContextMenu; SetupMenu on DropdownButton.
     "Menu",                  -- Raw escape hatch via GetNativeHandles().menu; may be nil on some clients.
+    "UIParent",              -- Foundry.Window anchors a caller's frame to it at call time.
 }
 
 -- The module factories (Commands:New / Events:New) take an unused `self` by the
