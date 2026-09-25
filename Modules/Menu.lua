@@ -115,6 +115,41 @@ function Controller:GetNativeHandles()
 end
 
 --------------------------------------------------------------------------------
+-- Extending Blizzard-owned tagged menus (Menu.ModifyMenu)
+--------------------------------------------------------------------------------
+
+-- The API above wraps menus the consumer owns: CreateContextMenu and
+-- SetupDropdown both build content the consumer defines from scratch.
+-- Extending a menu Blizzard owns (a world map filter dropdown, a unit frame
+-- right-click menu, and so on) is a different shape, and Foundry.Menu has no
+-- wrapper for it. The raw global Menu.ModifyMenu(tag, callback) is the
+-- Blizzard-supported consumer path for that case, not a workaround;
+-- GetNativeHandles() above hands back the raw Menu table for exactly this
+-- purpose. Two disciplines govern it, both load-bearing in Blizzard's own
+-- implementation:
+--
+--   1. Register once per tag. Calling Menu.ModifyMenu(tag, callback) again
+--      for a tag that already has a registration adds a second, independent
+--      callback; it does not replace the first. If that tag's menu was
+--      already built this session, a duplicate registration also adds its
+--      section to the existing menu immediately, appended after the
+--      earlier registration's section. Gate registration behind the
+--      consumer's own idempotent init path.
+--   2. Build from live state inside the callback. Blizzard fires the
+--      registered callback every time it builds the tagged menu's
+--      description (every open, plus some dropdown refreshes), and once
+--      more immediately at registration time if that tag was already built
+--      this session. The callback closure must read current data when it
+--      runs; a value captured back when Menu.ModifyMenu was called goes
+--      stale the moment the underlying state changes.
+--
+-- Menu tags are addon-facing string identifiers. Blizzard documents one
+-- naming convention (UnitPopup tags follow MENU_UNIT_<UNIT_TYPE>) in
+-- Blizzard_Menu's implementation guide; for any other tag, EventTrace shows
+-- a "Menu.OpenMenuTag" event when the tagged menu opens, and
+-- Menu.PrintOpenMenuTags() lists every tag currently open.
+
+--------------------------------------------------------------------------------
 -- Factory
 --------------------------------------------------------------------------------
 

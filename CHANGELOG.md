@@ -10,6 +10,13 @@ All notable changes to Foundry-1.0 are recorded here.
   requires Foundry.Events, refusing to load without either. If you load
   Foundry's files by hand instead of through `Foundry-1.0.xml`, keep Events
   and Lifecycle ahead of DB.
+- **Documentation: Menu now names the supported path for extending
+  Blizzard-owned tagged menus.** Foundry.Menu wraps menus a consumer owns;
+  extending one Blizzard owns (a world map filter dropdown, for example)
+  goes through the raw `Menu.ModifyMenu(tag, callback)` global instead,
+  which `GetNativeHandles()` already exposes. The module doc now states the
+  two disciplines that path requires: register once per tag, and read live
+  state from inside the callback. No API changed.
 
 ## [1.0.105] - 2026-09-01
 
