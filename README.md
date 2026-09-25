@@ -35,10 +35,11 @@ Foundry-1.0 delivers a focused set of modules covering what most addons reach fo
 | **Settings** | Options panel registration, automatically selecting Blizzard's modern Settings API or falling back to the legacy interface options panel. | `Settings.RegisterCanvasLayoutCategory`, `RegisterAddOnCategory` | AceConfig-3.0 / AceConfigDialog-3.0 | Available |
 | **Tooltip** | Bridge over Blizzard's modern tooltip-hook system. Current and supported, but under-documented for addon authors. | `TooltipDataProcessor` (added in Patch 10.0.2) | No direct Ace3 equivalent | Available |
 | **Menu** | Bridge over Blizzard's modern menu system, which replaced the deprecated `UIDropDownMenu` in Patch 11.0.0. | `Blizzard_Menu`, `MenuUtil` | LibUIDropDownMenu (community library, now unmaintained for current retail) | Available |
+| **Window** | Draggable, position-persisting windows on a frame you create and own. | `SetMovable`, `StartMoving`/`StopMovingOrSizing`, `SetUserPlaced`, `SetClampedToScreen` | No direct Ace3 equivalent | Available |
 
 **Tooltip** and **Menu** exist specifically to give authors an easy path away from older community UI libraries. Blizzard shipped modern native equivalents for both, but the raw APIs are verbose enough that most authors have stuck with the older wrappers. Foundry's job here is to make the native path the easy path.
 
-All eight modules are available now.
+All nine modules are available now. Window is new and ships ahead of its first consuming addon.
 
 ### Restriction guard
 
