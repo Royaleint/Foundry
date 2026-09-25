@@ -4,6 +4,13 @@ All notable changes to Foundry-1.0 are recorded here.
 
 ## [Unreleased]
 
+### Changed
+- **Documentation: DB's load-time dependencies are now stated.** Foundry.DB
+  has always required Foundry.Lifecycle to load, and since 1.0.105 it also
+  requires Foundry.Events, refusing to load without either. If you load
+  Foundry's files by hand instead of through `Foundry-1.0.xml`, keep Events
+  and Lifecycle ahead of DB.
+
 ## [1.0.105] - 2026-09-01
 
 ### Added
@@ -29,7 +36,9 @@ All notable changes to Foundry-1.0 are recorded here.
   when the client refuses to save its owning addon's SavedVariables for being
   too large. Previously this condition was silent to the addon. The report
   arrives at the end of the session, after the client has already declined
-  that save, so a handler can record or warn but cannot rescue it.
+  that save, so a handler can record or warn but cannot rescue it. This
+  callback is built on Events, so DB now refuses to load without Foundry.Events
+  already present, where before it would have loaded regardless.
 - **Bootstrap: `Foundry_1_0.SOURCE` reports which addon's copy of the library
   is serving.** It holds the addon folder name that supplied the currently
   active copy, useful for diagnosing which of several embedded copies won.
