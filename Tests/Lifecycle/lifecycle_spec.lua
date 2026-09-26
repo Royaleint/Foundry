@@ -114,8 +114,9 @@ test("HasModule / RequireModule behavior for Lifecycle; additive version markers
     T.eq(F:RequireModule("Lifecycle", 1), F.Lifecycle, "RequireModule min=1 returns the module")
     T.eq(F:RequireModule("Lifecycle", 2), F.Lifecycle, "RequireModule min=2 returns the unloading hook API")
     T.eq(F:RequireModule("Lifecycle", 3), F.Lifecycle, "RequireModule min=3 returns the addon-loaded identity hold")
+    T.eq(F:RequireModule("Lifecycle", 4), F.Lifecycle, "RequireModule min=4 returns the full-name character identity")
     T.raises(function() F:RequireModule("Lifecycle", 99) end, "above-max API raises", "API version")
-    T.eq(F.Lifecycle.API_VERSION, 3, "Lifecycle.API_VERSION == 3 (the addon-loaded identity hold)")
+    T.eq(F.Lifecycle.API_VERSION, 4, "Lifecycle.API_VERSION == 4 (the full-name character identity)")
     -- Library-wide version only ever bumps ADDITIVELY (2 -> 3 when Lifecycle shipped).
     T.eq(F.API_VERSION, 6, "library API_VERSION == 6 (additive bumps only)")
     -- Sibling modules still register and keep their own markers.
@@ -1672,6 +1673,277 @@ test("identity hold: identity resolving during combat releases nothing until PLA
     T.Fire(fr, "PLAYER_REGEN_ENABLED")
     T.eq(fired, 1, "PLAYER_REGEN_ENABLED releases once combat ends")
     T.eq(F.Lifecycle._identityResolvedBy, "PLAYER_REGEN_ENABLED", "trace is PLAYER_REGEN_ENABLED")
+end)
+
+--------------------------------------------------------------------------------
+-- Full-name character identity (FND-049): _PlayerIdentity's regional branch.
+-- On a client with region-wide unique names (Forever), identity is first name
+-- plus surname rather than first name plus realm; a nil surname is capped by
+-- the same poll the hold already uses, and settles under the first name
+-- alone rather than waiting forever.
+--------------------------------------------------------------------------------
+
+test("identity: no RegionalUniqueNamesEnabled global -> the ordinary Name - Realm path", function()
+    local F = T.fresh()
+    T.identity = { name = "Tester", realm = "Test Realm" }
+    local name, realm, key, legacyKey = F.Lifecycle._PlayerIdentity()
+    T.eq(name, "Tester", "name")
+    T.eq(realm, "Test Realm", "realm")
+    T.eq(key, "Tester - Test Realm", "key")
+    T.eq(legacyKey, nil, "legacyKey is nil off a non-regional client")
+end)
+
+test("identity: RegionalUniqueNamesEnabled() == false -> the same ordinary path (mere existence is not enabled)", function()
+    local F = T.fresh()
+    T.SetRegional(false)
+    T.identity = { name = "Tester", realm = "Test Realm" }
+    local name, realm, key, legacyKey = F.Lifecycle._PlayerIdentity()
+    T.eq(name, "Tester", "name")
+    T.eq(realm, "Test Realm", "realm")
+    T.eq(key, "Tester - Test Realm", "key")
+    T.eq(legacyKey, nil, "legacyKey is nil")
+end)
+
+test("identity: regional with a string surname builds 'First Surname' from UnitNameUnmodified, never UnitName", function()
+    local F = T.fresh()
+    T.SetRegional(true)
+    T.identity = { name = "Aldric", surname = "Vane", realm = "Test Realm", unmodifiedOnly = true }
+    local name, realm, key, legacyKey = F.Lifecycle._PlayerIdentity()
+    T.eq(name, "Aldric", "name")
+    T.eq(realm, "Test Realm", "realm")
+    T.eq(key, "Aldric Vane", "key is 'First Surname'")
+    T.eq(legacyKey, "Aldric - Test Realm", "legacyKey is the pre-FND-049 key")
+end)
+
+test("identity: regional without UnitNameUnmodified takes the legacy path and never reads UnitName's second return", function()
+    local F = T.fresh()
+    T.SetRegional(true)
+    _G.UnitNameUnmodified = nil
+    _G.UnitName = function() return "Aldric", "Vane" end
+    T.identity = { realm = "Test Realm" }
+    local name, realm, key, legacyKey = F.Lifecycle._PlayerIdentity()
+    T.eq(name, "Aldric", "name")
+    T.eq(realm, "Test Realm", "realm")
+    T.eq(key, "Aldric - Test Realm", "key is the ordinary legacy shape")
+    T.eq(legacyKey, nil, "legacyKey is nil -- exactly the non-regional return shape")
+
+    -- A nil second return resolves identically: a regional client without
+    -- UnitNameUnmodified never waits on a surname at all.
+    _G.UnitName = function() return "Aldric", nil end
+    local name2, _, key2, legacyKey2 = F.Lifecycle._PlayerIdentity()
+    T.eq(name2, "Aldric", "still resolves")
+    T.eq(key2, "Aldric - Test Realm", "same key")
+    T.eq(legacyKey2, nil, "legacyKey is nil here too -- still the non-regional return shape")
+end)
+
+test("identity: regional, nil surname, unsettled -> refuses with reason 'surname'", function()
+    local F = T.fresh()
+    T.SetRegional(true)
+    T.identity = { name = "Aldric", surname = nil, realm = "Test Realm" }
+    local name, msg, reason = F.Lifecycle._PlayerIdentity()
+    T.eq(name, nil, "unresolved")
+    T.truthy(msg and msg:find("surname", 1, true) ~= nil, "message mentions the surname")
+    T.eq(reason, "surname", "reason is 'surname'")
+end)
+
+test("identity: regional, empty-string surname counts as present -- not normalized to nil", function()
+    local F = T.fresh()
+    T.SetRegional(true)
+    T.identity = { name = "Aldric", surname = "", realm = "Test Realm" }
+    local name, _, key, legacyKey = F.Lifecycle._PlayerIdentity()
+    T.eq(name, "Aldric", "name")
+    T.eq(key, "Aldric ", "key keeps the trailing space")
+    T.eq(#key, 7, "key length is exactly 7")
+    T.eq(legacyKey, "Aldric - Test Realm", "legacyKey still resolves")
+end)
+
+test("identity: a non-string surname (false, then a number) is treated as nil, unsettled -- never taken at face value", function()
+    local F = T.fresh()
+    T.SetRegional(true)
+    T.identity = { name = "Aldric", surname = false, realm = "Test Realm" }
+    local name, msg, reason = F.Lifecycle._PlayerIdentity()
+    T.eq(name, nil, "unresolved: a boolean surname is not taken at face value")
+    T.truthy(msg and msg:find("surname", 1, true) ~= nil, "message mentions the surname")
+    T.eq(reason, "surname", "reason is 'surname'")
+
+    T.identity.surname = 5
+    local name2, msg2, reason2 = F.Lifecycle._PlayerIdentity()
+    T.eq(name2, nil, "unresolved: a numeric surname is not taken at face value either")
+    T.truthy(msg2 and msg2:find("surname", 1, true) ~= nil, "message mentions the surname")
+    T.eq(reason2, "surname", "reason is 'surname'")
+end)
+
+test("identity: name still 'Unknown' at regional call time refuses with the name message, not a surname message", function()
+    local F = T.fresh()
+    T.SetRegional(true)
+    T.identity = { name = "Unknown", surname = "Vane", realm = "Test Realm" }
+    local name, msg, reason = F.Lifecycle._PlayerIdentity()
+    T.eq(name, nil, "unresolved")
+    T.truthy(msg and msg:find("player identity", 1, true) ~= nil, "the name message")
+    T.falsy(reason == "surname", "reason is not 'surname'")
+end)
+
+test("identity hold (regional): a surnamed character resolved at ADDON_LOADED fires immediately; nothing is watched", function()
+    local F = T.fresh()
+    T.SetRegional(true)
+    T.identity = { name = "Aldric", surname = "Vane", realm = "Test Realm" }
+    local c = F.Lifecycle:New(nil, "A")
+    local fired = 0
+    c:OnAddonLoaded(function() fired = fired + 1 end)
+    local fr = dispatcherFrame()
+    T.Fire(fr, "ADDON_LOADED", "A")
+    T.eq(fired, 1, "fires immediately -- identity was already resolved")
+    T.eq(countRegisterEvent(fr, "PLAYER_ENTERING_WORLD"), 0, "no PLAYER_ENTERING_WORLD registration")
+    T.eq(countRegisterEvent(fr, "PLAYER_REGEN_ENABLED"), 0, "no PLAYER_REGEN_ENABLED registration")
+    T.eq(#fr.calls.RegisterUnitEvent, 0, "no RegisterUnitEvent at all")
+    T.eq(#T.afters, 0, "no poll queued")
+    T.eq(F.Lifecycle._surnameLagObserved, nil, "no surname lag trace")
+    T.eq(F.Lifecycle._identityResolvedBy, nil, "no release trace -- nothing was ever held")
+end)
+
+test("identity hold (regional): an empty-string surname resolved at ADDON_LOADED fires immediately, same as H1", function()
+    local F = T.fresh()
+    T.SetRegional(true)
+    T.identity = { name = "Aldric", surname = "", realm = "Test Realm" }
+    local c = F.Lifecycle:New(nil, "A")
+    local fired = 0
+    c:OnAddonLoaded(function() fired = fired + 1 end)
+    T.Fire(dispatcherFrame(), "ADDON_LOADED", "A")
+    T.eq(fired, 1, "fires immediately")
+    T.eq(#T.afters, 0, "no poll queued")
+end)
+
+test("identity hold (regional): a nil surname throughout holds until the poll settles it; the trace records the lag", function()
+    local F = T.fresh()
+    T.SetRegional(true)
+    T.identity = { name = "Aldric", surname = nil, realm = "Test Realm" }
+    local c = F.Lifecycle:New(nil, "A")
+    local al, lo = 0, 0
+    c:OnAddonLoaded(function() al = al + 1 end)
+    c:OnLogin(function() lo = lo + 1 end)
+    local fr = dispatcherFrame()
+    T.Fire(fr, "ADDON_LOADED", "A")
+    T.eq(al, 0, "held")
+    T.eq(F.Lifecycle._surnameLagObserved, true, "surname lag traced at ADDON_LOADED")
+
+    T.Fire(fr, "PLAYER_LOGIN")
+    T.eq(al, 0, "still held through PLAYER_LOGIN")
+    T.Fire(fr, "PLAYER_ENTERING_WORLD")
+    T.eq(al, 0, "still held through PLAYER_ENTERING_WORLD")
+    T.eq(#T.afters, 1, "exactly one poll tick queued")
+
+    T.RunAfters()
+    T.eq(al, 1, "addon-loaded released by the poll")
+    T.eq(lo, 1, "login released in the same fan-out")
+    T.eq(F.Lifecycle._identityResolvedBy, "POLL", "trace is POLL")
+
+    local key = select(3, F.Lifecycle._PlayerIdentity())
+    T.eq(key, "Aldric", "key is the first name alone once settled")
+end)
+
+-- Pins releaseIdentityHeld's own identityResolved call.
+test("identity hold (regional): a nil-surname UNIT_NAME_UPDATE stays held and traces the lag; the surname's arrival releases", function()
+    local F = T.fresh()
+    T.SetRegional(true)
+    T.identity = { name = "Unknown", surname = nil, realm = "Test Realm" }
+    local c = F.Lifecycle:New(nil, "A")
+    local al = 0
+    c:OnAddonLoaded(function() al = al + 1 end)
+    local fr = dispatcherFrame()
+    T.Fire(fr, "ADDON_LOADED", "A")
+    T.eq(al, 0, "held: name unresolved")
+    T.eq(F.Lifecycle._surnameLagObserved, nil, "no surname trace yet -- the name itself was unresolved")
+
+    T.identity.name = "Aldric"   -- name resolves; surname still nil
+    T.Fire(fr, "UNIT_NAME_UPDATE", "player")
+    T.eq(al, 0, "still held -- the surname has not arrived")
+    T.eq(F.Lifecycle._surnameLagObserved, true, "the surname wait is now traced")
+
+    T.identity.surname = "Vane"
+    T.Fire(fr, "UNIT_NAME_UPDATE", "player")
+    T.eq(al, 1, "released once the surname arrives")
+    T.eq(F.Lifecycle._identityResolvedBy, "UNIT_NAME_UPDATE", "trace names the releasing event")
+    local key = select(3, F.Lifecycle._PlayerIdentity())
+    T.eq(key, "Aldric Vane", "key at hook time")
+end)
+
+test("identity hold (regional): after the settle, a Load-on-Demand catch-up with a nil surname fires immediately", function()
+    local F = T.fresh()
+    T.SetRegional(true)
+    T.identity = { name = "Aldric", surname = nil, realm = "Test Realm" }
+    T.Settle()   -- drives surnameSettled true via the throwaway probe
+
+    T.loadedAddons["A"] = true
+    local c = F.Lifecycle:New(nil, "A")
+    local al = 0
+    c:OnAddonLoaded(function() al = al + 1 end)
+    T.eq(al, 1, "LoD catch-up fires immediately -- settled, the first-name-alone identity resolves")
+end)
+
+test("identity hold (regional): in combat, the poll tick settles the surname without releasing; PLAYER_REGEN_ENABLED releases after", function()
+    local F = T.fresh()
+    T.SetRegional(true)
+    T.identity = { name = "Aldric", surname = nil, realm = "Test Realm" }
+    local c = F.Lifecycle:New(nil, "A")
+    local al = 0
+    c:OnAddonLoaded(function() al = al + 1 end)
+    local fr = dispatcherFrame()
+    T.Fire(fr, "ADDON_LOADED", "A")
+    T.Fire(fr, "PLAYER_LOGIN")
+    T.Fire(fr, "PLAYER_ENTERING_WORLD")   -- queues the poll tick
+
+    T.inCombat = true
+    T.RunAfters()   -- the tick settles the surname, but combat refuses the release
+    T.eq(al, 0, "combat refuses the release even though identity now resolves")
+
+    T.inCombat = false
+    T.Fire(fr, "PLAYER_REGEN_ENABLED")
+    T.eq(al, 1, "PLAYER_REGEN_ENABLED releases once combat ends")
+    T.eq(F.Lifecycle._identityResolvedBy, "PLAYER_REGEN_ENABLED", "trace names the releasing event")
+end)
+
+-- Pins the ADDON_LOADED dispatch's own identityResolved call.
+test("identity hold (regional): A holds and traces before B's own ADDON_LOADED resolves both, A's hook first", function()
+    local F = T.fresh()
+    T.SetRegional(true)
+    T.identity = { name = "Aldric", surname = nil, realm = "Test Realm" }
+    local order = {}
+    local aKeyAtFire
+    local a = F.Lifecycle:New(nil, "A")
+    a:OnAddonLoaded(function()
+        order[#order + 1] = "A"
+        aKeyAtFire = select(3, F.Lifecycle._PlayerIdentity())
+    end)
+    local fr = dispatcherFrame()
+    T.Fire(fr, "ADDON_LOADED", "A")
+    T.eq(#order, 0, "A held: surname unresolved")
+    T.eq(F.Lifecycle._surnameLagObserved, true,
+        "traced by the direct identityResolved check -- the release attempt short-circuited on an empty held list")
+
+    T.identity.surname = "Vane"
+    local b = F.Lifecycle:New(nil, "B")
+    b:OnAddonLoaded(function() order[#order + 1] = "B" end)
+    T.Fire(fr, "ADDON_LOADED", "B")
+    T.eq(order[1], "A", "A's hook fires first, via the release")
+    T.eq(order[2], "B", "B's hook fires second, immediately -- its own identity check now also resolves")
+    T.eq(F.Lifecycle._identityResolvedBy, "ADDON_LOADED", "trace names the releasing event")
+    T.eq(aKeyAtFire, "Aldric Vane", "A's hook-time key already has the surname")
+end)
+
+-- Pins the OnAddonLoaded catch-up's own identityResolved call.
+test("identity hold (regional): a post-login LoD catch-up with a nil surname holds and traces", function()
+    local F = T.fresh()
+    T.SetRegional(true)
+    T.identity = { name = "Aldric", surname = nil, realm = "Test Realm" }
+    F.Lifecycle:New(nil, "Warm")   -- creates the dispatcher; never held, never enrolled for login
+    T.Fire(dispatcherFrame(), "PLAYER_LOGIN")
+
+    T.loadedAddons["A"] = true
+    local c = F.Lifecycle:New(nil, "A")
+    local fired = 0
+    c:OnAddonLoaded(function() fired = fired + 1 end)   -- LoD catch-up path
+    T.eq(fired, 0, "held: surname unresolved")
+    T.eq(F.Lifecycle._surnameLagObserved, true, "traced by the catch-up's own identityResolved check")
 end)
 
 return tests

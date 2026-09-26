@@ -44,6 +44,11 @@ function T.installMocks(tocVersion)
     _G.C_EventUtils = nil
     _G.C_RestrictedActions = nil
     _G.Enum = nil
+    -- The acedb_parity harness installs permissive C_GameRules/strlenutf8
+    -- stubs for its own AceDB-side loads; clear them here so a later suite
+    -- in the same process can't silently inherit them.
+    _G.C_GameRules = nil
+    _G.strlenutf8 = nil
     T.inCombat = false
     _G.InCombatLockdown = function() return T.inCombat end
 
@@ -69,14 +74,38 @@ function T.installMocks(tocVersion)
     -- the real client; the realm comes from GetRealmName(), so the mock returns
     -- (name, nil) from UnitName and the realm from GetRealmName -- the real shape
     -- AceDB and DB both consume (acedb-semantics.md §1).
-    T.identity = { name = "Tester", realm = "Test Realm" }
+    -- surname is the region-wide-unique-names field (Forever): nil by default,
+    -- so the default identity takes the ordinary "Name - Realm" path (FND-049).
+    T.identity = { name = "Tester", realm = "Test Realm", surname = nil }
+    -- unmodifiedOnly makes the UnitName mock return a value a test for the
+    -- regional-without-UnitNameUnmodified path must never read ("Wrong"), so
+    -- a wrong-path read fails loudly instead of silently matching by
+    -- coincidence.
     _G.UnitName = function(unit)
+        if T.identity.unmodifiedOnly then return "Wrong", nil end
         if unit == "player" then return T.identity.name, nil end
         return T.identity.name, nil
     end
     _G.GetRealmName = function()
         return T.identity.realm
     end
+    _G.UnitNameUnmodified = function(u)
+        return T.identity.name, T.identity.surname
+    end
+
+    -- Installs/clears _G.RegionalUniqueNamesEnabled (Forever's region-wide
+    -- unique-name flag). true/false install a function returning that exact
+    -- literal; nil clears the global entirely -- its ABSENCE, not merely a
+    -- falsy return, is what a non-regional client reports.
+    function T.SetRegional(v)
+        if v == nil then
+            _G.RegionalUniqueNamesEnabled = nil
+        else
+            _G.RegionalUniqueNamesEnabled = function() return v end
+        end
+    end
+    T.SetRegional(nil)
+    _G.UnitFullName = nil
 
     -- Test SavedVariables globals are cleared so no state leaks across cases. DB
     -- resolves/creates _G[sv]; a residual table from a prior test would mask a
@@ -446,6 +475,35 @@ end
 function T.Fire(frame, event, ...)
     local onEvent = frame and frame._onEvent
     if onEvent then return onEvent(frame, event, ...) end
+end
+
+-- The settle recipe: drives Lifecycle's regional surname wait past its first
+-- poll tick with a throwaway controller, so a case can start from an
+-- already-settled session. T.identity must already carry the regional,
+-- nil-surname identity the caller wants settled (T.SetRegional(true) and
+-- T.identity.surname = nil) BEFORE calling this; it drives the clock through
+-- a real login sequence, exactly the way a real cold Forever login with a
+-- lagging surname would.
+--
+-- Side effects the caller inherits: loginFired stays true for the rest of the
+-- test (PLAYER_LOGIN really fired), the throwaway probe controller stays
+-- registered in Lifecycle's persistent ownedNames set (a different addonName,
+-- so it never collides with the case's own controllers), and both the surname
+-- trace and the release trace are left set by the probe's own release.
+function T.Settle()
+    local F = _G.Foundry_1_0
+    local c = F.Lifecycle:New(nil, "FoundrySettleProbe")
+    c:OnAddonLoaded(function() end)
+    F.Lifecycle._identityResolvedBy = nil   -- so the check below can't pass on a stale trace
+    local fr = T.frames[1]
+    T.Fire(fr, "ADDON_LOADED", "FoundrySettleProbe")
+    T.Fire(fr, "PLAYER_LOGIN")
+    T.Fire(fr, "PLAYER_ENTERING_WORLD")
+    T.RunAfters()
+    if F.Lifecycle._identityResolvedBy ~= "POLL" then
+        error("T.Settle: expected the poll tick to release the probe "
+            .. "(_identityResolvedBy == 'POLL'), got " .. tostring(F.Lifecycle._identityResolvedBy))
+    end
 end
 
 -- Synthesize a C_Timer expiry: invoke the handle's recorded callback exactly

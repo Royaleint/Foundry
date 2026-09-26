@@ -100,27 +100,74 @@ local function installWoWStringGlobals()
     _G.tremove = table.remove
     _G.wipe = function(t) for k in pairs(t) do t[k] = nil end return t end
     _G.next = next
+    -- MINOR 39 additionally calls strlenutf8 (the r39 oracle; not needed by
+    -- the MINOR 33 copy). Every call this harness ever triggers measures a
+    -- profile name ("Default"), never an identity string, so a plain
+    -- byte-continuation count is a correct UTF-8 length here regardless of
+    -- which identity a case installs.
+    _G.strlenutf8 = function(s)
+        local _, count = s:gsub("[^\128-\191]", "")
+        return count
+    end
 end
 
+-- Defaults: clear the regional globals and install UnitNameUnmodified on the
+-- ordinary (name, nil) shape. loadFreshAceDB always calls this fresh each
+-- load, and the runner does not reset mocks between cases, so every case
+-- after a regional one starts back in legacy mode regardless of order or
+-- earlier failures. MINOR 39 calls UnitNameUnmodified on the legacy path too,
+-- which is why the default must exist even when nothing regional is being
+-- tested.
 local function installAceIdentity()
     installWoWStringGlobals()
+    _G.RegionalUniqueNamesEnabled = nil
+    _G.UnitFullName = nil
     _G.UnitName = function() return IDENTITY.name, nil end
     _G.GetRealmName = function() return IDENTITY.realm end
+    _G.UnitNameUnmodified = function() return IDENTITY.name, nil end
     _G.UnitClass = function() return "Warrior", "WARRIOR" end
     _G.UnitRace = function() return "Night Elf", "NightElf" end
     _G.UnitFactionGroup = function() return "Alliance" end
     _G.GetLocale = function() return "enUS" end
     _G.GetCurrentRegion = function() return 1 end
     _G.GetCurrentRegionName = function() return "US" end
+    -- MINOR 39's regional-identity path queries C_GameRules.IsGameRuleActive
+    -- (the r39 oracle only; not needed by the MINOR 33 copy, and not called
+    -- on the legacy path) and reads an Enum member to pass to it. What that
+    -- call decides is whether AceDB moves its OWN realm-family section keys
+    -- -- a section Foundry does not manage and this parity case never
+    -- compares -- so returning "inactive" here is a safe no-op for the
+    -- char/profileKeys shape this case actually checks. Enum resolves any
+    -- nested member access to another permissive table so the lookup never
+    -- errors, whatever member name the oracle reads.
+    _G.C_GameRules = { IsGameRuleActive = function() return false end }
+    local function permissiveEnum()
+        return setmetatable({}, { __index = function() return permissiveEnum() end })
+    end
+    _G.Enum = permissiveEnum()
 end
 
 -- Load a FRESH AceDB instance with its own LibStub registry. LibStub is a
 -- single-global singleton keyed by major+minor, so to get a clean AceDB per call
 -- we wipe _G.LibStub first and re-load the three libs in order. AceDB captures
 -- identity at load, so identity must be installed before this runs.
-local function loadFreshAceDB(charKeyIdentity)
+--
+-- `regional`, when present (FND-049), is a table `{ surname = ... }`
+-- (surname itself may be nil -- the table's PRESENCE, not its contents, is the
+-- switch). It installs the regional identity mocks AFTER the ordinary
+-- defaults above and immediately before the three loadfile calls, so a
+-- regional case's identity is what AceDB captures at load.
+local function loadFreshAceDB(charKeyIdentity, regional)
     IDENTITY = charKeyIdentity or { name = "Tester", realm = "Test Realm" }
     installAceIdentity()
+    if regional then
+        IDENTITY = { name = "Aldric", realm = "Test Realm" }
+        _G.RegionalUniqueNamesEnabled = function() return true end
+        _G.UnitName = function() return IDENTITY.name, regional.surname end
+        _G.UnitFullName = function() return IDENTITY.name, regional.surname end
+        _G.UnitNameUnmodified = function() return IDENTITY.name, regional.surname end
+        _G.GetRealmName = function() return IDENTITY.realm end
+    end
     _G.LibStub = nil
     assert(loadfile(ACE.stub))()
     assert(loadfile(ACE.cb))()
@@ -502,5 +549,61 @@ test("parity: the BawrSpam sanitized fixture -- post-strip raw SV matches AceDB 
     normalizeEmptyUnmanaged(_G.BSF2, applied, "foundry")
     assertDeepEqual(_G.BSF2, _G.BSAce2, "BawrSpam fixture post-strip raw SV parity")
 end)
+
+--------------------------------------------------------------------------------
+-- regional full-name key parity (FND-049; needs the vendored r39 AceDB oracle)
+--------------------------------------------------------------------------------
+
+-- Stop rule: if the minor assertion fails, the r39 oracle has not been
+-- vendored yet -- stop and report rather than proceeding. If any oracle error
+-- or mismatch occurs on any surname value, stop and report. Never edit the
+-- expected literals below, and never drop a surname value to make it pass.
+for _, case in ipairs({
+    { label = "'Vane'", surname = "Vane" },
+    { label = "''", surname = "" },
+    { label = "nil", surname = nil },
+}) do
+    local expectedKey = (case.surname == nil) and "Aldric" or ("Aldric " .. case.surname)
+
+    test("parity: regional client -- charKey matches the AceDB oracle for surname " .. case.label, function()
+        -- AceDB side: black-box, oracle only. loadFreshAceDB installs the
+        -- regional identity for this surname before AceDB captures it at load.
+        local AceDB = loadFreshAceDB(nil, { surname = case.surname })
+        local _, minor = _G.LibStub:GetLibrary("AceDB-3.0")
+        T.truthy(minor and minor >= 39, "the r39 oracle is loaded (minor " .. tostring(minor) .. ")")
+        _G.PRegionalAce = {}
+        local adb = AceDB:New("PRegionalAce", {}, true)
+        adb.char.touched = true
+        local aceCharKeys, acePKKeys = {}, {}
+        for k in pairs(_G.PRegionalAce.char) do aceCharKeys[#aceCharKeys + 1] = k end
+        for k in pairs(_G.PRegionalAce.profileKeys) do acePKKeys[#acePKKeys + 1] = k end
+
+        -- Foundry side. loadFreshFoundry (T.fresh) wipes both the regional
+        -- flag and the settle; then regional is switched on, the identity is
+        -- set, and (nil surname only) the settle is driven before construction.
+        local F = loadFreshFoundry(nil, "Homestead")
+        T.SetRegional(true)
+        T.identity = { name = "Aldric", surname = case.surname, realm = "Test Realm" }
+        if case.surname == nil then T.Settle() end
+        _G.PRegionalF = {}
+        local fdb = F.DB:New({ name = "Homestead", sv = "PRegionalF", defaultProfile = true })
+        fdb.char.touched = true
+        local foundryCharKeys, foundryPKKeys = {}, {}
+        for k in pairs(_G.PRegionalF.char) do foundryCharKeys[#foundryCharKeys + 1] = k end
+        for k in pairs(_G.PRegionalF.profileKeys) do foundryPKKeys[#foundryPKKeys + 1] = k end
+
+        T.eq(#aceCharKeys, 1, "AceDB char keys: exactly one")
+        T.eq(aceCharKeys[1], expectedKey, "AceDB char key literal")
+        T.eq(#acePKKeys, 1, "AceDB profileKeys: exactly one")
+        T.eq(acePKKeys[1], expectedKey, "AceDB profileKeys literal")
+
+        T.eq(#foundryCharKeys, 1, "Foundry char keys: exactly one")
+        T.eq(foundryCharKeys[1], expectedKey, "Foundry char key literal")
+        T.eq(#foundryPKKeys, 1, "Foundry profileKeys: exactly one")
+        T.eq(foundryPKKeys[1], expectedKey, "Foundry profileKeys literal")
+
+        T.SetRegional(nil)   -- this case ends with the regional flag cleared
+    end)
+end
 
 return tests
