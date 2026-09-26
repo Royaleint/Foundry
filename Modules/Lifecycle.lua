@@ -25,8 +25,18 @@
 -- moment the name and realm are known, so a consumer that constructs its
 -- database in the addon-loaded hook, as the docs direct, never gets handed a
 -- refused construction over a placeholder name. Where identity is already
--- known at ADDON_LOADED -- every case but that one -- nothing is held, no
--- extra events are registered, and no timer runs.
+-- known at ADDON_LOADED -- every case but a cold login and, on a client with
+-- region-wide unique names, a character the client reports without a
+-- surname -- nothing is held, no extra events are registered, and no timer
+-- runs.
+--
+-- On a client with region-wide unique names (Forever), a character's identity
+-- is first name plus surname rather than first name plus realm, and the same
+-- hold covers an unresolved surname exactly as it covers an unresolved name
+-- or realm. A surname that never arrives is capped, not open-ended: the poll
+-- below settles it after its first tick, and the held controller releases
+-- under the character's first name alone. Foundry.DB owns what that means for
+-- the character's saved-data key; this module only owns the wait.
 
 local F = _G.Foundry_1_0
 if not F then
@@ -38,7 +48,7 @@ end
 if F:HasModule("Lifecycle") then return end
 
 local Lifecycle = {}
-Lifecycle.API_VERSION = 3
+Lifecycle.API_VERSION = 4
 
 --------------------------------------------------------------------------------
 -- Shared private dispatcher (one set of upvalues per loaded library)
@@ -62,7 +72,10 @@ local identityWatching = false  -- PLAYER_ENTERING_WORLD/UNIT_NAME_UPDATE/PLAYER
 local pollScheduled = false    -- a C_Timer.After(1, pollTick) is already in flight
 local identityStopped = false  -- set at logout/unloading: never release again this session
 local devNoticePrinted = false -- the one-line dev notice fires at most once per session
+local surnameSettled = false   -- true once the first poll tick has run this session
 Lifecycle._identityResolvedBy = nil  -- private trace: which event released the hold
+Lifecycle._surnameLagObserved = nil  -- private trace: the surname was missing at some identity
+                                      -- check after the first name resolved (including never arriving)
 
 -- Surface a captured hook error through F:RaiseDevError. The captured value
 -- may be ANY Lua value, including a falsy one (error(nil), error(false), bare
@@ -73,16 +86,39 @@ local function surfaceHookError(phase, err)
     F:RaiseDevError("Lifecycle: a '" .. phase .. "' phase hook errored: " .. tostring(err))
 end
 
--- Resolve the running character's name and realm AT CALL TIME (never cached,
--- never upvalued at file scope). Foundry.DB's identity gate shares this exact
--- check, so "what counts as resolved" has one definition. A client that has
--- not yet resolved the player's own unit -- observed on a cold client-session
--- login -- reports nil, "", or the literal "Unknown"; a non-English client
--- reports its own localized placeholder instead (the same value the client
--- itself compares a unit name against elsewhere). Returns (name, realm) on
--- success, or (nil, msg) on refusal. No side effects.
+-- Resolve the running character's identity AT CALL TIME (every global is
+-- read fresh; nothing is cached or upvalued at file scope). Foundry.DB's
+-- identity gate shares this exact check, so "what counts as resolved" has one
+-- definition. A client that has not yet resolved the player's own unit --
+-- observed on a cold client-session login -- reports nil, "", or the literal
+-- "Unknown" for its name or realm; a non-English client reports its own
+-- localized placeholder instead (the same value the client itself compares a
+-- unit name against elsewhere).
+--
+-- On a client with region-wide unique names (Forever), identity is first name
+-- plus surname rather than first name plus realm: return 3 becomes "First
+-- Surname" (or "First" alone once the surname settles unresolved -- see the
+-- poll below), and return 4 carries the "First - Realm" key that character
+-- used before this build, present only when a string surname resolved. A
+-- regional client too old to report a surname (UnitNameUnmodified absent)
+-- takes the ordinary path below instead. Every other client's return 3 IS
+-- "Name - Realm", and return 4 there is always nil.
+--
+-- Returns (name, realm, key, legacyKey) on success, or (nil, msg, reason) on
+-- refusal -- reason is "surname" only when a regional surname has not yet
+-- settled. No side effects; identityResolved(), just below, is the only
+-- trace point.
 function Lifecycle._PlayerIdentity()
-    local name = UnitName("player")
+    local regionalUnique = type(_G.RegionalUniqueNamesEnabled) == "function"
+        and _G.RegionalUniqueNamesEnabled() == true
+    local regionalName = regionalUnique and type(_G.UnitNameUnmodified) == "function"
+
+    local name, surname
+    if regionalName then
+        name, surname = _G.UnitNameUnmodified("player")
+    else
+        name = UnitName("player")   -- also the regional-without-UnitNameUnmodified path
+    end
     local realm = GetRealmName()
     local unknown = _G.UNKNOWNOBJECT
     if type(unknown) ~= "string" then unknown = nil end
@@ -93,7 +129,31 @@ function Lifecycle._PlayerIdentity()
     if type(realm) ~= "string" or realm == "" or realm == "Unknown" or (unknown and realm == unknown) then
         return nil, "realm identity is not available yet (GetRealmName returned '" .. tostring(realm) .. "')"
     end
-    return name, realm
+
+    if not regionalName then
+        return name, realm, name .. " - " .. realm, nil
+    end
+
+    if type(surname) ~= "string" then surname = nil end  -- type safety only; an empty string counts as present
+
+    if surname == nil then
+        if not surnameSettled then
+            return nil, "player surname is not available yet (UnitNameUnmodified returned no surname)", "surname"
+        end
+        return name, realm, name, nil
+    end
+
+    return name, realm, name .. " " .. surname, name .. " - " .. realm
+end
+
+-- The hold's only reader of _PlayerIdentity's failure reason: traces a
+-- regional surname that has not yet settled, for field diagnosis of a
+-- lagging surname. _PlayerIdentity itself stays pure; this is the one place
+-- the trace is set.
+local function identityResolved()
+    local name, _, reason = Lifecycle._PlayerIdentity()
+    if not name and reason == "surname" then Lifecycle._surnameLagObserved = true end
+    return name ~= nil
 end
 
 -- Forward-declared: schedulePoll and pollTick call each other and are called
@@ -148,7 +208,7 @@ end
 local function releaseIdentityHeld(eventName)
     if #identityHeld == 0 or identityStopped then return false end
     if InCombatLockdown() then return false end
-    if not Lifecycle._PlayerIdentity() then return false end
+    if not identityResolved() then return false end
 
     local snapshot = identityHeld
     identityHeld = {}
@@ -179,11 +239,16 @@ local function releaseIdentityHeld(eventName)
     return true, alRaised, alErr, lgRaised, lgErr
 end
 
--- The no-UNIT_NAME_UPDATE fallback: the client cannot render the player's own
--- unit without a name, so identity always resolves eventually -- there is no
--- cap. Each tick costs one identity check (two API calls, up to four
--- compares) and re-arms itself only while something is still held.
+-- The no-UNIT_NAME_UPDATE fallback. The name/realm wait is uncapped: the
+-- client cannot render the player's own unit without a name, so identity
+-- always resolves eventually. A regional surname wait is capped instead --
+-- this tick's first run settles it, so a held controller releases under the
+-- first name alone if the surname still has not arrived. Each tick costs one
+-- identity check: on a regional client, three API calls (RegionalUniqueNamesEnabled,
+-- UnitNameUnmodified or UnitName, GetRealmName) plus a few type probes; fewer
+-- on an ordinary client. It re-arms itself only while something is still held.
 pollTick = function()
+    surnameSettled = true
     pollScheduled = false
     if identityStopped or #identityHeld == 0 then return end
     local _, alRaised, alErr, lgRaised, lgErr = releaseIdentityHeld("POLL")
@@ -232,7 +297,7 @@ local function ensureDispatcher()
                 -- would pass: firing it now would let it run ahead of an
                 -- already-waiting controller, and in the combat case, ahead of
                 -- the very deferral that's holding the other one back.
-                if #identityHeld == 0 and Lifecycle._PlayerIdentity() then
+                if #identityHeld == 0 and identityResolved() then
                     raised, err = c:_fireAddonLoaded() -- single fire; raised flag, never thrown inline
                 else
                     holdForIdentity(c)
@@ -279,7 +344,7 @@ local function ensureDispatcher()
                     for i = 1, #identityHeld do
                         names[#names + 1] = identityHeld[i]._addonName
                     end
-                    print("Foundry-1.0: Lifecycle: waiting for the character's name before starting "
+                    print("Foundry-1.0: Lifecycle: waiting for the character's name or surname before starting "
                         .. table.concat(names, ", "))
                 end
             end
@@ -483,7 +548,7 @@ function Controller:OnAddonLoaded(handler)
         -- if its own identity check would pass: firing here would let it run
         -- ahead of an already-waiting controller (see the ADDON_LOADED branch
         -- for the same rule and why it matters in combat).
-        if #identityHeld == 0 and Lifecycle._PlayerIdentity() then
+        if #identityHeld == 0 and identityResolved() then
             local raised, err = self:_fireAddonLoaded()
             if raised then surfaceHookError("addon-loaded", err) end
         else
