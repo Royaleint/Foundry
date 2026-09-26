@@ -143,7 +143,7 @@ test("version-pins: F.API_VERSION == 6 and DB.API_VERSION == 2", function()
     -- Sibling markers unchanged.
     T.eq(F.Commands.API_VERSION, 2, "Commands marker == 2 (restriction guard added, FND-045)")
     T.eq(F.Events.API_VERSION, 2, "Events marker == 2 (RegisterBucket added, FND-008)")
-    T.eq(F.Lifecycle.API_VERSION, 2, "Lifecycle marker == 2 (OnUnloading added, FND-044)")
+    T.eq(F.Lifecycle.API_VERSION, 3, "Lifecycle marker == 3 (the addon-loaded identity hold)")
 end)
 
 --------------------------------------------------------------------------------
@@ -395,6 +395,78 @@ test("identity-timing: an 'Unknown' realm refuses", function()
     T.raises(function() newHS(F, { defaults = { global = { a = 1 } } }) end,
         "Unknown realm refuses", "realm identity is not available")
     T.eq(_G.TestDB, nil, "no SV created")
+end)
+
+-- identity-timing-localized-placeholder-name-refuses
+test("identity-timing: the client's localized 'unresolved unit' placeholder name refuses", function()
+    local F = freshLoaded()
+    _G.UNKNOWNOBJECT = "Unbekannt"
+    T.identity = { name = "Unbekannt", realm = "Test Realm" }
+    T.raises(function() newHS(F, { defaults = { global = { a = 1 } } }) end,
+        "localized placeholder name refuses", "player identity is not available")
+    T.eq(_G.TestDB, nil, "no SV created -- the localized placeholder is never keyed")
+end)
+
+-- identity-timing-localized-placeholder-realm-refuses
+test("identity-timing: the client's localized 'unresolved unit' placeholder realm refuses", function()
+    local F = freshLoaded()
+    _G.UNKNOWNOBJECT = "Unbekannt"
+    T.identity = { name = "Tester", realm = "Unbekannt" }
+    T.raises(function() newHS(F, { defaults = { global = { a = 1 } } }) end,
+        "localized placeholder realm refuses", "realm identity is not available")
+    T.eq(_G.TestDB, nil, "no SV created")
+end)
+
+--------------------------------------------------------------------------------
+-- identity-hold: DB construction riding Lifecycle's addon-loaded identity hold.
+-- A consumer that constructs its DB inside its Lifecycle OnAddonLoaded hook, as
+-- the docs direct, must see that hook wait out an unresolved identity rather
+-- than run over a placeholder name -- and must see it proceed, unharmed, once
+-- Lifecycle releases the hold.
+--------------------------------------------------------------------------------
+
+-- identity-hold-then-release
+test("identity-hold: a consumer's DB:New inside OnAddonLoaded waits for Lifecycle's identity hold, then runs", function()
+    local F = freshLoaded("@project-version@", "HeldAddon")
+    T.identity = { name = "Unknown", realm = "Test Realm" }   -- unresolved at ADDON_LOADED
+    local db
+    local lc = F.Lifecycle:New(nil, "HeldAddon")
+    lc:OnAddonLoaded(function()
+        db = F.DB:New({ name = "HeldAddon", sv = "TestDB", defaults = { char = {} }, defaultProfile = true })
+    end)
+    T.Fire(dispatcherFrame(), "ADDON_LOADED", "HeldAddon")
+    T.eq(db, nil, "the hook never ran while identity was unresolved")
+    T.eq(_G.TestDB, nil, "_G[sv] untouched while held")
+
+    T.identity = { name = "Tester", realm = "Test Realm" }
+    T.Fire(dispatcherFrame(), "UNIT_NAME_UPDATE", "player")
+    T.truthy(db, "the hook ran once identity resolved and released the hold")
+    local pk = _G.TestDB.profileKeys
+    T.eq(keyCount(pk), 1, "exactly one profileKeys entry -- no placeholder key was ever written")
+    T.eq(pk["Tester - Test Realm"], "Default", "the released hook's DB:New used the resolved identity")
+    local _ = db.char   -- materialize the char section under the resolved charKey
+    T.eq(keyCount(_G.TestDB.char), 1, "exactly one char bucket -- no placeholder charKey was ever written")
+    T.truthy(_G.TestDB.char["Tester - Test Realm"] ~= nil,
+        "the char bucket is keyed by the resolved identity, not a placeholder")
+end)
+
+-- identity-hold-until-logout
+test("identity-hold: unresolved through ADDON_LOADED, PLAYER_LOGIN, PLAYER_ENTERING_WORLD and PLAYER_LOGOUT leaves no store", function()
+    local F = freshLoaded("@project-version@", "HeldAddon2")
+    T.identity = { name = "Unknown", realm = "Test Realm" }
+    _G.TestDB2 = { profileKeys = { ["Someone - Else"] = "Default" } }
+    local presnapshot = deepCopy(_G.TestDB2)
+    local db
+    local lc = F.Lifecycle:New(nil, "HeldAddon2")
+    lc:OnAddonLoaded(function()
+        db = F.DB:New({ name = "HeldAddon2", sv = "TestDB2", defaultProfile = true })
+    end)
+    T.Fire(dispatcherFrame(), "ADDON_LOADED", "HeldAddon2")
+    T.Fire(dispatcherFrame(), "PLAYER_LOGIN")
+    T.Fire(dispatcherFrame(), "PLAYER_ENTERING_WORLD")
+    T.Fire(dispatcherFrame(), "PLAYER_LOGOUT")
+    T.eq(db, nil, "DB:New never ran -- the addon-loaded hook stayed held through logout")
+    assertDeepEqual(_G.TestDB2, presnapshot, "_G[sv] is byte-identical to its pre-session state")
 end)
 
 -- identity-timing-multiword-realm-charkey
@@ -2131,10 +2203,32 @@ end)
 
 test("graft-guard: dev build, missing Events -> DB stands down (raises, no register)", function()
     local F = bootOnly("@project-version@")
-    F.Lifecycle = { _RegisterPostLogout = function() end }
+    F.Lifecycle = { _RegisterPostLogout = function() end, _PlayerIdentity = function() return "N", "R" end }
     F.Events = nil
     T.raises(function() T.loadModule("Modules/DB.lua") end,
         "DB load must raise in dev when Events is absent", EVENTS_SUBSTR)
+    T.falsy(F:HasModule("DB"), "DB did not register")
+    T.eq(F.DB, nil, "F.DB is absent")
+end)
+
+-- NEGATIVE (guard fires), dev build: the seam is present but the identity check
+-- is missing -- the older-core scenario the graft-guard exists for, one seam at
+-- a time (a core that shipped _RegisterPostLogout before _PlayerIdentity existed).
+test("graft-guard: dev build, seam present but no _PlayerIdentity -> DB stands down (raises)", function()
+    local F = bootOnly("@project-version@")
+    F.Lifecycle = { _RegisterPostLogout = function() end }
+    T.raises(function() T.loadModule("Modules/DB.lua") end,
+        "DB load must raise in dev when _PlayerIdentity is missing", "_PlayerIdentity")
+    T.falsy(F:HasModule("DB"), "DB did not register")
+    T.eq(F.DB, nil, "F.DB is absent")
+end)
+
+-- NEGATIVE, RELEASE build: same seam-less-identity-check stub -> prints, no register.
+test("graft-guard: release build, seam present but no _PlayerIdentity -> DB stands down (prints)", function()
+    local F = bootOnly("1.0.0")
+    F.Lifecycle = { _RegisterPostLogout = function() end }
+    T.loadModule("Modules/DB.lua")
+    T.outputContains("_PlayerIdentity", "release build prints the identity-check diagnostic")
     T.falsy(F:HasModule("DB"), "DB did not register")
     T.eq(F.DB, nil, "F.DB is absent")
 end)

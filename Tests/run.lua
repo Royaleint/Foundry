@@ -44,7 +44,13 @@ function T.installMocks(tocVersion)
     _G.C_EventUtils = nil
     _G.C_RestrictedActions = nil
     _G.Enum = nil
-    _G.InCombatLockdown = function() return false end
+    T.inCombat = false
+    _G.InCombatLockdown = function() return T.inCombat end
+
+    -- The localized "Unknown unit" placeholder global (Foundry.Lifecycle's
+    -- identity check and Foundry.DB's identity gate both read it). Reset per
+    -- test so a prior case's localized-placeholder identity cannot leak in.
+    _G.UNKNOWNOBJECT = nil
 
     -- Sentinel identity Foundry.Window anchors caller frames to. A fresh table
     -- per test so a stray reference from a prior test cannot pass an equality
@@ -385,6 +391,23 @@ function T.installMocks(tocVersion)
     -- Events.lua reads GetTime(); tests advance T.now explicitly.
     T.now = 0
     _G.GetTime = function() return T.now end
+    -- Foundry.Lifecycle's identity poll (the no-UNIT_NAME_UPDATE fallback) uses
+    -- C_Timer.After, a fire-and-forget one-shot with no cancel handle -- distinct
+    -- from NewTimer above. Nothing fires on its own; T.RunAfters() drives every
+    -- pending tick deterministically, once, in registration order. A callback
+    -- that reschedules (calls C_Timer.After again) lands in the NEXT list, so a
+    -- test can assert whether a tick re-armed itself.
+    T.afters = {}
+    function T.RunAfters()
+        local pending = T.afters
+        T.afters = {}
+        for i = 1, #pending do
+            if not pending[i].fired then
+                pending[i].fired = true
+                pending[i].cb()
+            end
+        end
+    end
     _G.C_Timer = {
         NewTimer = function(interval, callback)
             local handle = {
@@ -401,6 +424,9 @@ function T.installMocks(tocVersion)
             end
             T.timers[#T.timers + 1] = handle
             return handle
+        end,
+        After = function(delay, callback)
+            T.afters[#T.afters + 1] = { delay = delay, cb = callback, fired = false }
         end,
     }
 

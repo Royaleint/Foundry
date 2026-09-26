@@ -20,6 +20,7 @@ read_globals = {
     "IsLoggedIn",  -- Foundry.Lifecycle seeds its login catch-up flag from this at dispatcher creation.
     "UnitName",
     "GetRealmName",
+    "InCombatLockdown",  -- Foundry.Lifecycle defers the addon-loaded identity release in combat.
     -- Foundry.List bridges the modern ScrollBox system.
     "ScrollUtil",
     "CreateScrollBoxListLinearView",

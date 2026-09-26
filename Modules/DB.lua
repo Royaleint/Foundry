@@ -24,19 +24,24 @@ if F:HasModule("DB") then return end
 -- redundant copy of THE SAME core, but not this cross-version graft: TOC load
 -- order is Foundry -> Commands -> Events -> Lifecycle -> DB -> List, so a
 -- consumer embedding a NEWER Foundry when an OLDER standalone already won
--- _G.Foundry_1_0 runs this newer DB.lua against the OLD core, which has no DB
--- module and no post-logout seam. Grafting would defer the failure to a
--- cryptic "_RegisterPostLogout (a nil value)" deep in :New.
+-- _G.Foundry_1_0 runs this newer DB.lua against the OLD core, which is missing
+-- one or both of the two seams this DB.lua needs from Lifecycle: the
+-- post-logout strip registration, and (added alongside the addon-loaded
+-- identity hold) the shared player-identity check. Grafting would defer the
+-- failure to a cryptic nil-value error deep in :New instead.
 --
--- Feature-detect the exact seam DB needs (the function itself, not an
+-- Feature-detect the exact seams DB needs (the functions themselves, not an
 -- API_VERSION number, so the check can't drift and tolerates a core with no
--- Lifecycle at all) and stand down if absent: a clear load-time error plus an
--- absent F.DB beats a cryptic deep crash mid-session. Provably inert on the
+-- Lifecycle at all) and stand down if either is absent: a clear load-time
+-- error plus an absent F.DB beats a cryptic deep crash mid-session. Provably
+-- inert on the
 -- normal load, since Lifecycle always loads before DB.
 if type(F.Lifecycle) ~= "table"
-    or type(F.Lifecycle._RegisterPostLogout) ~= "function" then
+    or type(F.Lifecycle._RegisterPostLogout) ~= "function"
+    or type(F.Lifecycle._PlayerIdentity) ~= "function" then
     F:RaiseDevError("DB requires Lifecycle's post-logout seam "
-        .. "(F.Lifecycle._RegisterPostLogout), which the Foundry core serving this "
+        .. "(F.Lifecycle._RegisterPostLogout) and its player-identity check "
+        .. "(F.Lifecycle._PlayerIdentity), which the Foundry core serving this "
         .. "session does not provide. The Foundry core serving this session reports "
         .. "version " .. tostring(F.VERSION) .. " (API_VERSION " .. tostring(F.API_VERSION)
         .. "), from " .. tostring(F.SOURCE) .. ". This has two possible causes: either "
@@ -649,20 +654,17 @@ end
 
 -- Resolve the running character's identity. Returns (charKey, errMessage): a nil
 -- charKey with a message means the identity gate refused (computed lazily, never
--- at file load). nil / "" / "Unknown" all refuse before any mutation, so a junk
--- key ("nil - Realm", "Name - ", "Unknown - Realm") is never computed.
+-- at file load). Shares its check with Foundry.Lifecycle's addon-loaded identity
+-- hold (F.Lifecycle._PlayerIdentity), so "what counts as resolved" has one
+-- definition: nil / "" / the literal "Unknown" / the client's own localized
+-- placeholder for an unresolved unit name all refuse before any mutation, so a
+-- junk key ("nil - Realm", "Name - ", "Unknown - Realm") is never computed.
 local function resolveCharKey()
-    local name = UnitName("player")
-    local realm = GetRealmName()
-    if type(name) ~= "string" or name == "" or name == "Unknown" then
-        return nil, "DB:New: player identity is not available yet (UnitName "
-            .. "returned '" .. tostring(name) .. "'); construction refused"
+    local name, realmOrMsg = F.Lifecycle._PlayerIdentity()
+    if not name then
+        return nil, "DB:New: " .. realmOrMsg .. "; construction refused"
     end
-    if type(realm) ~= "string" or realm == "" or realm == "Unknown" then
-        return nil, "DB:New: realm identity is not available yet (GetRealmName "
-            .. "returned '" .. tostring(realm) .. "'); construction refused"
-    end
-    return name .. " - " .. realm, nil
+    return name .. " - " .. realmOrMsg, nil
 end
 
 -- Read the raw stored schema stamp (pre-defaults, the single read the seam ever
@@ -805,7 +807,9 @@ function DB:New(config)
             .. "available. Construct DB inside the addon-loaded window")
     end
 
-    -- 7. Identity gate (nil / "" / "Unknown" all refuse before any mutation).
+    -- 7. Identity gate, shared with Lifecycle's addon-loaded hold (nil / "" /
+    -- "Unknown" / the client's localized placeholder all refuse before any
+    -- mutation).
     local charKey, identityErr = resolveCharKey()
     if not charKey then
         refuse(identityErr)
