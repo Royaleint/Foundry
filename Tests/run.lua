@@ -44,6 +44,11 @@ function T.installMocks(tocVersion)
     _G.C_EventUtils = nil
     _G.C_RestrictedActions = nil
     _G.Enum = nil
+    -- The acedb_parity harness installs permissive C_GameRules/strlenutf8
+    -- stubs for its own AceDB-side loads; clear them here so a later suite
+    -- in the same process can't silently inherit them.
+    _G.C_GameRules = nil
+    _G.strlenutf8 = nil
     T.inCombat = false
     _G.InCombatLockdown = function() return T.inCombat end
 

@@ -2246,4 +2246,321 @@ test("graft-guard: normal core with the seam present -> DB registers (guard iner
     end
 end)
 
+--------------------------------------------------------------------------------
+-- Full-name character identity (FND-049): the key on clients with region-wide
+-- unique names, and the one-time move off the pre-FND-049 "Name - Realm" key,
+-- skipped whenever another character with the same first name already has
+-- saved data there. L = "Aldric - Test Realm" (the legacy key), N =
+-- "Aldric Vane" (the full-name key), P = "Brennet - Test Realm" (an
+-- unrelated sibling character, present as a control in several fixtures).
+--------------------------------------------------------------------------------
+
+local L = "Aldric - Test Realm"
+local N = "Aldric Vane"
+local P = "Brennet - Test Realm"
+
+-- Installs the regional identity for "Aldric" on realm "Test Realm"
+-- with the given surname (nil, "", or a string).
+local function setAldric(surname)
+    T.SetRegional(true)
+    T.identity = { name = "Aldric", surname = surname, realm = "Test Realm" }
+end
+
+test("key: no RegionalUniqueNamesEnabled global, and RegionalUniqueNamesEnabled() == false, give identical ordinary keys", function()
+    local F = freshLoaded()
+    T.identity = { name = "Tester", realm = "Test Realm" }
+    local db = newHS(F)
+    local _ = db.char
+    assertDeepEqual(_G.TestDB.profileKeys, { ["Tester - Test Realm"] = "Default" }, "no global: profileKeys literal")
+    T.truthy(_G.TestDB.char["Tester - Test Realm"] ~= nil, "no global: ordinary char key")
+    T.eq(keyCount(_G.TestDB.char), 1, "no global: exactly one char bucket")
+
+    local F2 = freshLoaded()
+    T.SetRegional(false)
+    T.identity = { name = "Tester", realm = "Test Realm" }
+    local db2 = newHS(F2)
+    local _2 = db2.char
+    assertDeepEqual(_G.TestDB.profileKeys, { ["Tester - Test Realm"] = "Default" }, "regional == false: same profileKeys literal")
+    T.truthy(_G.TestDB.char["Tester - Test Realm"] ~= nil, "regional == false: same ordinary char key")
+    T.eq(keyCount(_G.TestDB.char), 1, "regional == false: exactly one char bucket")
+end)
+
+test("key: RegionalUniqueNamesEnabled() == false leaves an existing full-name-shaped key alone", function()
+    local F = freshLoaded()
+    T.SetRegional(false)
+    T.identity = { name = "Tester", realm = "Test Realm" }
+    _G.TestDB = {
+        profileKeys = { ["Tester - Test Realm"] = "Default", ["Tester Vane"] = "Alt" },
+        char = { ["Tester - Test Realm"] = { a = 1 }, ["Tester Vane"] = { b = 2 } },
+    }
+    newHS(F)
+    T.eq(keyCount(_G.TestDB.profileKeys), 2, "nothing moved or merged")
+    T.eq(_G.TestDB.profileKeys["Tester - Test Realm"], "Default", "the ordinary key is untouched")
+    T.eq(_G.TestDB.profileKeys["Tester Vane"], "Alt", "the full-name-shaped key is left alone too")
+    T.eq(keyCount(_G.TestDB.char), 2, "char section untouched")
+end)
+
+test("key: regional, fresh SV -- profileKeys is exactly {N = Default}, no key contains ' - '", function()
+    local F = freshLoaded()
+    setAldric("Vane")
+    local db = newHS(F)
+    local _ = db.char
+    assertDeepEqual(_G.TestDB.profileKeys, { [N] = "Default" }, "profileKeys is exactly {N=Default}")
+    for k in pairs(_G.TestDB.char) do
+        T.falsy(k:find(" - ", 1, true) ~= nil, "no char key contains ' - '")
+    end
+end)
+
+test("key: after T.Settle(), a nil-surname :New keys 'Aldric' alone; L is untouched", function()
+    local F = freshLoaded()
+    setAldric(nil)
+    T.Settle()
+    _G.TestDB = { profileKeys = { [L] = "Alt" }, char = { [L] = { x = 1 } } }
+    local db = newHS(F)
+    local _ = db.char
+    T.eq(_G.TestDB.profileKeys["Aldric"], "Default", "keyed by first name alone")
+    T.eq(_G.TestDB.profileKeys[L], "Alt", "L is untouched -- a settled nil surname has no legacyKey")
+    T.truthy(_G.TestDB.char[L] ~= nil, "L's char bucket is untouched")
+end)
+
+test("key: a '' surname keys 'Aldric ' with the trailing space, exactly", function()
+    local F = freshLoaded()
+    setAldric("")
+    local db = newHS(F)
+    local _ = db.char
+    assertDeepEqual(_G.TestDB.profileKeys, { ["Aldric "] = "Default" }, "profileKeys is exactly {'Aldric '=Default}")
+end)
+
+test("key: a regional client without UnitNameUnmodified takes the legacy key; an existing N bucket is untouched", function()
+    local F = freshLoaded()
+    T.SetRegional(true)
+    _G.UnitNameUnmodified = nil
+    T.identity = { name = "Aldric", realm = "Test Realm" }
+    _G.TestDB = { profileKeys = { [L] = "Default", [N] = "Alt" }, char = { [L] = { x = 1 }, [N] = { y = 2 } } }
+    local db = newHS(F)
+    T.eq(db.char.x, 1, "the L bucket is used (charKey resolved to L)")
+    T.eq(_G.TestDB.profileKeys[N], "Alt", "N is untouched")
+    T.eq(_G.TestDB.char[N].y, 2, "N's char bucket unchanged")
+end)
+
+test("migration: a legacy L bucket and profile choice move onto N; a sibling P is untouched", function()
+    local F = freshLoaded()
+    setAldric("Vane")
+    _G.TestDB = {
+        profileKeys = { [L] = "Alt", [P] = "Default" },
+        char = { [L] = { x = 1 }, [P] = { y = 2 } },
+        profiles = { Alt = {}, Default = {} },
+    }
+    local db = newHS(F)
+    T.eq(_G.TestDB.profileKeys[N], "Alt", "profileKeys[N] == Alt")
+    T.eq(_G.TestDB.profileKeys[L], nil, "L absent from profileKeys")
+    T.eq(_G.TestDB.char[L], nil, "L absent from char")
+    T.eq(db.char.x, 1, "the moved bucket is live under N")
+    T.eq(db.profile, _G.TestDB.profiles.Alt, "the resolved profile is Alt")
+    T.eq(_G.TestDB.profileKeys[P], "Default", "P's profileKeys entry is unchanged")
+    T.eq(_G.TestDB.char[P].y, 2, "P's char bucket is unchanged")
+end)
+
+test("migration: only char[L] is present -- still moves", function()
+    local F = freshLoaded()
+    setAldric("Vane")
+    _G.TestDB = { char = { [L] = { x = 1 } } }
+    local db = newHS(F)
+    T.eq(_G.TestDB.char[L], nil, "L absent from char")
+    T.eq(db.char.x, 1, "moved bucket live under N")
+    T.eq(_G.TestDB.profileKeys[N], "Default", "N's profileKeys resolves to Default -- no legacy profileKeys entry existed")
+end)
+
+test("migration: only profileKeys[L] is present -- still moves the profile choice", function()
+    local F = freshLoaded()
+    setAldric("Vane")
+    _G.TestDB = { profileKeys = { [L] = "Alt" }, profiles = { Alt = {} } }
+    local db = newHS(F)
+    T.eq(_G.TestDB.profileKeys[L], nil, "L absent from profileKeys")
+    T.eq(_G.TestDB.profileKeys[N], "Alt", "N resolves to Alt")
+    T.eq(db.profile, _G.TestDB.profiles.Alt, "resolved profile is Alt")
+end)
+
+test("migration: a '' surname moves L onto 'Aldric '", function()
+    local F = freshLoaded()
+    setAldric("")
+    _G.TestDB = { profileKeys = { [L] = "Alt" }, char = { [L] = { x = 1 } } }
+    local db = newHS(F)
+    T.eq(_G.TestDB.profileKeys["Aldric "], "Alt", "keyed by 'Aldric ' with the trailing space")
+    T.eq(_G.TestDB.profileKeys[L], nil, "L absent")
+    T.eq(db.char.x, 1, "moved bucket live")
+end)
+
+test("migration: an 'Aldric Other' claimant blocks the move", function()
+    local F = freshLoaded()
+    setAldric("Vane")
+    _G.TestDB = { profileKeys = { [L] = "Alt", ["Aldric Other"] = "Default" }, char = { [L] = { x = 1 } } }
+    local db = newHS(F)
+    T.eq(_G.TestDB.profileKeys[L], "Alt", "L's entry is untouched")
+    T.eq(_G.TestDB.profileKeys[N], "Default", "N gets the ordinary default -- no move ran")
+    T.eq(_G.TestDB.char[L].x, 1, "L's data intact")
+    local _ = db.char
+    T.eq(keyCount(_G.TestDB.char[N]), 0, "N's bucket is fresh, not adopted from L")
+end)
+
+test("migration: a bare 'Aldric' claimant blocks the move", function()
+    local F = freshLoaded()
+    setAldric("Vane")
+    _G.TestDB = { profileKeys = { [L] = "Alt", ["Aldric"] = "Default" }, char = { [L] = { x = 1 } } }
+    newHS(F)
+    T.eq(_G.TestDB.profileKeys[L], "Alt", "L's entry is untouched")
+    T.truthy(_G.TestDB.profileKeys["Aldric"] ~= nil, "the bare-name claimant survives")
+end)
+
+test("migration: 'Aldricson Foo' is not a claimant -- no space boundary, so it never blocks the move", function()
+    local F = freshLoaded()
+    setAldric("Vane")
+    _G.TestDB = { profileKeys = { [L] = "Alt", ["Aldricson Foo"] = "Default" }, char = { [L] = { x = 1 } } }
+    local db = newHS(F)
+    T.eq(_G.TestDB.profileKeys[N], "Alt", "the move ran -- 'Aldricson Foo' does not share the 'Aldric ' prefix boundary")
+    T.eq(_G.TestDB.profileKeys[L], nil, "L moved away")
+    T.eq(db.char.x, 1, "the bucket moved")
+end)
+
+test("migration: 'Aldric - Other Realm' is not a claimant -- legacy-shaped keys never count", function()
+    local F = freshLoaded()
+    setAldric("Vane")
+    _G.TestDB = { profileKeys = { [L] = "Alt", ["Aldric - Other Realm"] = "Default" }, char = { [L] = { x = 1 } } }
+    local db = newHS(F)
+    T.eq(_G.TestDB.profileKeys[N], "Alt", "the move ran -- a legacy-shaped key never counts as a claimant")
+    T.eq(_G.TestDB.profileKeys[L], nil, "L moved away")
+    T.eq(db.char.x, 1, "the bucket moved")
+end)
+
+test("migration: an 'Aldric ' claimant (a '' surname sibling) blocks a same-first-name 'Aldric Vane' move", function()
+    local F = freshLoaded()
+    setAldric("Vane")
+    _G.TestDB = { profileKeys = { [L] = "Alt", ["Aldric "] = "Default" }, char = { [L] = { x = 1 } } }
+    newHS(F)
+    T.eq(_G.TestDB.profileKeys[L], "Alt", "L untouched -- the 'Aldric ' claimant blocked the move")
+    T.truthy(_G.TestDB.profileKeys["Aldric "] ~= nil, "the '' surname sibling's key survives")
+end)
+
+test("migration: the move is idempotent -- a second construction after the move changes nothing further", function()
+    local F = freshLoaded()
+    setAldric("Vane")
+    _G.TestDB = { profileKeys = { [L] = "Alt" }, char = { [L] = { x = 1 } } }
+    local db1 = newHS(F)
+    local _ = db1.char
+    T.eq(_G.TestDB.profileKeys[N], "Alt", "moved once")
+    T.eq(_G.TestDB.profileKeys[L], nil, "L gone")
+
+    db1:Destroy()
+    local db2 = newHS(F)
+    T.eq(_G.TestDB.profileKeys[N], "Alt", "unchanged on the second construction -- no legacy key remains (L is gone)")
+    T.eq(db2.char.x, 1, "the same moved bucket, still there")
+end)
+
+test("migration: N already has saved data alongside L -- the move never runs (charKey not absent)", function()
+    local F = freshLoaded()
+    setAldric("Vane")
+    _G.TestDB = { profileKeys = { [L] = "Alt", [N] = "Own" }, char = { [L] = { x = 1 }, [N] = { z = 9 } } }
+    local db = newHS(F)
+    T.eq(_G.TestDB.profileKeys[N], "Own", "N's own profile choice is preserved, never overwritten by L's")
+    T.eq(_G.TestDB.profileKeys[L], "Alt", "L is left alone")
+    T.eq(db.char.z, 9, "N's own bucket is used, not L's")
+end)
+
+test("migration: charKey absent from profileKeys but present in char -- the move still never runs", function()
+    local F = freshLoaded()
+    setAldric("Vane")
+    _G.TestDB = { profileKeys = { [L] = "Alt" }, char = { [L] = { x = 1 }, [N] = { z = 9 } } }
+    local db = newHS(F)
+    T.eq(db.char.z, 9, "N's own char bucket is used, never overwritten by L's")
+    T.eq(_G.TestDB.profileKeys[L], "Alt", "L's profileKeys entry is untouched")
+    T.truthy(_G.TestDB.char[L] ~= nil, "L's char bucket is untouched")
+end)
+
+test("migration: charKey absent from char but present in profileKeys -- the move still never runs", function()
+    local F = freshLoaded()
+    setAldric("Vane")
+    _G.TestDB = { profileKeys = { [L] = "Alt", [N] = "Own" }, char = { [L] = { x = 1 } } }
+    newHS(F)
+    T.eq(_G.TestDB.profileKeys[N], "Own", "N's own profile choice is preserved")
+    T.truthy(_G.TestDB.char[L] ~= nil, "L's char bucket is untouched")
+end)
+
+test("migration: a claimant present only in the char section (not profileKeys) still blocks the move", function()
+    local F = freshLoaded()
+    setAldric("Vane")
+    _G.TestDB = { profileKeys = { [L] = "Alt" }, char = { [L] = { x = 1 }, ["Aldric Other"] = {} } }
+    newHS(F)
+    T.eq(_G.TestDB.profileKeys[L], "Alt", "L's entry is untouched -- the char-only claimant blocked the move")
+    T.truthy(_G.TestDB.char[L] ~= nil, "L's char bucket is untouched")
+end)
+
+test("migration: a downgrade refusal on a migratable fixture leaves the SV byte-untouched", function()
+    local F = freshLoaded()
+    setAldric("Vane")
+    _G.TestDB = { profileKeys = { [L] = "Alt" }, char = { [L] = { x = 1 } }, global = { schemaVersion = 99 } }
+    local presnapshot = deepCopy(_G.TestDB)
+    T.raises(function()
+        newHS(F, { schema = { version = 1, key = "global.schemaVersion", migrate = noop } })
+    end, "downgrade refuses", "downgrade")
+    assertDeepEqual(_G.TestDB, presnapshot, "SV is byte-identical to its pre-construction state -- the move never ran")
+end)
+
+test("migration: a malformed profileKeys[L] (non-string) skips the move without refusing", function()
+    local F = freshLoaded()
+    setAldric("Vane")
+    _G.TestDB = { profileKeys = { [L] = 7 }, char = { [L] = { x = 1 } } }
+    newHS(F)   -- must not raise
+    T.eq(_G.TestDB.profileKeys[L], 7, "the malformed value is left alone")
+    T.truthy(_G.TestDB.char[L] ~= nil, "L's char bucket is untouched")
+    T.eq(_G.TestDB.profileKeys[N], "Default", "N gets the ordinary default -- no move ran")
+end)
+
+test("migration: a core new enough for _PlayerIdentity but too old for the full-name key refuses (cheap defense)", function()
+    T.installMocks("@project-version@")
+    local F = T.loadFoundry()
+    F.Lifecycle._PlayerIdentity = function() return "Aldric", "Test Realm" end   -- old 2-return shape
+    T.loadedAddons["TestAddon"] = true
+    T.raises(function() newHS(F) end,
+        "the cheap defense refuses", "predates the full-name character key")
+    T.eq(_G.TestDB, nil, "no SV created -- construction refused before any mutation")
+end)
+
+test("migration: schema.migrate raising still leaves the move and write-back applied; a retry reruns migrate against the moved data", function()
+    local F = freshLoaded()
+    setAldric("Vane")
+    _G.TestDB = {
+        profileKeys = { [L] = "Alt", [P] = "Default" },
+        char = { [L] = { x = 1 }, [P] = { y = 2 } },
+        profiles = { Alt = {}, Default = {} },
+        global = {},
+    }
+    local lBucketBefore = deepCopy(_G.TestDB.char[L])
+
+    T.raises(function()
+        newHS(F, { schema = { version = 2, key = "global.schemaVersion", migrate = function() error("boom") end } })
+    end, "migrate raises -> construction refused", "schema.migrate raised")
+
+    assertDeepEqual(_G.TestDB.char[N], lBucketBefore, "char[N] deep-equals the fixture's L bucket")
+    T.eq(_G.TestDB.profileKeys[N], "Alt", "profileKeys[N] == Alt")
+    T.eq(_G.TestDB.profileKeys[L], nil, "L absent from profileKeys")
+    T.eq(_G.TestDB.char[L], nil, "L absent from char")
+    local keys = {}
+    for k in pairs(_G.TestDB.char) do keys[#keys + 1] = k end
+    table.sort(keys)
+    T.eq(table.concat(keys, ","), N .. "," .. P, "the char key set is exactly {N, P}")
+
+    local db2 = newHS(F, { schema = { version = 2, key = "global.schemaVersion", migrate = noop } })
+    T.eq(db2.char.x, 1, "N's already-moved bucket is used")
+    T.eq(_G.TestDB.profileKeys[N], "Alt", "unchanged by the retry")
+end)
+
+-- Direct-:New nil-surname refusal (no settle, no hold).
+test("migration: a direct :New with a nil surname (no hold, no settle) refuses like any other unresolved identity", function()
+    local F = freshLoaded()
+    setAldric(nil)
+    T.raises(function() newHS(F) end,
+        "a direct :New refuses on an unsettled nil surname", "surname is not available yet")
+    T.eq(_G.TestDB, nil, "no SV created")
+end)
+
 return tests

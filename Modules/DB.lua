@@ -652,19 +652,80 @@ local function validateDefaults(defaults)
     return nil
 end
 
--- Resolve the running character's identity. Returns (charKey, errMessage): a nil
--- charKey with a message means the identity gate refused (computed lazily, never
--- at file load). Shares its check with Foundry.Lifecycle's addon-loaded identity
--- hold (F.Lifecycle._PlayerIdentity), so "what counts as resolved" has one
--- definition: nil / "" / the literal "Unknown" / the client's own localized
--- placeholder for an unresolved unit name all refuse before any mutation, so a
--- junk key ("nil - Realm", "Name - ", "Unknown - Realm") is never computed.
+-- Resolve the running character's identity. Returns (charKey, legacyKey,
+-- firstName), or (nil, errMessage) on the identity gate's own refusal --
+-- computed lazily, never at file load; on failure the second return holds
+-- the error message. Shares its check with Foundry.Lifecycle's addon-loaded
+-- identity hold (F.Lifecycle._PlayerIdentity), so "what counts as resolved"
+-- has one definition: nil / "" / the literal "Unknown" / the client's own
+-- localized placeholder for an unresolved unit name, or an unsettled
+-- regional surname, all refuse before any mutation, so a junk key is never
+-- computed. On a client with region-wide unique names, charKey is the full
+-- name and legacyKey is the "First - Realm" key that character used before
+-- this build, present only when a string surname resolved; every other
+-- client's charKey IS its legacyKey ("Name - Realm"), so legacyKey is nil
+-- there.
+--
+-- A cheap defense: a core new enough to have _PlayerIdentity but too old to
+-- return the full-name key (return 3) refuses here rather than building a
+-- junk key from a non-string value.
 local function resolveCharKey()
-    local name, realmOrMsg = F.Lifecycle._PlayerIdentity()
+    local name, realmOrMsg, keyOrReason, legacyKey = F.Lifecycle._PlayerIdentity()
     if not name then
         return nil, "DB:New: " .. realmOrMsg .. "; construction refused"
     end
-    return name .. " - " .. realmOrMsg, nil
+    if type(keyOrReason) ~= "string" then
+        return nil, "DB:New: the Foundry core serving this session predates the "
+            .. "full-name character key; construction refused"
+    end
+    return keyOrReason, legacyKey, name
+end
+
+-- Read-only pre-mutation check: may this construction move data saved under
+-- `legacyKey` onto the new `charKey`? Called after the
+-- step-8 malformed checks and before step 9's profile resolution. Never
+-- writes and never raises -- an ineligible move is skipped, not refused.
+-- `first` is the character's first name alone (resolveCharKey's third
+-- return), used only for the claimant scan below.
+local function planLegacyMove(existing, charKey, legacyKey, first)
+    if legacyKey == nil then return false end          -- no legacy key to move
+    if type(existing) ~= "table" then return false end  -- fresh SV: nothing to move
+
+    local pk = type(existing.profileKeys) == "table" and existing.profileKeys or nil
+    local ch = type(existing.char) == "table" and existing.char or nil
+
+    local legacyProfileKey = pk and pk[legacyKey] or nil
+    if legacyProfileKey == nil and not (ch and type(ch[legacyKey]) == "table") then
+        return false   -- neither section holds the legacy key
+    end
+    if legacyProfileKey ~= nil and type(legacyProfileKey) ~= "string" then
+        return false   -- malformed profileKeys[legacyKey]: skip the move, never refuse
+    end
+
+    if (pk and pk[charKey] ~= nil) or (ch and ch[charKey] ~= nil) then
+        return false   -- charKey must be absent from both sections
+    end
+
+    -- No other claimant in either section: a string key k claims first's
+    -- data when k ~= charKey, k contains no " - " (legacy-shaped keys never
+    -- count), and k == first or k starts with "first ". A bare "first" counts,
+    -- accepted as an exception to the invariant that this move is always
+    -- unambiguous; a "" surname's key "first " counts for every other
+    -- same-first-name character.
+    local prefix = first .. " "
+    local function hasClaimant(section)
+        if not section then return false end
+        for k in pairs(section) do
+            if type(k) == "string" and k ~= charKey and not k:find(" - ", 1, true)
+                and (k == first or k:sub(1, #prefix) == prefix) then
+                return true
+            end
+        end
+        return false
+    end
+    if hasClaimant(pk) or hasClaimant(ch) then return false end
+
+    return true
 end
 
 -- Read the raw stored schema stamp (pre-defaults, the single read the seam ever
@@ -808,12 +869,14 @@ function DB:New(config)
     end
 
     -- 7. Identity gate, shared with Lifecycle's addon-loaded hold (nil / "" /
-    -- "Unknown" / the client's localized placeholder all refuse before any
-    -- mutation).
-    local charKey, identityErr = resolveCharKey()
+    -- "Unknown" / the client's localized placeholder / an unsettled regional
+    -- surname all refuse before any mutation). On failure, the second return
+    -- holds the refusal message instead (resolveCharKey's dual-purpose slot).
+    local charKey, legacyKeyOrErr, first = resolveCharKey()
     if not charKey then
-        refuse(identityErr)
+        refuse(legacyKeyOrErr)
     end
+    local legacyKey = legacyKeyOrErr
 
     -- 8. Read the existing SV global (RAW -- may be nil for a fresh save). The
     -- downgrade check below reads the stamp RAW, pre-defaults. Malformed
@@ -866,12 +929,20 @@ function DB:New(config)
         end
     end
 
+    -- Read-only: may this construction move data from the pre-full-name-key
+    -- legacy key onto the new full-name key? Decided before any mutation;
+    -- step 9 and the apply below both consume the answer.
+    local movePlanned = planLegacyMove(existing, charKey, legacyKey, first)
+
     -- 9. profileKey resolution (raw, pre-mutation): saved profileKeys[charKey]
     -- first, else "Default" (the normalized defaultProfile = true). Saved keys
-    -- remain arbitrary strings and resolve exactly as AceDB resolved them.
+    -- remain arbitrary strings and resolve exactly as AceDB resolved them. A
+    -- planned move resolves from profileKeys[legacyKey] instead: planLegacyMove's
+    -- charKey-absent check already guarantees profileKeys[charKey] is absent.
     local profileKey = "Default"
     if not freshSV and type(existing.profileKeys) == "table" then
-        local saved = existing.profileKeys[charKey]
+        local lookupKey = movePlanned and legacyKey or charKey
+        local saved = existing.profileKeys[lookupKey]
         if type(saved) == "string" and saved ~= "" then
             profileKey = saved
         end
@@ -900,6 +971,19 @@ function DB:New(config)
         _G[config.sv] = {}
     end
     local sv = _G[config.sv]
+
+    -- The one-time legacy-key move: the first mutation after VALIDATION
+    -- COMPLETE, strictly before the profileKeys write-back below, so that
+    -- write-back is the only profileKeys entry this character gets.
+    if movePlanned then
+        if type(sv.char) == "table" and sv.char[legacyKey] ~= nil then
+            sv.char[charKey] = sv.char[legacyKey]
+            sv.char[legacyKey] = nil
+        end
+        if type(sv.profileKeys) == "table" then
+            sv.profileKeys[legacyKey] = nil
+        end
+    end
 
     -- profileKeys write-back: record the resolved mapping. Constructing a db is
     -- never read-only; both consumers' files carry profileKeys.
