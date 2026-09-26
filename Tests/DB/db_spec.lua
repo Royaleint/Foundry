@@ -143,7 +143,7 @@ test("version-pins: F.API_VERSION == 6 and DB.API_VERSION == 2", function()
     -- Sibling markers unchanged.
     T.eq(F.Commands.API_VERSION, 2, "Commands marker == 2 (restriction guard added, FND-045)")
     T.eq(F.Events.API_VERSION, 2, "Events marker == 2 (RegisterBucket added, FND-008)")
-    T.eq(F.Lifecycle.API_VERSION, 2, "Lifecycle marker == 2 (OnUnloading added, FND-044)")
+    T.eq(F.Lifecycle.API_VERSION, 3, "Lifecycle marker == 3 (the addon-loaded identity hold)")
 end)
 
 --------------------------------------------------------------------------------

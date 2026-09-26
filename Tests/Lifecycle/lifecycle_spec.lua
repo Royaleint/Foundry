@@ -52,6 +52,31 @@ local function enableUnloadingEvent()
     }
 end
 
+-- Count native calls by event/unit name, for the identity-hold watch-event
+-- assertions below (a per-method call count can't otherwise distinguish which
+-- event fired how many times).
+local function countRegisterEvent(fr, eventName)
+    local n = 0
+    for _, rec in ipairs(fr.calls.RegisterEvent) do
+        if rec[1] == eventName then n = n + 1 end
+    end
+    return n
+end
+local function countUnregisterEvent(fr, eventName)
+    local n = 0
+    for _, rec in ipairs(fr.calls.UnregisterEvent) do
+        if rec[1] == eventName then n = n + 1 end
+    end
+    return n
+end
+local function countRegisterUnitEvent(fr, eventName, unit1)
+    local n = 0
+    for _, rec in ipairs(fr.calls.RegisterUnitEvent) do
+        if rec.event == eventName and rec.unit1 == unit1 then n = n + 1 end
+    end
+    return n
+end
+
 --------------------------------------------------------------------------------
 -- Harness / bootstrap / module-reg
 --------------------------------------------------------------------------------
@@ -88,8 +113,9 @@ test("HasModule / RequireModule behavior for Lifecycle; additive version markers
     T.eq(F:RequireModule("Lifecycle"), F.Lifecycle, "RequireModule returns the module")
     T.eq(F:RequireModule("Lifecycle", 1), F.Lifecycle, "RequireModule min=1 returns the module")
     T.eq(F:RequireModule("Lifecycle", 2), F.Lifecycle, "RequireModule min=2 returns the unloading hook API")
+    T.eq(F:RequireModule("Lifecycle", 3), F.Lifecycle, "RequireModule min=3 returns the addon-loaded identity hold")
     T.raises(function() F:RequireModule("Lifecycle", 99) end, "above-max API raises", "API version")
-    T.eq(F.Lifecycle.API_VERSION, 2, "Lifecycle.API_VERSION == 2 (OnUnloading added, FND-044)")
+    T.eq(F.Lifecycle.API_VERSION, 3, "Lifecycle.API_VERSION == 3 (the addon-loaded identity hold)")
     -- Library-wide version only ever bumps ADDITIVELY (2 -> 3 when Lifecycle shipped).
     T.eq(F.API_VERSION, 6, "library API_VERSION == 6 (additive bumps only)")
     -- Sibling modules still register and keep their own markers.
@@ -1172,6 +1198,480 @@ test("seam: post-logout callbacks fire ONLY on PLAYER_LOGOUT, not login or addon
     T.eq(count, 0, "no post-logout fire on addon-loaded or login")
     T.Fire(fr, "PLAYER_LOGOUT")
     T.eq(count, 1, "fires exactly once on PLAYER_LOGOUT")
+end)
+
+--------------------------------------------------------------------------------
+-- Addon-loaded identity hold: a controller that reaches ADDON_LOADED while the
+-- character's name and realm are not yet resolved (observed on a cold client-
+-- session login) is held rather than fired, and released -- addon-loaded, then
+-- login if login already fired -- the moment identity resolves: on a later
+-- ADDON_LOADED, PLAYER_LOGIN, PLAYER_ENTERING_WORLD, UNIT_NAME_UPDATE("player"),
+-- PLAYER_REGEN_ENABLED (a combat-safe fallback), or a 1-second poll with no cap.
+-- Where identity is already resolved at ADDON_LOADED (every case but a cold
+-- login), nothing is held, nothing extra is registered, and no timer runs.
+--------------------------------------------------------------------------------
+
+test("identity hold: identity ready at ADDON_LOADED fires immediately; nothing is watched", function()
+    local F = T.fresh()
+    local c = F.Lifecycle:New(nil, "A")
+    local fired = 0
+    c:OnAddonLoaded(function() fired = fired + 1 end)
+    T.Fire(dispatcherFrame(), "ADDON_LOADED", "A")
+    T.eq(fired, 1, "fires immediately -- identity was already resolved")
+    T.eq(countRegisterEvent(dispatcherFrame(), "PLAYER_ENTERING_WORLD"), 0, "no PLAYER_ENTERING_WORLD registration")
+    T.eq(countRegisterEvent(dispatcherFrame(), "PLAYER_REGEN_ENABLED"), 0, "no PLAYER_REGEN_ENABLED registration")
+    T.eq(#dispatcherFrame().calls.RegisterUnitEvent, 0, "no RegisterUnitEvent at all")
+    T.eq(#T.afters, 0, "no poll queued")
+    T.eq(F.Lifecycle._identityResolvedBy, nil, "no release trace -- nothing was ever held")
+end)
+
+test("identity hold: the first hold registers the watch events exactly once across the whole library; a second hold adds nothing", function()
+    local F = T.fresh()
+    T.identity = { name = "Unknown", realm = "Test Realm" }
+    F.Lifecycle:New(nil, "A")
+    F.Lifecycle:New(nil, "B")
+    local fr = dispatcherFrame()
+    T.Fire(fr, "ADDON_LOADED", "A")
+    T.eq(countRegisterEvent(fr, "PLAYER_ENTERING_WORLD"), 1, "PLAYER_ENTERING_WORLD registered once")
+    T.eq(countRegisterEvent(fr, "PLAYER_REGEN_ENABLED"), 1, "PLAYER_REGEN_ENABLED registered once")
+    T.eq(countRegisterUnitEvent(fr, "UNIT_NAME_UPDATE", "player"), 1, "UNIT_NAME_UPDATE(player) registered once")
+    for _, rec in ipairs(fr.calls.RegisterUnitEvent) do
+        if rec.event == "UNIT_NAME_UPDATE" then
+            T.eq(rec.n, 2, "UNIT_NAME_UPDATE registered with exactly (event, unit1), no unit2")
+        end
+    end
+    T.Fire(fr, "ADDON_LOADED", "B")   -- a second hold: idempotent, nothing new registered
+    T.eq(countRegisterEvent(fr, "PLAYER_ENTERING_WORLD"), 1, "still exactly one PLAYER_ENTERING_WORLD registration")
+    T.eq(countRegisterUnitEvent(fr, "UNIT_NAME_UPDATE", "player"), 1, "still exactly one UNIT_NAME_UPDATE registration")
+end)
+
+test("identity hold: re-entering the hold on an already-held controller does not duplicate its held-list entry", function()
+    local F = T.fresh()
+    T.identity = { name = "Unknown", realm = "Test Realm" }
+    local c = F.Lifecycle:New(nil, "A")
+    local fr = dispatcherFrame()
+    T.Fire(fr, "ADDON_LOADED", "A")   -- holds via the ADDON_LOADED dispatch (no hook registered yet)
+    T.eq(countRegisterEvent(fr, "PLAYER_ENTERING_WORLD"), 1, "held once")
+
+    T.loadedAddons["A"] = true
+    local fired = 0
+    c:OnAddonLoaded(function() fired = fired + 1 end)   -- LoD catch-up re-enters holdForIdentity
+    T.eq(fired, 0, "still unresolved -- the catch-up held again rather than firing")
+
+    c:Destroy()
+    T.eq(countUnregisterEvent(fr, "PLAYER_ENTERING_WORLD"), 1,
+        "Destroy emptied the held list and stopped watching -- a re-entered hold left no phantom second entry")
+
+    -- Confirm watching actually stopped, not just that Unregister was called
+    -- once: a fresh hold on a new controller must re-register from zero.
+    T.loadedAddons["B"] = true
+    local d = F.Lifecycle:New(nil, "B")
+    d:OnAddonLoaded(function() end)
+    T.eq(countRegisterEvent(fr, "PLAYER_ENTERING_WORLD"), 2, "watching had actually stopped, so the next hold re-registers")
+end)
+
+test("identity hold: unresolved at ADDON_LOADED holds; PLAYER_LOGIN with a resolved name releases addon-loaded and login together", function()
+    local F = T.fresh()
+    T.identity = { name = "Unknown", realm = "Test Realm" }
+    local c = F.Lifecycle:New(nil, "A")
+    local al, lo = 0, 0
+    c:OnAddonLoaded(function() al = al + 1 end)
+    c:OnLogin(function() lo = lo + 1 end)
+    local fr = dispatcherFrame()
+    T.Fire(fr, "ADDON_LOADED", "A")
+    T.eq(al, 0, "addon-loaded did not fire while unresolved")
+
+    T.identity = { name = "Tester", realm = "Test Realm" }
+    T.Fire(fr, "PLAYER_LOGIN")
+    T.eq(al, 1, "addon-loaded fired once, released by PLAYER_LOGIN")
+    T.eq(lo, 1, "login fired once in the same release")
+    T.eq(F.Lifecycle._identityResolvedBy, "PLAYER_LOGIN", "trace names the releasing event")
+    T.eq(countUnregisterEvent(fr, "PLAYER_ENTERING_WORLD"), 1, "PLAYER_ENTERING_WORLD unwatched on release")
+    T.eq(countUnregisterEvent(fr, "UNIT_NAME_UPDATE"), 1, "UNIT_NAME_UPDATE unwatched on release")
+    T.eq(countUnregisterEvent(fr, "PLAYER_REGEN_ENABLED"), 1, "PLAYER_REGEN_ENABLED unwatched on release")
+end)
+
+test("identity hold: unresolved through PLAYER_LOGIN and PLAYER_ENTERING_WORLD prints exactly one dev notice; UNIT_NAME_UPDATE releases", function()
+    local F = T.fresh()
+    T.truthy(F.IS_DEV_BUILD, "dev build")
+    T.identity = { name = "Unknown", realm = "Test Realm" }
+    local c = F.Lifecycle:New(nil, "A")
+    local al, lo = 0, 0
+    c:OnAddonLoaded(function() al = al + 1 end)
+    c:OnLogin(function() lo = lo + 1 end)
+    local fr = dispatcherFrame()
+    T.Fire(fr, "ADDON_LOADED", "A")
+    T.Fire(fr, "PLAYER_LOGIN")
+    T.Fire(fr, "PLAYER_ENTERING_WORLD")
+    T.outputContains("Foundry-1.0: Lifecycle: waiting", "one dev notice line appears")
+    T.eq(al, 0, "still unresolved -- addon-loaded has not fired")
+
+    T.Fire(fr, "PLAYER_ENTERING_WORLD")   -- a second PEW must not print a second line
+    local waiting = 0
+    for _, line in ipairs(T.output) do
+        if line:find("Foundry-1.0: Lifecycle: waiting", 1, true) then waiting = waiting + 1 end
+    end
+    T.eq(waiting, 1, "still exactly one dev notice line")
+
+    T.identity = { name = "Tester", realm = "Test Realm" }
+    T.Fire(fr, "UNIT_NAME_UPDATE", "player")
+    T.eq(al, 1, "addon-loaded fired, released by UNIT_NAME_UPDATE")
+    T.eq(lo, 1, "login fired in the same release (loginFired was already set)")
+    T.eq(F.Lifecycle._identityResolvedBy, "UNIT_NAME_UPDATE", "trace names the releasing event")
+end)
+
+test("identity hold: release build prints no dev notice while waiting", function()
+    local F = T.fresh("1.0.0")
+    T.falsy(F.IS_DEV_BUILD, "release build")
+    T.identity = { name = "Unknown", realm = "Test Realm" }
+    local c = F.Lifecycle:New(nil, "A")
+    c:OnAddonLoaded(function() end)
+    local fr = dispatcherFrame()
+    T.Fire(fr, "ADDON_LOADED", "A")
+    T.Fire(fr, "PLAYER_LOGIN")
+    T.Fire(fr, "PLAYER_ENTERING_WORLD")
+    T.eq(#T.output, 0, "release build: no output at all while waiting")
+end)
+
+test("identity hold: two held controllers release in ADDON_LOADED order; one raising does not stop the other", function()
+    local F = T.fresh()
+    T.identity = { name = "Unknown", realm = "Test Realm" }
+    local a = F.Lifecycle:New(nil, "A")
+    local b = F.Lifecycle:New(nil, "B")
+    local fr = dispatcherFrame()
+    T.Fire(fr, "ADDON_LOADED", "A")
+    T.Fire(fr, "ADDON_LOADED", "B")
+    local bRan = false
+    a:OnAddonLoaded(function() error("A boom") end)
+    b:OnAddonLoaded(function() bRan = true end)
+
+    T.identity = { name = "Tester", realm = "Test Realm" }
+    local err = T.raises(function() T.Fire(fr, "UNIT_NAME_UPDATE", "player") end,
+        "release surfaces after both fire", "A boom")
+    T.truthy(bRan, "B's addon-loaded still ran despite A's throw")
+    T.truthy(tostring(err):find("A boom", 1, true), "the surfaced error is A's")
+end)
+
+test("identity hold: OnLogin registered while held, after login already fired, does not catch up until release", function()
+    local F = T.fresh()
+    T.identity = { name = "Unknown", realm = "Test Realm" }
+    local c = F.Lifecycle:New(nil, "A")
+    local fr = dispatcherFrame()
+    T.Fire(fr, "ADDON_LOADED", "A")   -- holds
+    T.Fire(fr, "PLAYER_LOGIN")        -- loginFired = true; A stays held (still unresolved)
+    local lo = 0
+    c:OnLogin(function() lo = lo + 1 end)
+    T.eq(lo, 0, "no catch-up while held, even though login already fired")
+
+    T.identity = { name = "Tester", realm = "Test Realm" }
+    T.Fire(fr, "UNIT_NAME_UPDATE", "player")
+    T.eq(lo, 1, "login fires once released")
+end)
+
+test("identity hold: Destroy while held never fires the hook; destroying the last held controller stops watching", function()
+    local F = T.fresh()
+    T.identity = { name = "Unknown", realm = "Test Realm" }
+    local c = F.Lifecycle:New(nil, "A")
+    local fired = 0
+    c:OnAddonLoaded(function() fired = fired + 1 end)
+    local fr = dispatcherFrame()
+    T.Fire(fr, "ADDON_LOADED", "A")
+    T.Fire(fr, "PLAYER_ENTERING_WORLD")   -- still unresolved: queues one poll tick
+    T.eq(#T.afters, 1, "a poll tick is pending")
+
+    c:Destroy()
+    T.eq(fired, 0, "the hook never fired")
+    T.eq(countUnregisterEvent(fr, "PLAYER_ENTERING_WORLD"), 1, "PLAYER_ENTERING_WORLD unregistered")
+    T.eq(countUnregisterEvent(fr, "UNIT_NAME_UPDATE"), 1, "UNIT_NAME_UPDATE unregistered")
+    T.eq(countUnregisterEvent(fr, "PLAYER_REGEN_ENABLED"), 1, "PLAYER_REGEN_ENABLED unregistered")
+
+    T.RunAfters()
+    T.eq(#T.afters, 0, "the pending poll no-oped (nothing left held) and did not requeue")
+end)
+
+test("identity hold: PLAYER_LOGOUT while held skips the held controller's logout hook; the post-logout seam still runs", function()
+    local F = T.fresh()
+    T.identity = { name = "Unknown", realm = "Test Realm" }
+    local c = F.Lifecycle:New(nil, "A")
+    local logout = 0
+    c:OnLogout(function() logout = logout + 1 end)
+    local postRan = false
+    F.Lifecycle._RegisterPostLogout(function() postRan = true end)
+    local fr = dispatcherFrame()
+    T.Fire(fr, "ADDON_LOADED", "A")
+    T.Fire(fr, "PLAYER_LOGOUT")
+    T.eq(logout, 0, "the held controller's logout hook did not fire")
+    T.truthy(postRan, "the post-logout seam still ran")
+    T.eq(countUnregisterEvent(fr, "PLAYER_ENTERING_WORLD"), 1, "watch events unregistered at logout")
+end)
+
+test("identity hold: an LoD catch-up with unresolved identity holds, then releases on a later event", function()
+    local F = T.fresh()
+    T.identity = { name = "Unknown", realm = "Test Realm" }
+    T.loadedAddons["A"] = true
+    local c = F.Lifecycle:New(nil, "A")
+    local fired = 0
+    c:OnAddonLoaded(function() fired = fired + 1 end)   -- LoD catch-up path: holds, does not fire
+    T.eq(fired, 0, "catch-up held rather than firing over an unresolved identity")
+
+    T.identity = { name = "Tester", realm = "Test Realm" }
+    T.Fire(dispatcherFrame(), "PLAYER_ENTERING_WORLD")
+    T.eq(fired, 1, "released on a later event")
+end)
+
+test("identity hold: the client's localized placeholder name holds too, not just the literal 'Unknown'", function()
+    local F = T.fresh()
+    _G.UNKNOWNOBJECT = "Unbekannt"
+    T.identity = { name = "Unbekannt", realm = "Test Realm" }
+    local c = F.Lifecycle:New(nil, "A")
+    local fired = 0
+    c:OnAddonLoaded(function() fired = fired + 1 end)
+    T.Fire(dispatcherFrame(), "ADDON_LOADED", "A")
+    T.eq(fired, 0, "held: the localized placeholder counts as unresolved")
+
+    T.identity = { name = "Tester", realm = "Test Realm" }
+    T.Fire(dispatcherFrame(), "UNIT_NAME_UPDATE", "player")
+    T.eq(fired, 1, "released once a real name resolves")
+end)
+
+test("identity hold: an empty realm holds", function()
+    local F = T.fresh()
+    T.identity = { name = "Tester", realm = "" }
+    local c = F.Lifecycle:New(nil, "A")
+    local fired = 0
+    c:OnAddonLoaded(function() fired = fired + 1 end)
+    T.Fire(dispatcherFrame(), "ADDON_LOADED", "A")
+    T.eq(fired, 0, "held: an empty realm counts as unresolved")
+
+    T.identity = { name = "Tester", realm = "Test Realm" }
+    T.Fire(dispatcherFrame(), "UNIT_NAME_UPDATE", "player")
+    T.eq(fired, 1, "released once the realm resolves")
+end)
+
+test("identity hold: a raising release surfaces after the fan-out completes and does not starve the ordinary login fan-out", function()
+    local F = T.fresh()
+    T.identity = { name = "Unknown", realm = "Test Realm" }
+    local a = F.Lifecycle:New(nil, "A")   -- held; its addon-loaded will raise on release
+    local b = F.Lifecycle:New(nil, "B")   -- never held; an ordinary login controller
+    local fr = dispatcherFrame()
+    T.Fire(fr, "ADDON_LOADED", "A")
+    a:OnAddonLoaded(function() error("A boom") end)
+    local aLogin, bLogin = 0, 0
+    a:OnLogin(function() aLogin = aLogin + 1 end)
+    b:OnLogin(function() bLogin = bLogin + 1 end)
+
+    T.identity = { name = "Tester", realm = "Test Realm" }
+    local err = T.raises(function() T.Fire(fr, "PLAYER_LOGIN") end,
+        "the release's addon-loaded error surfaces", "A boom")
+    T.truthy(tostring(err):find("A boom", 1, true), "the surfaced error is A's")
+    T.eq(bLogin, 1, "B's login fired via the ordinary fan-out")
+    T.eq(aLogin, 1, "A's login fired too -- no longer held, it is in the same ordinary fan-out as B")
+
+    local cFired = 0
+    local c = F.Lifecycle:New(nil, "C")
+    c:OnLogin(function() cFired = cFired + 1 end)
+    T.eq(cFired, 1, "loginFired is true: a later controller's OnLogin catches up immediately")
+end)
+
+test("identity hold: unresolved through PLAYER_ENTERING_WORLD releases via the poll when identity resolves with no further event", function()
+    local F = T.fresh()
+    T.identity = { name = "Unknown", realm = "Test Realm" }
+    local c = F.Lifecycle:New(nil, "A")
+    local al, lo = 0, 0
+    c:OnAddonLoaded(function() al = al + 1 end)
+    c:OnLogin(function() lo = lo + 1 end)
+    local fr = dispatcherFrame()
+    T.Fire(fr, "ADDON_LOADED", "A")
+    T.Fire(fr, "PLAYER_LOGIN")
+    T.Fire(fr, "PLAYER_ENTERING_WORLD")   -- queues one poll tick
+    T.eq(#T.afters, 1, "one tick queued")
+
+    T.identity = { name = "Tester", realm = "Test Realm" }   -- resolves with no event
+    T.RunAfters()
+    T.eq(al, 1, "addon-loaded fired via the poll")
+    T.eq(lo, 1, "login fired in the same release")
+    T.eq(F.Lifecycle._identityResolvedBy, "POLL", "trace is POLL")
+    T.eq(#T.afters, 0, "no new tick queued -- nothing left to poll for")
+end)
+
+test("identity hold: a queued tick followed by a real-event release leaves the stale tick inert", function()
+    local F = T.fresh()
+    T.identity = { name = "Unknown", realm = "Test Realm" }
+    local c = F.Lifecycle:New(nil, "A")
+    local fired = 0
+    c:OnAddonLoaded(function() fired = fired + 1 end)
+    local fr = dispatcherFrame()
+    T.Fire(fr, "ADDON_LOADED", "A")
+    T.Fire(fr, "PLAYER_ENTERING_WORLD")   -- queues one tick
+    T.eq(#T.afters, 1, "one tick queued")
+
+    T.identity = { name = "Tester", realm = "Test Realm" }
+    T.Fire(fr, "UNIT_NAME_UPDATE", "player")   -- releases via the real event first
+    T.eq(fired, 1, "released by UNIT_NAME_UPDATE")
+
+    T.RunAfters()
+    T.eq(fired, 1, "the stale queued tick fired no hook a second time")
+    T.eq(#T.afters, 0, "and queued nothing")
+end)
+
+test("identity hold: a queued tick, then logout, then identity resolves -- the stale tick fires nothing and the trace stays nil", function()
+    local F = T.fresh()
+    T.identity = { name = "Unknown", realm = "Test Realm" }
+    local c = F.Lifecycle:New(nil, "A")
+    c:OnAddonLoaded(function() end)
+    local fr = dispatcherFrame()
+    T.Fire(fr, "ADDON_LOADED", "A")
+    T.Fire(fr, "PLAYER_ENTERING_WORLD")   -- queues one tick
+    T.eq(#T.afters, 1, "one tick queued")
+    T.Fire(fr, "PLAYER_LOGOUT")
+
+    T.identity = { name = "Tester", realm = "Test Realm" }
+    T.RunAfters()
+    T.eq(F.Lifecycle._identityResolvedBy, nil, "the trace stays nil -- the stale tick never released")
+    T.eq(#T.afters, 0, "nothing requeued")
+end)
+
+test("identity hold: a second PLAYER_ENTERING_WORLD and a new post-login LoD hold leave exactly one queued tick (no duplicate)", function()
+    local F = T.fresh()
+    T.identity = { name = "Unknown", realm = "Test Realm" }
+    local c = F.Lifecycle:New(nil, "A")
+    c:OnAddonLoaded(function() end)
+    local fr = dispatcherFrame()
+    T.Fire(fr, "ADDON_LOADED", "A")
+    T.Fire(fr, "PLAYER_ENTERING_WORLD")
+    T.eq(#T.afters, 1, "one tick queued")
+
+    T.Fire(fr, "PLAYER_ENTERING_WORLD")   -- a second PEW, still unresolved, must not add a second tick
+    T.eq(#T.afters, 1, "still exactly one tick queued")
+
+    T.Fire(fr, "PLAYER_LOGIN")            -- loginFired flips; A stays held (still unresolved)
+    T.loadedAddons["B"] = true
+    local d = F.Lifecycle:New(nil, "B")
+    d:OnAddonLoaded(function() end)       -- LoD catch-up: a new hold after login
+    T.eq(#T.afters, 1, "the new post-login hold's schedulePoll call still finds one pending tick queued")
+end)
+
+test("identity hold: hold, release via PLAYER_LOGIN, then a post-login LoD hold re-registers the watch from zero", function()
+    local F = T.fresh()
+    T.identity = { name = "Unknown", realm = "Test Realm" }
+    local a = F.Lifecycle:New(nil, "A")
+    a:OnAddonLoaded(function() end)
+    local fr = dispatcherFrame()
+    T.Fire(fr, "ADDON_LOADED", "A")
+    T.eq(countRegisterEvent(fr, "PLAYER_ENTERING_WORLD"), 1, "first hold registers once")
+
+    T.identity = { name = "Tester", realm = "Test Realm" }
+    T.Fire(fr, "PLAYER_LOGIN")   -- releases A; identityWatching resets to false
+    T.eq(countUnregisterEvent(fr, "PLAYER_ENTERING_WORLD"), 1, "release stopped watching")
+
+    T.identity = { name = "Unknown", realm = "Test Realm" }   -- back to unresolved, for B
+    T.loadedAddons["B"] = true
+    local b = F.Lifecycle:New(nil, "B")
+    b:OnAddonLoaded(function() end)   -- LoD catch-up: holds again
+    T.eq(countRegisterEvent(fr, "PLAYER_ENTERING_WORLD"), 2, "watching restarted from zero")
+    T.eq(countRegisterUnitEvent(fr, "UNIT_NAME_UPDATE", "player"), 2, "same for UNIT_NAME_UPDATE")
+    T.eq(#T.afters, 1, "a tick is queued -- loginFired is set, so B's hold schedules a poll immediately")
+end)
+
+test("identity hold: a same ADDON_LOADED that releases a held controller fires ITS addon-loaded before the triggering controller's own", function()
+    local F = T.fresh()
+    T.identity = { name = "Unknown", realm = "Test Realm" }
+    local a = F.Lifecycle:New(nil, "A")
+    local order = {}
+    a:OnAddonLoaded(function() order[#order + 1] = "A" end)
+    local fr = dispatcherFrame()
+    T.Fire(fr, "ADDON_LOADED", "A")   -- A held (unresolved)
+
+    T.identity = { name = "Tester", realm = "Test Realm" }   -- resolved by the time B loads
+    local b = F.Lifecycle:New(nil, "B")
+    b:OnAddonLoaded(function() order[#order + 1] = "B" end)
+    T.Fire(fr, "ADDON_LOADED", "B")   -- release runs first, then B's own demux fire
+    T.eq(order[1], "A", "the released controller's addon-loaded fired first")
+    T.eq(order[2], "B", "B's own addon-loaded fired second")
+    T.eq(F.Lifecycle._identityResolvedBy, "ADDON_LOADED", "trace is ADDON_LOADED")
+end)
+
+test("identity hold: a login-only controller (no OnAddonLoaded) is held too; its login waits and releases on a later event", function()
+    local F = T.fresh()
+    T.identity = { name = "Unknown", realm = "Test Realm" }
+    local c = F.Lifecycle:New(nil, "A")   -- login-only: never calls OnAddonLoaded
+    local lo = 0
+    c:OnLogin(function() lo = lo + 1 end)
+    local fr = dispatcherFrame()
+    T.Fire(fr, "ADDON_LOADED", "A")   -- holds via the demux entry, even with no addon-loaded hook
+    T.Fire(fr, "PLAYER_LOGIN")
+    T.eq(lo, 0, "still unresolved: login did not fire at PLAYER_LOGIN")
+
+    T.identity = { name = "Tester", realm = "Test Realm" }
+    T.Fire(fr, "UNIT_NAME_UPDATE", "player")
+    T.eq(lo, 1, "login fires on the later release")
+end)
+
+test("identity hold: ADDONS_UNLOADING while held skips the unloading hook; a later tick with valid identity still fires nothing", function()
+    local F = T.fresh()
+    enableUnloadingEvent()   -- must be set before the dispatcher is created
+    T.identity = { name = "Unknown", realm = "Test Realm" }
+    local c = F.Lifecycle:New(nil, "A")
+    local unloading = 0
+    c:OnUnloading(function() unloading = unloading + 1 end)
+    local fr = dispatcherFrame()
+    T.Fire(fr, "ADDON_LOADED", "A")
+    T.Fire(fr, "PLAYER_ENTERING_WORLD")   -- queues one poll tick while still unresolved
+    T.eq(#T.afters, 1, "one tick queued")
+    T.Fire(fr, "ADDONS_UNLOADING", true)
+    T.eq(unloading, 0, "the held controller's unloading hook did not fire")
+
+    T.identity = { name = "Tester", realm = "Test Realm" }
+    T.RunAfters()
+    T.eq(unloading, 0, "a later tick with valid identity still fires nothing -- the session already stopped")
+    T.eq(F.Lifecycle._identityResolvedBy, nil, "no release trace -- ADDONS_UNLOADING stopped releasing for good")
+end)
+
+test("identity hold: while A is held in combat with identity resolved, a fresh B at ADDON_LOADED joins the hold instead of jumping ahead", function()
+    local F = T.fresh()
+    T.identity = { name = "Unknown", realm = "Test Realm" }
+    local a = F.Lifecycle:New(nil, "A")
+    local order = {}
+    a:OnAddonLoaded(function() order[#order + 1] = "A" end)
+    local fr = dispatcherFrame()
+    T.Fire(fr, "ADDON_LOADED", "A")   -- A held (unresolved)
+
+    T.inCombat = true
+    T.identity = { name = "Tester", realm = "Test Realm" }   -- resolved, but in combat
+    local b = F.Lifecycle:New(nil, "B")
+    b:OnAddonLoaded(function() order[#order + 1] = "B" end)
+    T.Fire(fr, "ADDON_LOADED", "B")   -- the release at the top refuses (combat)
+    T.eq(#order, 0, "neither fired -- B did not run ahead of the still-held A")
+
+    T.inCombat = false
+    T.Fire(fr, "PLAYER_REGEN_ENABLED")
+    T.eq(order[1], "A", "A released first")
+    T.eq(order[2], "B", "B released second, together with A")
+    T.eq(F.Lifecycle._identityResolvedBy, "PLAYER_REGEN_ENABLED", "trace is PLAYER_REGEN_ENABLED")
+end)
+
+test("identity hold: identity resolving during combat releases nothing until PLAYER_REGEN_ENABLED", function()
+    local F = T.fresh()
+    T.identity = { name = "Unknown", realm = "Test Realm" }
+    local c = F.Lifecycle:New(nil, "A")
+    local fired = 0
+    c:OnAddonLoaded(function() fired = fired + 1 end)
+    local fr = dispatcherFrame()
+    T.Fire(fr, "ADDON_LOADED", "A")   -- holds
+
+    T.inCombat = true
+    T.identity = { name = "Tester", realm = "Test Realm" }   -- resolved, but in combat
+    T.Fire(fr, "PLAYER_ENTERING_WORLD")
+    T.eq(fired, 0, "PLAYER_ENTERING_WORLD releases nothing in combat")
+    T.Fire(fr, "UNIT_NAME_UPDATE", "player")
+    T.eq(fired, 0, "UNIT_NAME_UPDATE releases nothing in combat")
+    T.RunAfters()   -- the poll queued by the PLAYER_ENTERING_WORLD above
+    T.eq(fired, 0, "the poll releases nothing in combat")
+
+    T.inCombat = false   -- PLAYER_REGEN_ENABLED IS the "combat ended" signal
+    T.Fire(fr, "PLAYER_REGEN_ENABLED")
+    T.eq(fired, 1, "PLAYER_REGEN_ENABLED releases once combat ends")
+    T.eq(F.Lifecycle._identityResolvedBy, "PLAYER_REGEN_ENABLED", "trace is PLAYER_REGEN_ENABLED")
 end)
 
 return tests
