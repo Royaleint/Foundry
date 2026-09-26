@@ -42,7 +42,26 @@ All notable changes to Foundry-1.0 are recorded here.
   realm are known, waiting out combat if the player is in one. Addons
   loading while another is held wait alongside it. Nothing changes where
   identity is already known at `ADDON_LOADED`, which is every case but a
-  cold login.
+  cold login and, on clients with region-wide unique names, a character the
+  client reports without a surname.
+- **DB: characters on clients with region-wide unique names get their own
+  saved data.** On a client where a character is identified by first name plus
+  surname, unique across the region, two characters sharing a first name on
+  one realm used to share one per-character bucket and one profile choice. The
+  character key there is now the full name, first name and surname, with no
+  realm, matching the key AceDB-3.0 minor 39 uses on those clients. Data saved
+  under the old key moves to the new key the first time that character's
+  database is built after the update, but only when nothing is saved under the
+  new key yet and no other character with the same first name has saved data
+  under a full-name or first-name-only key; otherwise it stays where it is.
+  Because the old key was shared, the first of two same-first-name characters
+  on a realm to log in with a surname after the update takes whatever was
+  saved there. A character the client reports without a surname has its
+  addon-loaded hook held until about a second after entering the world or
+  after the addon loads, whichever is later; if no surname has arrived by
+  then, that session keys the character by first name alone, and data under
+  its old key is not moved.
+  Nothing changes on any other client.
 - **DB: a non-English client's placeholder name is refused like the English
   one.** DB already refused the literal "Unknown" a not-yet-resolved player
   name reports; on a non-English client the placeholder is localized and
@@ -57,9 +76,10 @@ All notable changes to Foundry-1.0 are recorded here.
   Foundry core is actually serving the session, and points at the fix for
   each case.
 
-Lifecycle moves to API_VERSION 3 with this release, reflecting the
-addon-loaded identity hold above; assert it with
-`F:RequireModule("Lifecycle", 3)` if your code depends on the hold existing.
+Lifecycle moves to API_VERSION 4 with this release, reflecting the
+addon-loaded identity hold and the full-name character identity above;
+assert it with `F:RequireModule("Lifecycle", 4)` if your code depends on
+either.
 
 ## [1.0.105] - 2026-09-01
 
