@@ -32,6 +32,22 @@ All notable changes to Foundry-1.0 are recorded here.
   state from inside the callback. No API changed.
 
 ### Fixed
+- **Building your database in the addon-loaded hook, as the docs direct, no
+  longer fails on a cold login.** On some clients the player's name and
+  realm aren't resolved yet when `ADDON_LOADED` fires on a fresh client
+  session. Foundry.DB rightly refuses to build a save key from a blank or
+  placeholder name, so a consumer constructing there ran the whole session
+  with no database. Lifecycle now holds a consumer's addon-loaded hook (and
+  its login hook, if login would otherwise fire first) until the name and
+  realm are known, waiting out combat if the player is in one. Addons
+  loading while another is held wait alongside it. Nothing changes where
+  identity is already known at `ADDON_LOADED`, which is every case but a
+  cold login.
+- **DB: a non-English client's placeholder name is refused like the English
+  one.** DB already refused the literal "Unknown" a not-yet-resolved player
+  name reports; on a non-English client the placeholder is localized and
+  slipped through, writing into a junk per-character bucket. It is now
+  refused too.
 - **DB's load-time error now names the load-order cause, not just an older
   standalone.** If Foundry.Lifecycle or Foundry.Events is missing when DB
   loads, the developer-facing error used to blame an older standalone
@@ -40,6 +56,10 @@ All notable changes to Foundry-1.0 are recorded here.
   need to load before DB). The message now names both, reports which
   Foundry core is actually serving the session, and points at the fix for
   each case.
+
+Lifecycle moves to API_VERSION 3 with this release, reflecting the
+addon-loaded identity hold above; assert it with
+`F:RequireModule("Lifecycle", 3)` if your code depends on the hold existing.
 
 ## [1.0.105] - 2026-09-01
 
