@@ -1,22 +1,15 @@
 -- Foundry.List
 --
--- A thin bridge over Blizzard's modern ScrollBox system. One :New(config) builds
--- the five-object composition a scrolling list needs (the WowScrollBoxList frame,
--- the MinimalScrollBar EventFrame, a ScrollBoxListLinearView, a DataProvider, and
--- the ScrollUtil wiring) in the correct order, with the ordering traps handled,
--- and returns a small controller: SetData to replace the rows, ForEachFrame to
--- touch the realized rows in place, GetNativeHandles to drop to the raw Blizzard
--- objects, and Destroy to tear it down. List bridges the linear list view only
--- (grid, tree, and biaxal views are out of scope) and operates entirely in the
--- insecure domain. The raw objects stay reachable via :GetNativeHandles().
+-- A controller over Blizzard's ScrollBox system. :New(config) builds the
+-- scroll frame, bar, view, and data provider, and returns SetData,
+-- ForEachFrame, GetNativeHandles, and Destroy. Linear list view only.
 
 local F = _G.Foundry_1_0
 if not F then
     error("Foundry-1.0: List.lua requires the Foundry-1.0 bootstrap (Foundry.lua) "
         .. "to have loaded first; _G.Foundry_1_0 is missing.", 0)
 end
--- Guarded-embedding stand-down (§2.2b): if this module is already registered on the
--- winning copy, this is a redundant embedded copy — load nothing.
+-- Already registered by another embedded copy: load nothing.
 if F:HasModule("List") then return end
 
 local List = {}
@@ -26,10 +19,6 @@ List.API_VERSION = 1
 -- ScrollBox-system capability gate (flavor support)
 --------------------------------------------------------------------------------
 
--- The modern ScrollBox system shipped engine-wide in the 10.0 UI rewrite. List
--- presence-checks it at :New so a client that lacks it (a partial Classic export)
--- refuses loudly rather than erroring deep inside a missing global. There is no
--- FauxScrollFrame fallback: List bridges the modern system only.
 local function hasScrollBoxSystem()
     return type(ScrollUtil) == "table"
         and type(ScrollUtil.InitScrollBoxListWithScrollBar) == "function"
@@ -44,8 +33,6 @@ end
 local Controller = {}
 Controller.__index = Controller
 
--- Shared destroyed-guard. The message form has no colon after the method name
--- ("List:SetData called on a destroyed controller"), matching the spec.
 local function refuseIfDestroyed(self, method)
     if self._destroyed then
         F:RaiseDevError("List:" .. method .. " called on a destroyed controller")
@@ -54,15 +41,12 @@ local function refuseIfDestroyed(self, method)
     return false
 end
 
--- Replace the entire row set. Builds a fresh DataProvider and reassigns it, which
--- releases and re-acquires every visible row (not an in-place recycle) and scrolls
--- back to the top. Rows must be an array of tables; non-table rows disable
--- Blizzard's frame recycling, so List refuses them.
+-- Replaces the row set (rebuilds the DataProvider; not an in-place recycle)
+-- and scrolls to top. Rows must be an array of tables.
 function Controller:SetData(rows)
     if refuseIfDestroyed(self, "SetData") then return end
-    -- SetData reassigns the provider, which is unsafe to do from inside an
-    -- initializer. Blizzard's Acquire reentrancy guard does not cover the
-    -- post-layout initializer, so this is List's own contract.
+    -- Unsafe to call from inside an initializer callback (Blizzard's Acquire
+    -- reentrancy guard doesn't cover it).
     if self._inInitializer then
         F:RaiseDevError("List:SetData: cannot mutate data from inside an initializer")
         return
@@ -80,9 +64,8 @@ function Controller:SetData(rows)
     self._scrollBox:SetDataProvider(CreateDataProvider(rows))
 end
 
--- Iterate the currently-realized row frames for an in-place visual update with no
--- provider rebuild (for example, repaint the selected row's highlight). fn is
--- called as fn(frame, elementData); returning a truthy value stops iteration.
+-- Iterates realized row frames for an in-place update (no provider rebuild).
+-- fn(frame, elementData); a truthy return stops iteration.
 function Controller:ForEachFrame(fn)
     if refuseIfDestroyed(self, "ForEachFrame") then return end
     if type(fn) ~= "function" then
@@ -92,9 +75,7 @@ function Controller:ForEachFrame(fn)
     return self._scrollBox:ForEachFrame(fn)
 end
 
--- The escape hatch: the live Blizzard objects List composed. A fresh table each
--- call; the objects themselves are live, so mutating them affects the list. List
--- exposes no internal tables of its own through handles.
+-- Returns the live Blizzard objects: scrollBox, scrollBar, view, dataProvider.
 function Controller:GetNativeHandles()
     if refuseIfDestroyed(self, "GetNativeHandles") then return end
     return {
@@ -105,9 +86,8 @@ function Controller:GetNativeHandles()
     }
 end
 
--- Tear down the native state List created: release the provider, hide and drop
--- the frames, drop the managed-visibility behavior, and mark the controller
--- destroyed. A second call refuses loudly rather than silently passing.
+-- Tears down the list: releases the provider, hides the frames, and marks
+-- the controller destroyed.
 function Controller:Destroy()
     if refuseIfDestroyed(self, "Destroy") then return end
     self._scrollBox:RemoveDataProvider()
@@ -124,9 +104,7 @@ end
 -- Factory
 --------------------------------------------------------------------------------
 
--- Create a list controller scoped to one consumer surface. Validation is atomic:
--- every check passes before any frame, view, or provider is created, so a
--- rejected :New leaves the pre-call state byte-for-byte unchanged.
+-- Creates a list controller scoped to one consumer surface.
 function List:New(config)
     if type(config) ~= "table" then
         F:RaiseDevError("List:New: config must be a table")
@@ -141,7 +119,6 @@ function List:New(config)
         return
     end
 
-    -- Element identity: exactly one of template or elementType.
     local hasTemplate = config.template ~= nil
     local hasElementType = config.elementType ~= nil
     if not hasTemplate and not hasElementType then
@@ -170,8 +147,6 @@ function List:New(config)
         return
     end
 
-    -- Extent contract. extent and extentCalculator are mutually exclusive (List's
-    -- own strictness; Blizzard would tolerate both and prefer extent).
     local hasExtent = config.extent ~= nil
     local hasCalc = config.extentCalculator ~= nil
     if hasExtent and hasCalc then
@@ -186,10 +161,9 @@ function List:New(config)
         F:RaiseDevError("List:New: config.extentCalculator must be a function")
         return
     end
-    -- Frame-type (elementType) rows have no measurable template, so they REQUIRE
-    -- an explicit extent or a calculator; an unset extent is silently clamped to
-    -- 1px by Blizzard and then explodes as a runaway range error at display.
-    -- Template rows can be measured from their XML, so the extent is optional.
+    -- elementType rows require an explicit extent or calculator; an unset
+    -- one is silently clamped to 1px by Blizzard and explodes as a range
+    -- error later.
     if hasElementType and not hasExtent and not hasCalc then
         F:RaiseDevError("List:New: elementType rows require config.extent (> 0) or config.extentCalculator")
         return
@@ -200,17 +174,12 @@ function List:New(config)
         return
     end
 
-    -- Capability gate (§6). Checked after input validation so a bad config still
-    -- surfaces its specific error first; a good config on a client without the
-    -- ScrollBox system refuses here rather than erroring deep in Blizzard.
     if not hasScrollBoxSystem() then
         F:RaiseDevError("List:New: this client lacks the modern scrolling-list system "
             .. "(ScrollUtil/CreateScrollBoxListLinearView); Foundry.List is unavailable here")
         return
     end
 
-    -- All valid. Build the five-object composition. `c` is a private local table
-    -- (not observable) created here so the wrapped initializer can close over it.
     local c = setmetatable({}, Controller)
     c._destroyed = false
     c._name = config.name
@@ -219,9 +188,8 @@ function List:New(config)
     local parent = config.parent
     local scrollBox = CreateFrame("Frame", nil, parent, "WowScrollBoxList")
     local scrollBar = CreateFrame("EventFrame", nil, parent, "MinimalScrollBar")
-    -- Default fill anchor: a starting point only. Consumers re-anchor through
-    -- :GetNativeHandles() when their layout reserves a scrollbar gutter or a
-    -- header inset (see the reference page).
+    -- Default fill anchor: a starting point only. Re-anchor via
+    -- :GetNativeHandles() for a custom layout.
     scrollBox:SetPoint("TOPLEFT")
     scrollBox:SetPoint("BOTTOMRIGHT")
     scrollBar:SetPoint("TOPLEFT", scrollBox, "TOPRIGHT", 4, 0)
@@ -232,12 +200,9 @@ function List:New(config)
     if hasExtent then
         view:SetElementExtent(config.extent)
     elseif hasCalc then
-        -- Wrap the consumer calculator so its RETURN value is guarded at runtime:
-        -- :New only proved it's a function. A nil return leaves Blizzard's
-        -- calculatedElementExtents SHORT (ScrollBoxStride then hits a nil
-        -- operand); a non-number return instead corrupts the extents arithmetic
-        -- -- either way a cryptic crash far from the cause. Dev raises a clear
-        -- List error; release prints and degrades to a safe positive fallback.
+        -- Guards the calculator's return value: a nil or non-number return
+        -- would corrupt Blizzard's extent arithmetic with a cryptic crash;
+        -- this raises in dev and falls back to 1px.
         local consumerCalc = config.extentCalculator
         view:SetElementExtentCalculator(function(index, elementData)
             local extent = consumerCalc(index, elementData)
@@ -250,9 +215,8 @@ function List:New(config)
         end)
     end
 
-    -- Wrap the consumer initializer so SetData-from-inside-initializer can be
-    -- refused. The flag is always cleared, even if the consumer initializer
-    -- errors, so one bad initializer call cannot permanently brick SetData.
+    -- Wraps the initializer so SetData-from-inside-it can be refused; the
+    -- pcall guarantees the flag clears even when the initializer errors.
     local consumerInit = config.initializer
     local elementId = config.template or config.elementType
     view:SetElementInitializer(elementId, function(frame, elementData)
@@ -274,8 +238,8 @@ function List:New(config)
         c._managedVisBehavior = ScrollUtil.AddManagedScrollBarVisibilityBehavior(scrollBox, scrollBar)
     end
 
-    -- Seed an empty provider so SetData is valid immediately. This must follow the
-    -- initializer: SetDataProvider errors if no element factory has been set.
+    -- Must follow the initializer: SetDataProvider errors with no element
+    -- factory set.
     scrollBox:SetDataProvider(CreateDataProvider())
 
     c._scrollBox = scrollBox
