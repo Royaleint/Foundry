@@ -1,13 +1,8 @@
 -- Foundry.DB
 --
--- The AceDB-3.0 replacement: load a consumer's SavedVariables, apply the
--- consumer's defaults, run registered migrations, expose the live section tables
--- (profile / char / global / sv), and strip default-equal values back out at
--- logout -- for exactly the two storage shapes the committed consumers have on
--- disk. It changes the MACHINERY behind existing save files, never the SHAPE of
--- the data on disk. This is the highest-risk module in the library: save-file
--- bugs are silent until a user's data is already gone, so every guard here
--- prefers a refused operation over a half-completed one, in every build.
+-- An AceDB-3.0 replacement: loads SavedVariables, applies defaults, runs
+-- migrations, and exposes the live section tables (profile / char / global /
+-- sv), stripping default-equal values back out at logout.
 --
 -- Clean-room: behavior-compatible with AceDB-3.0, no AceDB code reproduced.
 
@@ -16,26 +11,9 @@ if not F then
     error("Foundry-1.0: DB.lua requires the Foundry-1.0 bootstrap (Foundry.lua) "
         .. "to have loaded first; _G.Foundry_1_0 is missing.", 0)
 end
--- Guarded-embedding stand-down (§2.2b): if this module is already registered on the
--- winning copy, this is a redundant embedded copy — load nothing.
+-- Already registered on the winning copy: this is a redundant embedded copy.
 if F:HasModule("DB") then return end
 
--- Graft-guard (FND-007 #1). The bootstrap gate above protects against a
--- redundant copy of THE SAME core, but not this cross-version graft: TOC load
--- order is Foundry -> Commands -> Events -> Lifecycle -> DB -> List, so a
--- consumer embedding a NEWER Foundry when an OLDER standalone already won
--- _G.Foundry_1_0 runs this newer DB.lua against the OLD core, which is missing
--- one or both of the two seams this DB.lua needs from Lifecycle: the
--- post-logout strip registration, and (added alongside the addon-loaded
--- identity hold) the shared player-identity check. Grafting would defer the
--- failure to a cryptic nil-value error deep in :New instead.
---
--- Feature-detect the exact seams DB needs (the functions themselves, not an
--- API_VERSION number, so the check can't drift and tolerates a core with no
--- Lifecycle at all) and stand down if either is absent: a clear load-time
--- error plus an absent F.DB beats a cryptic deep crash mid-session. Provably
--- inert on the
--- normal load, since Lifecycle always loads before DB.
 if type(F.Lifecycle) ~= "table"
     or type(F.Lifecycle._RegisterPostLogout) ~= "function"
     or type(F.Lifecycle._PlayerIdentity) ~= "function" then
@@ -70,70 +48,39 @@ DB.API_VERSION = 2
 -- Shared private state (one set of upvalues per loaded library, lazy)
 --------------------------------------------------------------------------------
 
--- live (un-Destroyed) controllers keyed by sv name -- backs the one-live-per-sv
--- rejection. A Destroyed controller releases its slot so a later :New may reuse it.
 local liveControllers = {}
 
--- Live controllers by owning addon name, in DB construction order. One addon
--- may own more than one SavedVariables global, while the client warning names
--- only the addon; notify every live DB that belongs to that addon.
 local liveControllersByAddon = {}
 
--- Controller -> store association, held OFF the controller in a file-local
--- side table (Defect 2). The store must NOT live at a present controller
--- field like `c._store`: Lua 5.1 __newindex fires only on ABSENT keys, so a
--- present `_store` lets `db._store = x` raw-overwrite the live store pointer
--- and the underscore write-guard never fires. Keyed off the side table, the
--- controller carries ZERO present fields, so __index/__newindex see EVERY
--- access and the guards stay enforceable for its whole life. GC is a
--- non-issue: every store is already retained for the session in `stores`
--- (it backs the logout strip), so a weak table would buy nothing here.
+-- Held OFF the controller: a present `_store` field would bypass
+-- __newindex's write-guard (Lua 5.1 only traps ABSENT keys).
 local controllerStore = {}
 
--- EVERY store constructed this session, in construction order. A "store" is a
--- plain record capturing the sv name, the resolved sv table, the defaults table,
--- and the per-section materialization flags -- everything the logout strip needs,
--- independent of whether a live controller still exists. Live, Destroyed, and
--- §8.2 step-6 refused stores all land here; at logout the newest store per sv
--- table strips (FND-030; see onLogout for the rule and its rationale).
 local stores = {}
 
--- One-time guard: DB registers its single strip callback with Lifecycle's
--- post-logout seam exactly once, at the first :New.
 local postLogoutRegistered = false
 
--- DB owns one library-scoped listener for the client warning. It is created on
--- the first DB so there is no frame at all for consumers that do not use DB.
 local sizeWarningEvents = nil
 
--- The three managed section names and the SV sub-tables they live under. char
--- and profile are keyed maps; global is flat (no key layer).
 local SECTION_GLOBAL = "global"
 local SECTION_PROFILE = "profile"
 local SECTION_CHAR = "char"
 
--- AceDB surface neither committed consumer uses (spec §5). Reads against these
--- names fail loudly through the controller __index; writes fail through
--- __newindex. Method stubs (below) cover the call surface. Stored in a set for
--- O(1) membership; the value is unused.
+-- Unsupported AceDB surface; accessing any of these names raises loudly
+-- instead of returning nil or writing silently.
 local DENY_LIST = {
-    -- Section accessors (unsupported sections)
     realm = true, class = true, race = true, faction = true,
     factionrealm = true, factionrealmregion = true, locale = true,
-    -- Object properties
     profiles = true, keys = true, defaults = true, parent = true, children = true,
     callbacks = true,
-    -- Profile management
     SetProfile = true, GetProfiles = true, GetCurrentProfile = true,
     CopyProfile = true, DeleteProfile = true, ResetProfile = true, ResetDB = true,
-    -- Defaults / namespaces / callbacks APIs
     RegisterDefaults = true, RegisterNamespace = true, GetNamespace = true,
     RegisterCallback = true, UnregisterCallback = true, UnregisterAllCallbacks = true,
 }
 
--- Reserved controller field names (spec §2.2): the section properties, the
--- supported method names, and (handled separately) all underscore-prefixed
--- fields. Writes to any of these fail through __newindex.
+-- Reserved field names (sections, methods, underscore-prefixed); writing to
+-- any of these raises.
 local RESERVED = {
     profile = true, char = true, global = true, sv = true,
     OnReady = true, OnSavedVariablesTooLarge = true, GetNativeHandles = true, Destroy = true,
@@ -141,15 +88,7 @@ local RESERVED = {
 
 local REFERENCE_TAIL = "; see the DB Reference page"
 
--- Direct both-builds refusal (locked decision D3, Charter §3.4.1). For every
--- condition with NO checked-return refusal path -- :New validation, the §5
--- deny-list, destroyed-controller SECTION reads, and migrate-raised surfacing
--- -- the raise IS the release refusal: the same named error fires identically
--- in dev and release. F:RaiseDevError (dev raise / release print+nil) is
--- reserved for the one class whose release contract is print+return nil:
--- destroyed-controller METHOD calls (§7 row 6). Level 3 points at the
--- consumer's call site (1 = refuse itself, 2 = the calling :New/__index/
--- __newindex, 3 = the consumer line that triggered it).
+-- Raises in both dev and release builds -- do not swap for RaiseDevError.
 local function refuse(msg)
     error("Foundry-1.0: " .. tostring(msg), 3)
 end
@@ -158,10 +97,6 @@ local function onSavedVariablesTooLarge(_, addonName)
     local controllers = liveControllersByAddon[addonName]
     if not controllers then return end
     local svNames, callbackFailed, callbackErr = {}, false, nil
-    -- Snapshot recipients and their handlers before invoking consumer code. A
-    -- callback may Destroy() a DB or register another handler; the snapshot
-    -- preserves the complete dispatch set at signal entry. Destroy affects a
-    -- later client warning, not the callbacks already captured for this one.
     local snapshot = {}
     for i = 1, #controllers do
         local controller = controllers[i]
@@ -209,9 +144,7 @@ end
 -- Defaults application, stripping, and helpers
 --------------------------------------------------------------------------------
 
--- Recursively reject any wildcard ('*' / '**') string key at any depth in a
--- defaults table. Both consumers declare only concrete keys; wildcard semantics
--- are unsupported (spec §4.5). Returns the offending key path, or nil if clean.
+-- Defaults tables may not use wildcard ('*' / '**') keys; DB:New rejects them.
 local function findWildcard(tbl, pathPrefix)
     for k, v in pairs(tbl) do
         if k == "*" or k == "**" then
@@ -225,14 +158,8 @@ local function findWildcard(tbl, pathPrefix)
     return nil
 end
 
--- Apply concrete defaults into a stored section table (spec §4.1). Mutates
--- `stored` in place; never reads from or writes into `defaults` (held by
--- reference). Type-mismatch slots are preserved-and-skipped (D2) and reported
--- through onMismatch(path) so the caller can emit one loud dev diagnostic.
---
--- nil-vs-false is load-bearing: a scalar default lands ONLY into a raw-nil slot
--- (rawequal-to-nil), never via a truthiness test, so a stored `false` always
--- beats a default `true`.
+-- Fills only nil slots when applying defaults: a stored `false` is never
+-- overwritten by a default `true`.
 local function applyDefaults(stored, defaults, onMismatch, path)
     for k, dv in pairs(defaults) do
         local sv = stored[k]
@@ -242,16 +169,11 @@ local function applyDefaults(stored, defaults, onMismatch, path)
                 stored[k] = fresh
                 applyDefaults(fresh, dv, onMismatch, path .. tostring(k) .. ".")
             elseif type(sv) == "table" then
-                -- Additive backfill: recurse, applying missing keys only.
                 applyDefaults(sv, dv, onMismatch, path .. tostring(k) .. ".")
             else
-                -- Stored non-table, non-nil under a table default: preserve the
-                -- stored value, skip the default subtree (D2), report once.
                 if onMismatch then onMismatch(path .. tostring(k)) end
             end
         else
-            -- Scalar default: fill a raw-nil slot only. A stored value of ANY
-            -- type (including false) is left untouched.
             if sv == nil then
                 stored[k] = dv
             end
@@ -259,11 +181,8 @@ local function applyDefaults(stored, defaults, onMismatch, path)
     end
 end
 
--- Strip default-equal values out of a materialized section table (spec §4.3
--- step 1). Mutates `stored` in place. A stored scalar raw-equal to its default
--- is removed; a table default recurses; a stored table left empty after
--- recursion is removed. Type-mismatched slots (stored non-table under a table
--- default) are left untouched -- they were never defaulted.
+-- Strips values equal to their default back out at logout, keeping the
+-- saved file small; type-mismatched values are left untouched.
 local function stripDefaults(stored, defaults)
     for k, dv in pairs(defaults) do
         local sv = stored[k]
@@ -274,7 +193,6 @@ local function stripDefaults(stored, defaults)
                     stored[k] = nil
                 end
             end
-            -- stored nil or a non-table scalar (type mismatch): leave as-is.
         else
             if sv == dv then
                 stored[k] = nil
@@ -283,7 +201,6 @@ local function stripDefaults(stored, defaults)
     end
 end
 
--- Parse a dot-path ("global.schemaVersion") into { "global", "schemaVersion" }.
 local function splitPath(path)
     local parts = {}
     for piece in tostring(path):gmatch("[^.]+") do
@@ -296,17 +213,11 @@ end
 -- The logout strip (rides Lifecycle's post-logout seam)
 --------------------------------------------------------------------------------
 
--- Strip one store. Idempotent over concrete defaults, so a repeated
--- post-logout seam re-stripping the newest store is safe. Reads only the
--- captured refs, never a controller, so it runs for live, Destroyed, and
--- refused stores alike (newest-per-sv selection happens in onLogout).
 local function stripStore(store)
     local sv = store.sv
     if type(sv) ~= "table" then return end
     local defaults = store.defaults
 
-    -- Step 1: defaults walk -- MATERIALIZED sections only. An unmaterialized
-    -- section had no defaults applied, so there is nothing to strip.
     if defaults then
         if store.materialized[SECTION_GLOBAL] and type(sv.global) == "table"
             and type(defaults.global) == "table" then
@@ -326,12 +237,8 @@ local function stripStore(store)
         end
     end
 
-    -- Step 2: prune empties -- scope is SV-PRESENCE, not materialization. Every
-    -- managed keyed section present in the SV is swept even if never read this
-    -- session, so a stale empty bucket in the file is pruned exactly as AceDB
-    -- pruned it. EXCEPTION: empty named profiles on the main DB survive as {}
-    -- (AceDB's deliberate asymmetry), so `profiles` per-key buckets are NOT
-    -- pruned. `global` (flat) has no per-key layer.
+    -- Only char buckets are pruned; empty named profiles deliberately
+    -- survive (AceDB parity).
     if type(sv.char) == "table" then
         for key, bucket in pairs(sv.char) do
             if type(bucket) == "table" and next(bucket) == nil then
@@ -340,10 +247,6 @@ local function stripStore(store)
         end
     end
 
-    -- Empty section tables are removed, including an empty `global`. `profiles`
-    -- is NOT removed when it still holds an empty named profile (the asymmetry):
-    -- a non-empty `profiles` section is never removed, and step 1 never empties
-    -- the profile bucket itself out of `profiles`.
     if type(sv.global) == "table" and next(sv.global) == nil then
         sv.global = nil
     end
@@ -353,32 +256,10 @@ local function stripStore(store)
     if type(sv.profiles) == "table" and next(sv.profiles) == nil then
         sv.profiles = nil
     end
-
-    -- Step 3: profileKeys always survives with the character's mapping -- never
-    -- pruned here. Step 4: anything DB does not manage (unknown top-level keys,
-    -- unsupported leftover sections, dynamic keys) is untouched by construction:
-    -- nothing above ever reaches outside global/char/profiles.
 end
 
--- The single callback DB hands to Lifecycle's post-logout seam. Snapshot the
--- store list, then pcall-per-store so one store's strip error never starves
--- another's; surface once after the loop, gated on the RAISED flag (never the
--- error VALUE's truthiness -- the §3.4.1 falsy-error rule). A store registering
--- a new store mid-strip (via re-:New) is intentionally not in this snapshot.
---
--- Newest-store-per-sv rule (FND-030): only the LAST-constructed store for
--- each sv TABLE strips. A Destroyed store whose sv was re-:New'd with
--- CHANGED defaults must not strip: its stale defaults could delete a stored
--- value the user deliberately set that happens to equal an OLD default --
--- silent save-data deletion, the failure this module rules out. The newer
--- store's defaults are authoritative for that sv; the trade (spec §2.2
--- re-decided) is that a stale old-default value the user never touched now
--- freezes as ordinary data instead of being stripped -- wrong-but-safe, and
--- indistinguishable from a deliberate choice. The same exclusion applies with
--- IDENTICAL defaults when only materialization differs (the frozen section
--- strips on a later logout that materializes it there too). A Destroyed
--- store with NO successor still strips as before (skipping it would freeze
--- its own materialized defaults -- the phantom-deviation trap).
+-- Only the newest store per sv table strips at logout -- stripping an
+-- older, Destroyed store's stale defaults could delete data the user set.
 local function onLogout()
     local newest = {}
     for i = 1, #stores do newest[stores[i].sv] = stores[i] end
@@ -401,17 +282,6 @@ end
 -- Controller
 --------------------------------------------------------------------------------
 
--- The controller is metatable-backed and NOT Mixin()-able (spec §2.2, D6). It is
--- held and accessed by reference. Sections are served through __index from an
--- internal per-controller cache (_sections) -- NEVER rawset onto the controller,
--- so __index keeps firing on absent keys and the deny-list / destroyed guards
--- stay enforceable for the controller's whole life. Section tables themselves
--- are the SV's own plain tables (no proxies, no metatables).
-
--- Materialize a section on first read: create the SV sub-table if missing, apply
--- that section's defaults, cache the result, and flag it materialized (so the
--- logout strip walks exactly the sections that were read). Returns the live
--- table (the SV's own), stable for the session.
 local function materialize(store, section)
     local cache = store.sections
     local existing = cache[section]
@@ -441,11 +311,8 @@ local function materialize(store, section)
         sectionDefaults = defaults and defaults.char
     end
 
-    -- Flag and cache BEFORE applying defaults (FND-035): applyDefaults can
-    -- raise mid-walk via onMismatch (dev builds), and an unflagged section
-    -- whose defaults were already partially written would be skipped by the
-    -- logout strip -- freezing fresh defaults onto disk as phantom user data,
-    -- the exact trap the strip exists to prevent.
+    -- Must flag materialized BEFORE applying defaults, or a raised
+    -- onMismatch would leave partial defaults unstripped at logout.
     cache[section] = tbl
     store.materialized[section] = true
 
@@ -456,24 +323,10 @@ local function materialize(store, section)
     return tbl
 end
 
--- Each controller's store lives in the file-local `controllerStore` side table
--- (declared up top), keyed by the controller and never as a controller field.
-
 local Controller = {}
-
--- Methods are looked up by the metatable __index function (below), NOT via
--- Controller as a plain __index table, because we must intercept section names
--- and the deny-list first. Define the methods on Controller; __index dispatches
--- to them.
 
 function Controller.OnReady(self, handler)
     local store = controllerStore[self]
-    -- Non-controller value: a method extracted and invoked on a forged/foreign
-    -- table (`local m = db.OnReady; m({})`) has no store mapping. Refuse with a
-    -- NAMED message (raise both builds) rather than dying with the anonymous
-    -- nil-index the named-message contract exists to eliminate. Distinct from the
-    -- destroyed-controller path below (row 6): a destroyed controller still HAS a
-    -- store, just flagged destroyed.
     if store == nil then
         refuse("DB:OnReady called on a non-controller value")
     end
@@ -491,8 +344,8 @@ function Controller.OnReady(self, handler)
 end
 
 -- Register a handler for the client's end-of-session SavedVariables size
--- warning. Unlike OnReady, this is event-driven: it runs only when the client
--- reports that this DB's owning addon could not be saved.
+-- warning; fires only if this DB's addon could not be saved. Safe to
+-- Destroy() the DB or register another handler from within the handler.
 function Controller.OnSavedVariablesTooLarge(self, handler)
     local store = controllerStore[self]
     if store == nil then
@@ -511,7 +364,6 @@ end
 
 function Controller.GetNativeHandles(self)
     local store = controllerStore[self]
-    -- Non-controller value: see Controller.OnReady.
     if store == nil then
         refuse("DB:GetNativeHandles called on a non-controller value")
     end
@@ -519,9 +371,8 @@ function Controller.GetNativeHandles(self)
         F:RaiseDevError("DB:GetNativeHandles called on a destroyed controller")
         return
     end
-    -- The live SV root is the consumer's own data (no Blizzard objects). charKey,
-    -- profileKey, and the materialization state are SNAPSHOT copies; mutating
-    -- them never affects live behavior. NO frame field: DB owns no event frame.
+    -- charKey, profileKey, and materialized are SNAPSHOT copies; mutating
+    -- the returned table never affects live behavior.
     local matSnapshot = {}
     for k, v in pairs(store.materialized) do matSnapshot[k] = v end
     return {
@@ -534,7 +385,6 @@ end
 
 function Controller.Destroy(self)
     local store = controllerStore[self]
-    -- Non-controller value: see Controller.OnReady.
     if store == nil then
         refuse("DB:Destroy called on a non-controller value")
     end
@@ -542,12 +392,10 @@ function Controller.Destroy(self)
         F:RaiseDevError("DB:Destroy called on a destroyed controller")
         return
     end
-    -- Release the controller surface and free the sv slot for a later :New.
-    -- Never deletes or mutates saved data; the consumer's section references
-    -- stay valid as fully-merged plain tables. The store's end-of-session
-    -- strip duty SURVIVES this -- it stays in `stores` and still strips at
-    -- logout -- UNLESS a later :New covers the same sv, in which case the
-    -- newest store strips instead (FND-030; see onLogout).
+    -- Frees the sv slot for a later :New. Never deletes or mutates saved
+    -- data; the strip still runs at logout unless a later :New covers the
+    -- same sv. Existing section table references stay valid: sections are
+    -- the SV's own tables, safe to cache.
     store.destroyed = true
     if liveControllers[store.svName] == self then
         liveControllers[store.svName] = nil
@@ -567,21 +415,18 @@ function Controller.Destroy(self)
     store.sizeWarningHandlers = {}
 end
 
--- The controller metatable. __index: section names -> materialized section;
--- supported method names -> the method; deny-list names -> loud refusal (raise
--- in both builds, D3); destroyed section reads -> loud refusal; everything else
--- -> nil (plain Lua). __newindex: reserved + deny-list -> loud refusal; anything
--- else -> a plain raw set (exactly as on an AceDB db object).
+-- __index: sections/methods resolve normally; deny-listed names raise.
+-- __newindex: reserved/deny-listed names raise; anything else is a plain
+-- raw write (like a normal AceDB db object). Sections are served from the
+-- store cache, never rawset on the controller, or __index/__newindex stop
+-- firing for that key.
 local controllerMeta = {}
 
 function controllerMeta.__index(self, key)
     local store = controllerStore[self]
 
-    -- Section properties.
     if key == SECTION_GLOBAL or key == SECTION_PROFILE or key == SECTION_CHAR then
         if store.destroyed then
-            -- A property read has no checkable nil-refusal path, so it raises in
-            -- BOTH builds (spec §7 row 7, D3) -- never print+nil.
             refuse("DB: section '" .. key
                 .. "' read on a destroyed controller")
         end
@@ -596,35 +441,26 @@ function controllerMeta.__index(self, key)
         return store.sv
     end
 
-    -- Supported methods.
     local method = Controller[key]
     if method then return method end
 
-    -- Unsupported AceDB surface read (spec §5): raise in both builds (D3) with a
-    -- named message, never Lua's anonymous nil-index/nil-call.
     if DENY_LIST[key] then
         refuse("DB: AceDB feature '" .. key
             .. "' is not supported by Foundry.DB (Charter §3.4)" .. REFERENCE_TAIL)
     end
 
-    -- Unknown name: plain Lua, nil read.
     return nil
 end
 
 function controllerMeta.__newindex(self, key, value)
-    -- Reserved names (sections, supported methods) and the §5 deny-list both fail
-    -- loudly in both builds (D3). The write guard is load-bearing: without it a
-    -- stray `db.realm = {}` would rawset onto the controller, permanently shadow
-    -- the deny-list for that key, and silently accept a session of writes against
-    -- a table never connected to the SV -- the "build a broken table / drop data"
-    -- class banned in every build.
+    -- Load-bearing: without this guard, `db.realm = {}` would rawset onto
+    -- the controller and permanently shadow the deny-list for that key.
     if RESERVED[key] or DENY_LIST[key]
         or (type(key) == "string" and key:sub(1, 1) == "_") then
         refuse("DB: '" .. tostring(key)
             .. "' is reserved or unsupported and cannot be assigned on the controller"
             .. REFERENCE_TAIL)
     end
-    -- Unknown name: plain Lua, raw write (exactly as on an AceDB db object).
     rawset(self, key, value)
 end
 
@@ -632,8 +468,6 @@ end
 -- Factory
 --------------------------------------------------------------------------------
 
--- Validate a defaults table's top-level section names and reject wildcards.
--- Returns an error message string, or nil if valid.
 local function validateDefaults(defaults)
     for k, v in pairs(defaults) do
         if k ~= SECTION_PROFILE and k ~= SECTION_CHAR and k ~= SECTION_GLOBAL then
@@ -652,23 +486,8 @@ local function validateDefaults(defaults)
     return nil
 end
 
--- Resolve the running character's identity. Returns (charKey, legacyKey,
--- firstName), or (nil, errMessage) on the identity gate's own refusal --
--- computed lazily, never at file load; on failure the second return holds
--- the error message. Shares its check with Foundry.Lifecycle's addon-loaded
--- identity hold (F.Lifecycle._PlayerIdentity), so "what counts as resolved"
--- has one definition: nil / "" / the literal "Unknown" / the client's own
--- localized placeholder for an unresolved unit name, or an unsettled
--- regional surname, all refuse before any mutation, so a junk key is never
--- computed. On a client with region-wide unique names, charKey is the full
--- name and legacyKey is the "First - Realm" key that character used before
--- this build, present only when a string surname resolved; every other
--- client's charKey IS its legacyKey ("Name - Realm"), so legacyKey is nil
--- there.
---
--- A cheap defense: a core new enough to have _PlayerIdentity but too old to
--- return the full-name key (return 3) refuses here rather than building a
--- junk key from a non-string value.
+-- charKey is the full unique name on realms with region-wide unique names,
+-- else "Name - Realm"; legacyKey holds the pre-upgrade key when it differs.
 local function resolveCharKey()
     local name, realmOrMsg, keyOrReason, legacyKey = F.Lifecycle._PlayerIdentity()
     if not name then
@@ -681,12 +500,8 @@ local function resolveCharKey()
     return keyOrReason, legacyKey, name
 end
 
--- Read-only pre-mutation check: may this construction move data saved under
--- `legacyKey` onto the new `charKey`? Called after the
--- step-8 malformed checks and before step 9's profile resolution. Never
--- writes and never raises -- an ineligible move is skipped, not refused.
--- `first` is the character's first name alone (resolveCharKey's third
--- return), used only for the claimant scan below.
+-- Read-only: decides whether to migrate data from a legacy character key
+-- onto the new key. Never writes or raises.
 local function planLegacyMove(existing, charKey, legacyKey, first)
     if legacyKey == nil then return false end          -- no legacy key to move
     if type(existing) ~= "table" then return false end  -- fresh SV: nothing to move
@@ -706,12 +521,7 @@ local function planLegacyMove(existing, charKey, legacyKey, first)
         return false   -- charKey must be absent from both sections
     end
 
-    -- No other claimant in either section: a string key k claims first's
-    -- data when k ~= charKey, k contains no " - " (legacy-shaped keys never
-    -- count), and k == first or k starts with "first ". A bare "first" counts,
-    -- accepted as an exception to the invariant that this move is always
-    -- unambiguous; a "" surname's key "first " counts for every other
-    -- same-first-name character.
+    -- A claimant is any other string key equal to `first` or prefixed "first ".
     local prefix = first .. " "
     local function hasClaimant(section)
         if not section then return false end
@@ -728,9 +538,6 @@ local function planLegacyMove(existing, charKey, legacyKey, first)
     return true
 end
 
--- Read the raw stored schema stamp (pre-defaults, the single read the seam ever
--- performs). The path is rooted at a supported section; we walk it without
--- materializing anything. Returns the raw value (may be nil or any type).
 local function readRawStamp(sv, pathParts)
     local node = sv
     for i = 1, #pathParts do
@@ -740,9 +547,6 @@ local function readRawStamp(sv, pathParts)
     return node
 end
 
--- Write the schema stamp at schema.key, creating intermediate tables as needed.
--- Rooted at a supported section; the section is materialized through the
--- controller first by the caller so the write lands in the live section table.
 local function writeStamp(sv, pathParts, value)
     local node = sv
     for i = 1, #pathParts - 1 do
@@ -755,7 +559,6 @@ local function writeStamp(sv, pathParts, value)
 end
 
 function DB:New(config)
-    -- 1. Config type checks (type errors surface before state errors).
     if type(config) ~= "table" then
         refuse("DB:New: config must be a table")
     end
@@ -769,14 +572,12 @@ function DB:New(config)
         refuse("DB:New: defaults, when supplied, must be a table")
     end
 
-    -- 2. defaultProfile must be the literal true (string / absent modes rejected).
     if config.defaultProfile ~= true then
         refuse("DB:New: defaultProfile must be the literal true; "
             .. "named-shared-profile and per-character-profile modes are not "
             .. "supported by Foundry.DB (Charter §2.1)")
     end
 
-    -- 3. Defaults section names + wildcard scan.
     if config.defaults then
         local err = validateDefaults(config.defaults)
         if err then
@@ -784,7 +585,6 @@ function DB:New(config)
         end
     end
 
-    -- 4. schema validation (shape + key-vs-defaults collision, §8.2 step 0).
     local schema = config.schema
     local schemaPath
     if schema ~= nil then
@@ -803,34 +603,21 @@ function DB:New(config)
         end
         schemaPath = splitPath(schema.key)
         local rootSection = schemaPath[1]
-        -- Step 0 (root restriction): the stamp must be rooted EXACTLY at `global`.
-        -- `char` and `profile` are keyed-MAP sections (sv.char maps charKeys to
-        -- buckets), so a flat path like "char.schemaVersion" writes a scalar SIBLING
-        -- of the per-character buckets inside the keyed map; the §8.4 structural
-        -- check then rejects that scalar on every later load and construction
-        -- refuses forever -- a permanent lockout from the user's own save. A
-        -- keyed-section stamp has no coherent flat-path semantics, and both
-        -- committed consumers stamp `global`, so the only legal root is `global`.
+        -- Rooted at 'global' only: char/profile are keyed-map sections and
+        -- can't take a flat stamp path.
         if rootSection ~= SECTION_GLOBAL then
             refuse("DB:New: schema.key must be rooted at 'global' (got '"
                 .. schema.key .. "'); char/profile are keyed sections")
         end
-        -- The stamp needs a key BELOW the section root. A bare "global" passes
-        -- the root check but makes writeStamp overwrite sv.global -- the section
-        -- TABLE -- with the version NUMBER: this session's db.global writes
-        -- orphan into the detached section cache and vanish at logout, and the
-        -- §8.4 structural check then refuses the save on every later load --
-        -- the same permanent-lockout class the root restriction above exists
-        -- to prevent.
+        -- Needs a key below the root; a bare "global" would overwrite the
+        -- whole section with the version number.
         if #schemaPath < 2 then
             refuse("DB:New: schema.key must name a key inside 'global' (got '"
                 .. schema.key .. "'); a bare section root would overwrite the "
                 .. "whole section with the version stamp")
         end
-        -- Step 0: the stamp must NOT be covered by declared defaults. A
-        -- defaults-covered stamp evaporates from disk whenever it equals its
-        -- default (the strip deletes it), so migrate(db, nil) would run every
-        -- session forever and downgrade protection would be permanently inert.
+        -- Must not be covered by declared defaults, or the strip would
+        -- delete the stamp and migrate() would rerun forever.
         if config.defaults then
             local node = config.defaults
             local covered = true
@@ -848,15 +635,13 @@ function DB:New(config)
         end
     end
 
-    -- 5. One live controller per sv name.
     if liveControllers[config.sv] then
         refuse("DB:New: sv '" .. config.sv
             .. "' already has a live controller; Destroy it first to re-register")
     end
 
-    -- 6. Timing guard: the addon must have FINISHED loading (SavedVariables
-    -- restored). Gate on the SECOND return of IsAddOnLoaded. A too-early :New
-    -- builds a fresh store that the real SV restoration then clobbers -- data loss.
+    -- Second return (finished) only: the first is true while still loading,
+    -- and a :New then would be clobbered by SavedVariables restore.
     local loaded = false
     if C_AddOns and C_AddOns.IsAddOnLoaded then
         local _, finished = C_AddOns.IsAddOnLoaded(config.name)
@@ -868,19 +653,12 @@ function DB:New(config)
             .. "available. Construct DB inside the addon-loaded window")
     end
 
-    -- 7. Identity gate, shared with Lifecycle's addon-loaded hold (nil / "" /
-    -- "Unknown" / the client's localized placeholder / an unsettled regional
-    -- surname all refuse before any mutation). On failure, the second return
-    -- holds the refusal message instead (resolveCharKey's dual-purpose slot).
     local charKey, legacyKeyOrErr, first = resolveCharKey()
     if not charKey then
         refuse(legacyKeyOrErr)
     end
     local legacyKey = legacyKeyOrErr
 
-    -- 8. Read the existing SV global (RAW -- may be nil for a fresh save). The
-    -- downgrade check below reads the stamp RAW, pre-defaults. Malformed
-    -- structural checks run here, before any mutation.
     local existing = _G[config.sv]
     local freshSV = (existing == nil)
     if not freshSV then
@@ -889,7 +667,6 @@ function DB:New(config)
                 .. "' is malformed (expected a table, got " .. type(existing)
                 .. "); construction refused")
         end
-        -- Structural malformation of managed sections / buckets / profileKeys.
         local malformed = nil
         if existing.profileKeys ~= nil and type(existing.profileKeys) ~= "table" then
             malformed = "profileKeys"
@@ -929,16 +706,8 @@ function DB:New(config)
         end
     end
 
-    -- Read-only: may this construction move data from the pre-full-name-key
-    -- legacy key onto the new full-name key? Decided before any mutation;
-    -- step 9 and the apply below both consume the answer.
     local movePlanned = planLegacyMove(existing, charKey, legacyKey, first)
 
-    -- 9. profileKey resolution (raw, pre-mutation): saved profileKeys[charKey]
-    -- first, else "Default" (the normalized defaultProfile = true). Saved keys
-    -- remain arbitrary strings and resolve exactly as AceDB resolved them. A
-    -- planned move resolves from profileKeys[legacyKey] instead: planLegacyMove's
-    -- charKey-absent check already guarantees profileKeys[charKey] is absent.
     local profileKey = "Default"
     if not freshSV and type(existing.profileKeys) == "table" then
         local lookupKey = movePlanned and legacyKey or charKey
@@ -948,8 +717,6 @@ function DB:New(config)
         end
     end
 
-    -- 10. Downgrade check -- part of validation, against the RAW pre-defaults
-    -- stamp. Stored > declared ⇒ refuse construction, SV byte-untouched.
     local storedVersion
     if schema then
         storedVersion = readRawStamp(existing, schemaPath)  -- nil-safe (existing may be nil)
@@ -961,10 +728,8 @@ function DB:New(config)
     end
 
     --==========================================================================
-    -- VALIDATION COMPLETE. Every check above completed before this line. From
-    -- here, and only here, do we mutate _G[config.sv] and library state. A
-    -- rejected :New above left the SV byte-untouched (it did not even create a
-    -- missing global).
+    -- VALIDATION COMPLETE. Nothing above this line mutates state; nothing
+    -- below it may add a new validation.
     --==========================================================================
 
     if freshSV then
@@ -972,9 +737,7 @@ function DB:New(config)
     end
     local sv = _G[config.sv]
 
-    -- The one-time legacy-key move: the first mutation after VALIDATION
-    -- COMPLETE, strictly before the profileKeys write-back below, so that
-    -- write-back is the only profileKeys entry this character gets.
+    -- One-time move of legacy-key data onto charKey.
     if movePlanned then
         if type(sv.char) == "table" and sv.char[legacyKey] ~= nil then
             sv.char[charKey] = sv.char[legacyKey]
@@ -985,12 +748,9 @@ function DB:New(config)
         end
     end
 
-    -- profileKeys write-back: record the resolved mapping. Constructing a db is
-    -- never read-only; both consumers' files carry profileKeys.
     if type(sv.profileKeys) ~= "table" then sv.profileKeys = {} end
     sv.profileKeys[charKey] = profileKey
 
-    -- Build the store record (the strip's view of this db, controller-independent).
     local store = {
         addonName = config.name,
         svName = config.sv,
@@ -999,11 +759,10 @@ function DB:New(config)
         charKey = charKey,
         profileKey = profileKey,
         sections = {},        -- section name -> live table (the cache)
-        materialized = {},    -- section name -> true once a read begins (strip-owned; FND-035)
+        materialized = {},    -- section name -> true once a read begins
         sizeWarningHandlers = {},
         destroyed = false,
     }
-    -- A loud dev diagnostic for each value-level type mismatch (D2 preserve-skip).
     store.onMismatch = function(slotPath)
         F:RaiseDevError("DB: stored value at '" .. slotPath
             .. "' has a type that conflicts with its table-typed default; the "
@@ -1012,20 +771,18 @@ function DB:New(config)
 
     stores[#stores + 1] = store
 
-    -- Register DB's single logout-strip callback with Lifecycle's post-logout
-    -- seam exactly once, at the first :New.
     if not postLogoutRegistered then
         F.Lifecycle._RegisterPostLogout(onLogout)
         postLogoutRegistered = true
     end
 
-    -- Build the controller (metatable-backed; not Mixin()-able).
+    -- Metatable-backed; not Mixin()-able.
     local c = setmetatable({}, controllerMeta)
     controllerStore[c] = store
     liveControllers[config.sv] = c
 
-    -- 11. Schema seam: run AFTER construction state exists but as part of :New, so
-    -- the ready moment (defaults applied, migrations run) holds when :New returns.
+    -- Schema migrations run synchronously inside :New; by the time :New
+    -- returns, defaults are applied and migrate has already run.
     if schema then
         if freshSV then
             -- Fresh SV: stamp, migrate NOT called.
@@ -1033,16 +790,8 @@ function DB:New(config)
             materialize(store, section)  -- ensure the rooted section is live
             writeStamp(sv, schemaPath, schema.version)
         elseif not (type(storedVersion) == "number" and storedVersion == schema.version) then
-            -- Stored < declared, or nothing / a non-number: call migrate (stored
-            -- == declared is a no-op, handled by skipping this branch). The
-            -- consumer's nil path must be an idempotent repair: storedVersion is
-            -- nil for a populated-but-unversioned save.
-            --
-            -- A PRESENT-but-non-number stamp bypasses §8.3's downgrade check (it
-            -- only fires for a numeric stamp), so fire a loud dev diagnostic
-            -- before proceeding: dev raises immediately; release prints and the
-            -- nil-path migrate/repair proceeds unchanged (mv is nil either way;
-            -- D2 onMismatch transport precedent).
+            -- migrate(db, nil) runs for a populated-but-unversioned save (or
+            -- a non-number stamp); the nil path must be an idempotent repair.
             if storedVersion ~= nil and type(storedVersion) ~= "number" then
                 F:RaiseDevError("DB:New: schema stamp at '" .. schema.key
                     .. "' is present but not a number (got a " .. type(storedVersion)
@@ -1052,18 +801,14 @@ function DB:New(config)
             local mv = (type(storedVersion) == "number") and storedVersion or nil
             local ok, err = pcall(schema.migrate, c, mv)
             if not ok then
-                -- A raised error (gated on the RAISED flag, never value
-                -- truthiness) refuses construction -- a half-migrated store is
-                -- never handed out. The store stays in `stores` so its
-                -- (possibly partially-written) SV is still stripped at logout
-                -- (by this store or a successor's, per the newest-per-sv rule).
+                -- The store stays in stores: migrate may have materialized
+                -- sections that still need the logout strip.
                 store.destroyed = true
                 liveControllers[config.sv] = nil
                 refuse("DB:New: schema.migrate raised; construction "
                     .. "refused (a half-migrated store is never handed out): "
                     .. tostring(err))
             end
-            -- On normal return, stamp the declared version.
             local section = schemaPath[1]
             materialize(store, section)
             writeStamp(sv, schemaPath, schema.version)
