@@ -11,8 +11,7 @@ if not F then
     error("Foundry-1.0: Settings.lua requires the Foundry-1.0 bootstrap (Foundry.lua) "
         .. "to have loaded first; _G.Foundry_1_0 is missing.", 0)
 end
--- Guarded-embedding stand-down (§2.2b): if this module is already registered on the
--- winning copy, this is a redundant embedded copy — load nothing.
+-- Already registered by another embedded copy: load nothing.
 if F:HasModule("Settings") then return end
 
 local Settings = {}
@@ -20,29 +19,19 @@ Settings.API_VERSION = 1
 
 --------------------------------------------------------------------------------
 -- Module-level live-key registry
--- Maps name string → true for every controller that has not been :Destroy()ed.
--- A second :New() with an already-owned key is refused. The key is freed only
--- when :Destroy() is called on the controller that owns it. Persists for the
--- module's lifetime (not cleared per-event or per-session).
 --------------------------------------------------------------------------------
 
 local liveKeys = {}
 
--- Registered-category cache (FND-032). Blizzard provides no way to unregister
--- an options category, so a name's first successful registration is permanent
--- for the session. A later :New for the same name re-binds the cached Blizzard
--- objects when the registration inputs match (same frame, title, mode, parent
--- category) -- the player keeps exactly one panel entry across
--- New/Destroy/New cycles -- and is refused when they differ, since the stuck
--- category can neither be reused for different inputs nor removed.
--- name -> { category, layout, frame, title, mode, parentCategory }
+-- Registered-category cache: Blizzard can't unregister a category, so a
+-- name's first registration is permanent. A later :New reuses it if the
+-- inputs match, and refuses if they don't.
 local registeredCategories = {}
 
 --------------------------------------------------------------------------------
 -- Path selection (feature detection, not version checks or pcall)
 --------------------------------------------------------------------------------
 
--- Checked inside :New() and :Open() at runtime, never at file scope.
 local function hasModernSettings()
     return type(_G.Settings) == "table"
         and type(_G.Settings.RegisterCanvasLayoutCategory) == "function"
@@ -60,8 +49,6 @@ end
 local Controller = {}
 Controller.__index = Controller
 
--- Shared destroyed-guard. Message form: "Settings:<Method> called on a destroyed
--- controller", matching the List/Events house style.
 local function refuseIfDestroyed(self, method)
     if self._destroyed then
         F:RaiseDevError("Settings:" .. method .. " called on a destroyed controller")
@@ -70,19 +57,15 @@ local function refuseIfDestroyed(self, method)
     return false
 end
 
--- Opens the Blizzard settings panel to this controller's category.
--- Modern: Settings.OpenToCategory(categoryID) where categoryID is a number from
---   category:GetID(). Taint-safe from an insecure OnClick; no C_Timer defer needed.
--- Legacy: InterfaceOptionsFrame:OpenToCategory(self._frame), called TWICE to absorb
---   the first-call quirk where InterfaceAddOnsList_Update has not run yet.
--- Neither present: return false, "unsupported-open" (defensive dead code — :New
---   refuses construction when neither API is present, so a live controller always
---   has a valid mode and this branch cannot fire in practice).
+-- Opens the settings panel to this controller's category. Taint-safe to
+-- call from an insecure OnClick.
 function Controller:Open()
     if refuseIfDestroyed(self, "Open") then return end
     if self._mode == "settings" then
         _G.Settings.OpenToCategory(self._category:GetID())
     elseif self._mode == "interface-options" then
+        -- Called twice: absorbs a first-call quirk where
+        -- InterfaceAddOnsList_Update hasn't run yet.
         _G.InterfaceOptionsFrame:OpenToCategory(self._frame)
         _G.InterfaceOptionsFrame:OpenToCategory(self._frame)
     else
@@ -90,9 +73,8 @@ function Controller:Open()
     end
 end
 
--- Returns the numeric category ID usable with Settings.OpenToCategory.
--- Modern (root or child): self._category:GetID() → number.
--- Legacy: nil (no equivalent numeric ID exists on the legacy surface).
+-- Returns the numeric category ID for Settings.OpenToCategory (nil on the
+-- legacy path).
 function Controller:GetCategoryID()
     if refuseIfDestroyed(self, "GetCategoryID") then return end
     if self._mode == "settings" then
@@ -101,11 +83,8 @@ function Controller:GetCategoryID()
     return nil
 end
 
--- Returns a fresh table containing the live Blizzard objects this controller owns.
--- A fresh table is returned on every call; mutating the returned table does not
--- corrupt controller state. The objects inside are live references.
--- Keys: frame (panel frame), category (modern category object; nil legacy),
---       categoryID (number on modern; nil legacy), mode ("settings" or "interface-options").
+-- Returns the live Blizzard objects: frame, category (nil legacy),
+-- categoryID (nil legacy), mode, layout.
 function Controller:GetNativeHandles()
     if refuseIfDestroyed(self, "GetNativeHandles") then return end
     local categoryID = nil
@@ -121,11 +100,8 @@ function Controller:GetNativeHandles()
     }
 end
 
--- Marks the controller destroyed, frees the duplicate-refusal key from the
--- module-level live registry, and releases internal references.
--- Idempotent: a second :Destroy() is a no-op (not an error).
--- Does NOT promise to unregister the Blizzard category — Blizzard provides no
--- reliable unregister API for addon categories.
+-- Destroys the controller. Idempotent; does not remove the Blizzard
+-- category (no such API exists).
 function Controller:Destroy()
     if self._destroyed then return end
     liveKeys[self._name] = nil
@@ -139,16 +115,12 @@ end
 -- Factory
 --------------------------------------------------------------------------------
 
--- Create a settings controller. Validation is atomic: every field is checked
--- before any Blizzard API is called. A rejected :New leaves prior registrations
--- untouched.
---
+-- Creates a settings controller.
 -- Config fields:
---   title  (required, non-empty string) — player-facing category title.
---   frame  (required, frame)            — the consumer-built panel to register.
---   parent (optional)                   — a live Foundry.Settings controller for
---                                         subcategory registration, or nil.
---   name   (optional, non-empty string) — duplicate-refusal key; defaults to title.
+--   title  (required) — player-facing category title.
+--   frame  (required) — the consumer-built panel to register.
+--   parent (optional) — a live Foundry.Settings controller, for a subcategory.
+--   name   (optional) — duplicate-refusal key; defaults to title.
 function Settings:New(config)
     if type(config) ~= "table" then
         F:RaiseDevError("Settings:New: config must be a table")
@@ -198,8 +170,6 @@ function Settings:New(config)
     local layout
     local mode
 
-    -- Re-bind path (FND-032): this name already registered a Blizzard category
-    -- this session. Reuse it when the inputs match; refuse when they differ.
     local cached = registeredCategories[name]
     if cached then
         local parentCategory = parent and parent._category or nil
@@ -215,17 +185,12 @@ function Settings:New(config)
         end
         category, layout, mode = cached.category, cached.layout, cached.mode
     elseif hasModernSettings() then
-        -- Modern path: feature-detected, no pcall (fail-loud per house style).
         if parent then
-            -- On the modern path, the parent must also have been registered via the
-            -- modern path so that parent._category is a valid Blizzard category
-            -- object for RegisterCanvasLayoutSubcategory.
             if parent._mode ~= "settings" then
                 F:RaiseDevError("Settings:New: config.parent was registered on the legacy path; "
                     .. "subcategory registration requires a modern-path parent")
                 return
             end
-            -- Guard against a structurally invalid parent (no category object).
             if type(parent._category) ~= "table" then
                 F:RaiseDevError("Settings:New: config.parent has no valid category object")
                 return
@@ -240,12 +205,8 @@ function Settings:New(config)
         end
         mode = "settings"
     elseif hasLegacyOptions() then
-        -- Legacy path: InterfaceOptions_AddCategory reads frame.name for the sidebar
-        -- label. The same call for both root and child (legacy does not support visual
-        -- parent-child nesting; a child registers as a sibling). This branch is
-        -- forward-compat insurance only — nil on all currently-runnable supported
-        -- flavors (Classic Era 1.15.x, Pandaria Classic 5.5.x, Retail all expose
-        -- modern Settings). Covered by headless test stub; no in-game verification path.
+        -- Legacy: the sidebar label comes from frame.name (title unused);
+        -- parent nests nothing.
         _G.InterfaceOptions_AddCategory(frame)
         mode = "interface-options"
     else
@@ -253,9 +214,6 @@ function Settings:New(config)
         return
     end
 
-    -- Record the permanent registration so a later same-name :New re-binds it
-    -- instead of registering a duplicate (FND-032). A cached re-bind rewrites
-    -- the identical record.
     registeredCategories[name] = {
         category       = category,
         layout         = layout,
