@@ -1,113 +1,61 @@
 -- Foundry.Lifecycle
 --
--- The AceAddon-3.0 replacement: addon-object creation plus correctly-timed
--- startup callbacks. A single Foundry-private dispatcher frame owns the three
--- core WoW startup signals (ADDON_LOADED / PLAYER_LOGIN / PLAYER_LOGOUT), plus
--- ADDONS_UNLOADING where the client validates it, once for the
--- whole library; per-owner controllers subscribe to phase hooks over it. This
--- keeps 100+ consumers O(1) per startup signal (ADDON_LOADED is demuxed by
--- addon name, never a wake-up storm). The native dispatcher frame stays
--- reachable underneath via :GetNativeHandles().
+-- AceAddon-3.0 replacement: addon-object creation plus correctly-timed
+-- startup callbacks. Subscribe via :OnAddonLoaded, :OnLogin, :OnLogout,
+-- :OnUnloading; the native dispatcher frame is reachable via
+-- :GetNativeHandles().
 --
--- Four HONEST raw-signal hooks, named after the WoW events they bridge:
--- :OnAddonLoaded, :OnLogin, :OnUnloading, :OnLogout. OnUnloading is available
--- only where ADDONS_UNLOADING is a valid client event; it does not promise an
--- ordering relation with PLAYER_LOGOUT. There is deliberately no "ready" hook
--- (DB loaded + defaults + migrations) -- that guarantee cannot be true until
--- Foundry.DB lands; naming one now would imply a guarantee not yet carried.
---
--- addon-loaded can wait: on some clients, ADDON_LOADED (and even
--- PLAYER_ENTERING_WORLD) can fire before the client has resolved the
--- player's own name and realm -- a fresh client session logs in with the
--- character's identity still unresolved for a moment. A controller that
--- reaches ADDON_LOADED while that identity is unresolved is held rather than
--- fired; it releases (addon-loaded, then login if login already fired) the
--- moment the name and realm are known, so a consumer that constructs its
--- database in the addon-loaded hook, as the docs direct, never gets handed a
--- refused construction over a placeholder name. Where identity is already
--- known at ADDON_LOADED -- every case but a cold login and, on a client with
--- region-wide unique names, a character the client reports without a
--- surname -- nothing is held, no extra events are registered, and no timer
--- runs.
---
--- On a client with region-wide unique names (Forever), a character's identity
--- is first name plus surname rather than first name plus realm, and the same
--- hold covers an unresolved surname exactly as it covers an unresolved name
--- or realm. A surname that never arrives is capped, not open-ended: the poll
--- below settles it after its first tick, and the held controller releases
--- under the character's first name alone. Foundry.DB owns what that means for
--- the character's saved-data key; this module only owns the wait.
+-- ADDON_LOADED can be delayed: if the player's identity is not yet resolved
+-- (name/realm, or on some clients name/surname), addon-loaded and queued
+-- login hooks wait until it resolves, so a hook that builds a database never
+-- sees a placeholder identity. Release also waits for combat to end; a
+-- surname that never arrives releases under the first name after ~1s.
 
 local F = _G.Foundry_1_0
 if not F then
     error("Foundry-1.0: Lifecycle.lua requires the Foundry-1.0 bootstrap (Foundry.lua) "
         .. "to have loaded first; _G.Foundry_1_0 is missing.", 0)
 end
--- Guarded-embedding stand-down (§2.2b): if this module is already registered on the
--- winning copy, this is a redundant embedded copy — load nothing.
+-- Redundant embedded copy of an already-registered module; load nothing.
 if F:HasModule("Lifecycle") then return end
 
 local Lifecycle = {}
 Lifecycle.API_VERSION = 4
 
 --------------------------------------------------------------------------------
--- Shared private dispatcher (one set of upvalues per loaded library)
+-- Shared private dispatcher
 --------------------------------------------------------------------------------
 
--- These upvalues are shared across every controller this library hands out.
--- The dispatcher frame is created LAZILY on the first :New (module load
--- registers nothing -- consistent with Events creating no frame until needed).
-local dispatcher = nil       -- the single CreateFrame("Frame"), created on first New
-local byAddonName = {}        -- addonName -> controller  (PENDING ADDON_LOADED demux only; cleared one-shot on fire)
-local ownedNames = {}         -- addonName -> controller  (PERSISTENT: lives until Destroy; backs re-register rejection)
-local loginControllers = {}   -- controller -> true  (set: who wants login/logout phases)
-local unloadingControllers = {} -- registration-ordered controllers who want the pre-unload phase
+local dispatcher = nil
+-- byAddonName: one-shot ADDON_LOADED demux, cleared on fire. ownedNames:
+-- persists until Destroy, backs re-register refusal.
+local byAddonName = {}
+local ownedNames = {}
+-- Controllers wanting login OR logout; PLAYER_LOGOUT fans out over this
+-- set too.
+local loginControllers = {}
+local unloadingControllers = {}
 local unloadingSupported = false
-local loginFired = false      -- central "PLAYER_LOGIN already fired" flag
-local postLogout = {}          -- array of private post-logout callbacks (DB strip seam)
+local loginFired = false
+local postLogout = {}
 
--- Identity-hold state (addon-loaded can wait, see the header note above).
-local identityHeld = {}       -- ordered array of controllers held for identity
-local identityWatching = false  -- PLAYER_ENTERING_WORLD/UNIT_NAME_UPDATE/PLAYER_REGEN_ENABLED registered?
-local pollScheduled = false    -- a C_Timer.After(1, pollTick) is already in flight
-local identityStopped = false  -- set at logout/unloading: never release again this session
-local devNoticePrinted = false -- the one-line dev notice fires at most once per session
-local surnameSettled = false   -- true once the first poll tick has run this session
-Lifecycle._identityResolvedBy = nil  -- private trace: which event released the hold
-Lifecycle._surnameLagObserved = nil  -- private trace: the surname was missing at some identity
-                                      -- check after the first name resolved (including never arriving)
+local identityHeld = {}
+local identityWatching = false
+local pollScheduled = false
+local identityStopped = false
+local devNoticePrinted = false
+local surnameSettled = false
+Lifecycle._identityResolvedBy = nil
+Lifecycle._surnameLagObserved = nil
 
--- Surface a captured hook error through F:RaiseDevError. The captured value
--- may be ANY Lua value, including a falsy one (error(nil), error(false), bare
--- error()). Surfacing must gate on the boolean "raised" flag each _fire*
--- returns, never on the value's truthiness -- truthiness would silently
--- swallow a falsy error (Charter §3.4.1).
+-- Gate callers on the raised flag, not the error value -- it may be falsy.
 local function surfaceHookError(phase, err)
     F:RaiseDevError("Lifecycle: a '" .. phase .. "' phase hook errored: " .. tostring(err))
 end
 
--- Resolve the running character's identity AT CALL TIME (every global is
--- read fresh; nothing is cached or upvalued at file scope). Foundry.DB's
--- identity gate shares this exact check, so "what counts as resolved" has one
--- definition. A client that has not yet resolved the player's own unit --
--- observed on a cold client-session login -- reports nil, "", or the literal
--- "Unknown" for its name or realm; a non-English client reports its own
--- localized placeholder instead (the same value the client itself compares a
--- unit name against elsewhere).
---
--- On a client with region-wide unique names (Forever), identity is first name
--- plus surname rather than first name plus realm: return 3 becomes "First
--- Surname" (or "First" alone once the surname settles unresolved -- see the
--- poll below), and return 4 carries the "First - Realm" key that character
--- used before this build, present only when a string surname resolved. A
--- regional client too old to report a surname (UnitNameUnmodified absent)
--- takes the ordinary path below instead. Every other client's return 3 IS
--- "Name - Realm", and return 4 there is always nil.
---
--- Returns (name, realm, key, legacyKey) on success, or (nil, msg, reason) on
--- refusal -- reason is "surname" only when a regional surname has not yet
--- settled. No side effects; identityResolved(), just below, is the only
--- trace point.
+-- Returns (name, realm, key, legacyKey), or (nil, msg, reason) if identity
+-- has not resolved yet. On a region-wide-unique-names client, key is
+-- name+surname rather than name+realm.
 function Lifecycle._PlayerIdentity()
     local regionalUnique = type(_G.RegionalUniqueNamesEnabled) == "function"
         and _G.RegionalUniqueNamesEnabled() == true
@@ -117,7 +65,7 @@ function Lifecycle._PlayerIdentity()
     if regionalName then
         name, surname = _G.UnitNameUnmodified("player")
     else
-        name = UnitName("player")   -- also the regional-without-UnitNameUnmodified path
+        name = UnitName("player")
     end
     local realm = GetRealmName()
     local unknown = _G.UNKNOWNOBJECT
@@ -134,7 +82,7 @@ function Lifecycle._PlayerIdentity()
         return name, realm, name .. " - " .. realm, nil
     end
 
-    if type(surname) ~= "string" then surname = nil end  -- type safety only; an empty string counts as present
+    if type(surname) ~= "string" then surname = nil end
 
     if surname == nil then
         if not surnameSettled then
@@ -146,26 +94,15 @@ function Lifecycle._PlayerIdentity()
     return name, realm, name .. " " .. surname, name .. " - " .. realm
 end
 
--- The hold's only reader of _PlayerIdentity's failure reason: traces a
--- regional surname that has not yet settled, for field diagnosis of a
--- lagging surname. _PlayerIdentity itself stays pure; this is the one place
--- the trace is set.
 local function identityResolved()
     local name, _, reason = Lifecycle._PlayerIdentity()
     if not name and reason == "surname" then Lifecycle._surnameLagObserved = true end
     return name ~= nil
 end
 
--- Forward-declared: schedulePoll and pollTick call each other and are called
--- by holdForIdentity below, before either gets its real body further down.
 local schedulePoll
 local pollTick
 
--- Register the shared watch events the first time any controller is held,
--- idempotent per controller. A login-only controller (one that never calls
--- OnAddonLoaded) is held here too, via the ADDON_LOADED dispatch's demux
--- entry: its login then waits for identity as well, since a login-phase
--- construct benefits from the same hold.
 local function holdForIdentity(c)
     if c._identityHeld then return end
     c._identityHeld = true
@@ -176,17 +113,12 @@ local function holdForIdentity(c)
         dispatcher:RegisterEvent("PLAYER_REGEN_ENABLED")
         identityWatching = true
     end
-    -- PLAYER_ENTERING_WORLD may already be past (a controller can be held
-    -- after login, e.g. an LoD catch-up); the poll covers that gap.
     if loginFired then
         schedulePoll()
     end
 end
 
--- Unregister the watch events. Called on release, when Destroy empties the
--- held list, and at logout/unloading. A pending poll tick still fires (the
--- WoW API's C_Timer.After, unlike C_Timer.NewTimer, gives no cancel handle),
--- but no-ops through identityStopped or an empty list.
+-- C_Timer.After gives no cancel handle, so a pending poll tick still fires.
 local function stopWatching()
     if not identityWatching then return end
     dispatcher:UnregisterEvent("PLAYER_ENTERING_WORLD")
@@ -195,16 +127,8 @@ local function stopWatching()
     identityWatching = false
 end
 
--- Release every held controller if identity now resolves. Returns false (and
--- releases nothing) if the list is empty, the session already stopped
--- releasing (logout/unloading), the player is in combat (Foundry is a shared
--- library; a consumer that creates secure frames at startup would hit
--- ADDON_ACTION_BLOCKED if release ran during a reconnect into combat), or
--- identity still fails to resolve. Otherwise fans out addon-loaded first,
--- then login (only if PLAYER_LOGIN already fired), and returns
--- (true, alRaised, alErr, lgRaised, lgErr) -- it NEVER surfaces an error
--- itself; each dispatcher branch surfaces after its own state work
--- completes (addon-loaded, then login, then the branch's own error).
+-- Refuses to release while the player is in combat, since a consumer that
+-- creates secure frames at startup could trip ADDON_ACTION_BLOCKED.
 local function releaseIdentityHeld(eventName)
     if #identityHeld == 0 or identityStopped then return false end
     if InCombatLockdown() then return false end
@@ -239,14 +163,8 @@ local function releaseIdentityHeld(eventName)
     return true, alRaised, alErr, lgRaised, lgErr
 end
 
--- The no-UNIT_NAME_UPDATE fallback. The name/realm wait is uncapped: the
--- client cannot render the player's own unit without a name, so identity
--- always resolves eventually. A regional surname wait is capped instead --
--- this tick's first run settles it, so a held controller releases under the
--- first name alone if the surname still has not arrived. Each tick costs one
--- identity check: on a regional client, three API calls (RegionalUniqueNamesEnabled,
--- UnitNameUnmodified or UnitName, GetRealmName) plus a few type probes; fewer
--- on an ordinary client. It re-arms itself only while something is still held.
+-- Fallback poll for clients that never fire UNIT_NAME_UPDATE; its first
+-- tick also settles a missing surname.
 pollTick = function()
     surnameSettled = true
     pollScheduled = false
@@ -265,40 +183,25 @@ schedulePoll = function()
     C_Timer.After(1, pollTick)
 end
 
--- Lazily create and wire the single shared dispatcher frame. Idempotent: every
--- call after the first returns without touching the existing frame, so the
--- three RegisterEvent calls happen exactly once for the whole library.
 local function ensureDispatcher()
     if dispatcher then return end
 
     local frame = CreateFrame("Frame")
     frame:Hide()
 
-    -- Demux by event name, then (for ADDON_LOADED) by addon name. Each _fire*
-    -- captures-and-returns its subscriber's error (never throws inline); the
-    -- dispatcher surfaces captured errors only AFTER the fan-out completes, so
-    -- one bad hook cannot abort the loop and starve other consumers' phases
-    -- (continue-on-error contract).
     frame:SetScript("OnEvent", function(_, event, ...)
         if event == "ADDON_LOADED" then
             local loadedName = ...
-            -- A later ADDON_LOADED -- for ANY addon, not just a held one's own --
-            -- can be the moment identity resolves, so try a release first: a
-            -- controller due to fire THIS SAME ADDON_LOADED can still be held
-            -- if identity is not resolved either way.
             local _, relAlRaised, relAlErr, relLgRaised, relLgErr = releaseIdentityHeld("ADDON_LOADED")
-            local c = byAddonName[loadedName]   -- O(1) demux; nil for addons we don't track
+            local c = byAddonName[loadedName]
             local raised, err
             if c then
-                byAddonName[loadedName] = nil   -- one-shot demux clear (ownedNames KEPT)
-                -- If anything is still held (the release above may have refused --
-                -- combat, or identity still unresolved for the held set), this
-                -- controller joins the hold too, even if ITS OWN identity check
-                -- would pass: firing it now would let it run ahead of an
-                -- already-waiting controller, and in the combat case, ahead of
-                -- the very deferral that's holding the other one back.
+                byAddonName[loadedName] = nil
+                -- Held if anything else is still held, even if this
+                -- controller's own identity check would pass, so it never
+                -- runs ahead of an already-waiting controller.
                 if #identityHeld == 0 and identityResolved() then
-                    raised, err = c:_fireAddonLoaded() -- single fire; raised flag, never thrown inline
+                    raised, err = c:_fireAddonLoaded()
                 else
                     holdForIdentity(c)
                 end
@@ -307,37 +210,29 @@ local function ensureDispatcher()
             if relLgRaised then surfaceHookError("login", relLgErr) end
             if raised then surfaceHookError("addon-loaded", err) end
         elseif event == "PLAYER_LOGIN" then
-            -- Release BEFORE setting loginFired: a controller released here gets
-            -- its login from the ordinary fan-out below, because release's own
-            -- login fan is gated on loginFired and has not seen it flip yet.
+            -- Released before loginFired flips, so a released controller
+            -- gets its login from the fan-out below, not from release.
             local _, relAlRaised, relAlErr, relLgRaised, relLgErr = releaseIdentityHeld("PLAYER_LOGIN")
-            loginFired = true                   -- central flag, set once
-            -- SNAPSHOT the subscriber set BEFORE the fan-out: a hook may New +
-            -- OnLogin a controller mid-loop, mutating loginControllers DURING the
-            -- traversal. In Lua 5.1, assigning a new key while iterating a table
-            -- with pairs() is undefined and can SKIP existing entries, starving
-            -- other consumers' phases. Iterating a pre-fan-out array copy fixes the
-            -- membership at fire time; a controller registered mid-fan-out is
-            -- intentionally NOT in this snapshot and catches up synchronously in
-            -- OnLogin (loginFired is already true).
+            loginFired = true
+            -- Snapshot before the fan-out: mutating loginControllers with
+            -- pairs() mid-iteration is undefined in Lua 5.1.
             local snapshot, n = {}, 0
             for c in pairs(loginControllers) do n = n + 1; snapshot[n] = c end
             local raised, firstErr = false, nil
             for i = 1, n do
                 local c = snapshot[i]
-                if not c._identityHeld then    -- a held controller's login stays queued
-                    local r, e = c:_fireLogin() -- never aborts; returns (raised, err)
+                if not c._identityHeld then
+                    local r, e = c:_fireLogin()
                     if r and not raised then raised, firstErr = true, e end
                 end
             end
             if relAlRaised then surfaceHookError("addon-loaded", relAlErr) end
             if relLgRaised then surfaceHookError("login", relLgErr) end
-            if raised then surfaceHookError("login", firstErr) end  -- surface ONLY after the full fan-out
+            if raised then surfaceHookError("login", firstErr) end
         elseif event == "PLAYER_ENTERING_WORLD" then
             local _, relAlRaised, relAlErr, relLgRaised, relLgErr = releaseIdentityHeld("PLAYER_ENTERING_WORLD")
             if #identityHeld > 0 then
-                schedulePoll()   -- PLAYER_ENTERING_WORLD may be the last resolution
-                                 -- signal before UNIT_NAME_UPDATE; keep covering the gap
+                schedulePoll()
                 if F.IS_DEV_BUILD and not devNoticePrinted then
                     devNoticePrinted = true
                     local names = {}
@@ -351,7 +246,6 @@ local function ensureDispatcher()
             if relAlRaised then surfaceHookError("addon-loaded", relAlErr) end
             if relLgRaised then surfaceHookError("login", relLgErr) end
         elseif event == "UNIT_NAME_UPDATE" then
-            -- Unit-registered to "player" only; no unit-argument compare needed.
             local _, relAlRaised, relAlErr, relLgRaised, relLgErr = releaseIdentityHeld("UNIT_NAME_UPDATE")
             if relAlRaised then surfaceHookError("addon-loaded", relAlErr) end
             if relLgRaised then surfaceHookError("login", relLgErr) end
@@ -360,7 +254,7 @@ local function ensureDispatcher()
             if relAlRaised then surfaceHookError("addon-loaded", relAlErr) end
             if relLgRaised then surfaceHookError("login", relLgErr) end
         elseif event == "ADDONS_UNLOADING" and unloadingSupported then
-            identityStopped = true   -- a held session never fires its hooks or writes
+            identityStopped = true
             stopWatching()
             local closingClient = ...
             local snapshot, n = {}, 0
@@ -378,7 +272,7 @@ local function ensureDispatcher()
             end
             if raised then surfaceHookError("unloading", firstErr) end
         elseif event == "PLAYER_LOGOUT" then
-            identityStopped = true   -- a held session never fires its hooks or writes
+            identityStopped = true
             stopWatching()
             local snapshot, n = {}, 0
             for c in pairs(loginControllers) do n = n + 1; snapshot[n] = c end
@@ -390,14 +284,8 @@ local function ensureDispatcher()
                     if r and not raised then raised, firstErr = true, e end
                 end
             end
-            -- Post-logout fan-out (private seam). Runs strictly AFTER the consumer
-            -- logout fan-out completes -- so a consumer's final writes are in place
-            -- before the DB strip walks them (spec §6.4 contract 2) -- and strictly
-            -- BEFORE the deferred surfacing below: surfacing first would raise (dev
-            -- build) and skip the strip whenever a consumer logout hook errored,
-            -- defeating the continue-on-error contract the strip depends on (§6.4
-            -- contract 1). Each callback is captured so one cannot starve another;
-            -- DB owns finer pcall-per-store isolation beneath this.
+            -- Runs after consumer logout hooks and before error surfacing,
+            -- so the DB strip sees final writes even if a hook errored.
             local plRaised, plFirstErr = false, nil
             for i = 1, #postLogout do
                 local ok, e = pcall(postLogout[i])
@@ -418,12 +306,8 @@ local function ensureDispatcher()
         unloadingSupported = true
     end
 
-    -- Late-creation catch-up (the login analogue of OnAddonLoaded's
-    -- IsAddOnLoaded probe): if the first controller of the session is created
-    -- after PLAYER_LOGIN (an all-Load-on-Demand consumer), the one-shot event
-    -- has already fired and will never reach this frame. Seed loginFired from
-    -- the authoritative IsLoggedIn() at dispatcher-creation time so OnLogin
-    -- handlers aren't silently dropped.
+    -- Seeds loginFired from IsLoggedIn(), since a dispatcher created after
+    -- PLAYER_LOGIN (all-Load-on-Demand) never sees that one-shot event.
     if type(IsLoggedIn) == "function" and IsLoggedIn() then
         loginFired = true
     end
@@ -431,14 +315,7 @@ local function ensureDispatcher()
     dispatcher = frame
 end
 
--- Private post-logout-fan-out registration seam (spec §6.4). The underscore
--- name keeps it off the public API, so it does not affect Lifecycle.API_VERSION (the
--- _TestFire precedent). Foundry.DB registers its logout strip here exactly
--- once, at its first :New, and calls ensureDispatcher() itself so the
--- PLAYER_LOGOUT registration exists even for a DB-only consumer that never
--- calls Lifecycle:New (§6.4 contract 1 holds regardless). Registered
--- callbacks run after the consumer logout fan-out and before deferred error
--- surfacing (see the PLAYER_LOGOUT branch above).
+-- Private seam Foundry.DB uses to register its logout strip.
 function Lifecycle._RegisterPostLogout(fn)
     if type(fn) ~= "function" then
         F:RaiseDevError("Lifecycle._RegisterPostLogout: fn must be a function")
@@ -455,22 +332,13 @@ end
 local Controller = {}
 Controller.__index = Controller
 
--- Private fire wrappers the dispatcher calls. Each pcall-wraps the subscriber's
--- handler and returns (raised, err): a boolean flag plus the captured value,
--- which may itself be falsy. The dispatcher gates surfacing on the flag, never
--- the value's truthiness, so a falsy error is never swallowed, and surfaces it
--- only AFTER the fan-out completes (an un-pcall'd RaiseDevError here would
--- abort the loop and starve remaining subscribers). A controller unsubscribed
--- mid-loop (Destroy) is skipped. Each phase is one-shot: the hook is cleared
--- before invocation so a second signal does not re-fire it.
-
 function Controller:_fireAddonLoaded()
     if self._destroyed then return false end
     local fn = self._hooks.addonLoaded
     if not fn then return false end
-    self._hooks.addonLoaded = nil   -- one-shot: free the slot before invoking
+    self._hooks.addonLoaded = nil
     local ok, err = pcall(fn, self._owner)
-    if not ok then return true, err end   -- RAISED (err may be nil/false); the flag is the gate
+    if not ok then return true, err end
     return false
 end
 
@@ -504,13 +372,10 @@ function Controller:_fireUnloading(closingClient)
     return false
 end
 
--- Register the one-shot addon-loaded hook. Fires once when ADDON_LOADED matches
--- addonName, OR immediately via catch-up if the addon is already loaded -- unless
--- the character's identity is not yet resolved, in which case the catch-up holds
--- the controller instead of firing (see the header note on addon-loaded holds). A
--- second registration is rejected via RaiseDevError (one hook per phase per
--- controller; mirrors Events' one-handler-per-event). Validation is atomic: a
--- rejected call mutates nothing.
+-- Fires once when ADDON_LOADED matches, or synchronously, before this call
+-- returns, if the addon is already loaded (deferred if identity is still
+-- resolving). One hook per phase per controller; re-registering raises a
+-- dev error.
 function Controller:OnAddonLoaded(handler)
     if self._destroyed then
         F:RaiseDevError("Lifecycle:OnAddonLoaded called on a destroyed controller")
@@ -529,14 +394,8 @@ function Controller:OnAddonLoaded(handler)
     self._registered.addonLoaded = true
     self._hooks.addonLoaded = handler
 
-    -- Load-on-Demand catch-up, synchronous inside this registration call (the
-    -- hook can fire before this method returns -- re-entrancy-relevant timing):
-    -- fire now ONLY if the addon has FINISHED loading.
-    -- IsAddOnLoaded returns (loadedOrLoading, loaded); the first is true while
-    -- still loading, and gating on it would fire the hook before SavedVariables
-    -- are available -- defeating the hook's purpose for a consumer registering
-    -- during its own addon's load. Gate on the second (finished) value; a
-    -- still-loading addon stays enrolled and fires on the real ADDON_LOADED.
+    -- IsAddOnLoaded's second return is "finished"; gating on the first would
+    -- fire before SavedVariables exist.
     local alreadyLoaded = false
     if C_AddOns and C_AddOns.IsAddOnLoaded then
         local _, loaded = C_AddOns.IsAddOnLoaded(self._addonName)
@@ -544,10 +403,6 @@ function Controller:OnAddonLoaded(handler)
     end
     if alreadyLoaded then
         byAddonName[self._addonName] = nil
-        -- If anything is still held, this controller joins the hold too, even
-        -- if its own identity check would pass: firing here would let it run
-        -- ahead of an already-waiting controller (see the ADDON_LOADED branch
-        -- for the same rule and why it matters in combat).
         if #identityHeld == 0 and identityResolved() then
             local raised, err = self:_fireAddonLoaded()
             if raised then surfaceHookError("addon-loaded", err) end
@@ -557,12 +412,9 @@ function Controller:OnAddonLoaded(handler)
     end
 end
 
--- Register the one-shot player-login hook. Fires once on PLAYER_LOGIN, OR
--- immediately via catch-up if login already fired -- unless this controller is
--- currently held for identity, in which case the catch-up waits too (a
--- login-phase construct benefits from the hold exactly as an addon-loaded one
--- does; see the header note). Adds the controller to the login/logout
--- broadcast set. Re-register rejected. Validation is atomic.
+-- Fires once on PLAYER_LOGIN, or synchronously, before this call returns,
+-- if login already fired (deferred if this controller is held for
+-- identity). Re-registering raises a dev error.
 function Controller:OnLogin(handler)
     if self._destroyed then
         F:RaiseDevError("Lifecycle:OnLogin called on a destroyed controller")
@@ -582,20 +434,14 @@ function Controller:OnLogin(handler)
     self._hooks.login = handler
     loginControllers[self] = true
 
-    -- Login catch-up: if PLAYER_LOGIN already fired, fire now (synchronously) --
-    -- unless this controller is currently held for identity; its login then
-    -- catches up on release instead. This is the central replacement for a
-    -- consumer hand-rolling a post-login retry timer.
     if loginFired and not self._identityHeld then
         local raised, err = self:_fireLogin()
         if raised then surfaceHookError("login", err) end
     end
 end
 
--- Register the one-shot player-logout hook. Fires once on PLAYER_LOGOUT. Adds
--- the controller to the login/logout broadcast set. Re-register rejected.
--- Logout is a game-signal phase; it is NOT fired by Destroy. Validation is
--- atomic.
+-- Fires once on PLAYER_LOGOUT. Not fired by Destroy. Re-registering raises a
+-- dev error.
 function Controller:OnLogout(handler)
     if self._destroyed then
         F:RaiseDevError("Lifecycle:OnLogout called on a destroyed controller")
@@ -616,10 +462,8 @@ function Controller:OnLogout(handler)
     loginControllers[self] = true
 end
 
--- Register the one-shot pre-unload hook. It fires when the client emits
--- ADDONS_UNLOADING, passing its closingClient boolean. Clients that do not
--- expose a valid ADDONS_UNLOADING event keep the hook silent. This hook and
--- OnLogout bridge distinct native events; no ordering relation is promised.
+-- Fires once on ADDONS_UNLOADING, passing closingClient. Silent on clients
+-- without that event. No ordering relation with OnLogout is promised.
 function Controller:OnUnloading(handler)
     if self._destroyed then
         F:RaiseDevError("Lifecycle:OnUnloading called on a destroyed controller")
@@ -640,10 +484,8 @@ function Controller:OnUnloading(handler)
     unloadingControllers[#unloadingControllers + 1] = self
 end
 
--- The escape hatch. Returns the live SHARED dispatcher frame and a shallow
--- read-only snapshot of this controller's hook set; mutating the snapshot
--- cannot affect live dispatch. Two controllers' .frame return the same
--- identity by design -- the inverse of Events' per-controller frame.
+-- Returns the shared dispatcher frame and a read-only snapshot of this
+-- controller's hooks, for advanced/escape-hatch use.
 function Controller:GetNativeHandles()
     if self._destroyed then
         F:RaiseDevError("Lifecycle:GetNativeHandles called on a destroyed controller")
@@ -661,11 +503,8 @@ function Controller:GetNativeHandles()
     }
 end
 
--- Tear down: unsubscribe from every dispatcher table, release refs, mark
--- destroyed. Releasing addonName from ownedNames lets a later :New reuse it.
--- Explicitly DOES NOT fire the logout hook -- Destroy opts the owner out of
--- all remaining phases, including logout. The shared dispatcher frame is
--- never destroyed here; it is library state, kept alive for the session.
+-- Unsubscribes from every phase and frees the addon name for reuse. Does not
+-- fire the logout hook.
 function Controller:Destroy()
     if self._destroyed then
         F:RaiseDevError("Lifecycle:Destroy called on a destroyed controller")
@@ -702,15 +541,10 @@ end
 -- Factory
 --------------------------------------------------------------------------------
 
--- Create a per-owner controller. Primary form adopts an EXISTING table: owner
--- is the consumer's real addon table (Homestead's HA.Addon, BawrSpam's NS).
--- The secondary form (nil owner) yields a plain {} controller-only object.
--- Lifecycle writes NOTHING into owner; all bookkeeping lives on the controller
--- and the dispatcher upvalues. addonName is the TOC name used as the
--- ADDON_LOADED demux key. A second :New for an addonName that already owns a
--- live Lifecycle is rejected -- checked against the PERSISTENT ownedNames
--- registry, not the one-shot byAddonName demux, so the guard holds for the
--- controller's whole life.
+-- Creates a per-owner controller. owner (optional) is the consumer's own
+-- addon table; addonName is the TOC name used to match ADDON_LOADED. A
+-- second :New for a live addonName raises a dev error until Destroy'd.
+-- Lifecycle writes nothing into owner.
 function Lifecycle:New(owner, addonName)
     if owner ~= nil and type(owner) ~= "table" then
         F:RaiseDevError("Lifecycle:New: owner, when supplied, must be a table")
@@ -732,14 +566,11 @@ function Lifecycle:New(owner, addonName)
     c._owner = owner or {}
     c._addonName = addonName
     c._hooks = {}
-    -- _registered persists a phase's registration for the controller's whole
-    -- life, separate from _hooks (which the one-shot fire clears) -- a second
-    -- OnX is rejected even after its phase fired.
+    -- _registered outlives _hooks (cleared on fire), so a second OnX is
+    -- refused even after its phase fired.
     c._registered = { addonLoaded = false, login = false, logout = false, unloading = false }
     c._destroyed = false
 
-    -- Enrol for the pending ADDON_LOADED demux and the persistent re-register
-    -- registry; OnAddonLoaded's catch-up clears byAddonName if already loaded.
     byAddonName[addonName] = c
     ownedNames[addonName] = c
 
@@ -750,19 +581,8 @@ end
 -- Dev-only test seam
 --------------------------------------------------------------------------------
 
--- The in-game analogue of the out-of-game harness's T.Fire: drive a startup
--- phase through the LIVE shared dispatcher's real OnEvent path without
--- touching the frame's event registration. Exists so the otherwise-
--- unobservable phases (ADDON_LOADED can't replay without a client restart;
--- PLAYER_LOGOUT ends the session) can be exercised by the dev-gated Lifecycle
--- self-test (Dev/LifecycleSelfTest.lua).
---
--- Hard-gated on F.IS_DEV_BUILD: a release build routes to F:RaiseDevError and
--- does nothing, so it can never become a player-reachable phase injector. It
--- also refuses if no :New has yet created the dispatcher.
---
--- `phase` is one of "addon-loaded" | "login" | "logout"; for "addon-loaded",
--- `addonName` is the demux key the dispatcher matches (mirrors the WoW payload).
+-- Dev-build-only test seam; replays a startup phase through the live
+-- dispatcher. Never available in a release build.
 function Lifecycle:_TestFire(phase, addonName)
     if not F.IS_DEV_BUILD then
         F:RaiseDevError("Lifecycle:_TestFire is dev-build only and must never run in a "
