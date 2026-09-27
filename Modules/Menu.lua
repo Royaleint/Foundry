@@ -1,28 +1,16 @@
 -- Foundry.Menu
 --
--- A thin bridge over Blizzard's modern menu system (Blizzard_Menu / MenuUtil,
--- present on Retail 11.0+ and all Classic-family flavors). Encapsulates the
--- repeated MenuUtil.CreateContextMenu and dropdownButton:SetupMenu callsites
--- consumers carry by hand. Provides a named, lifecycle-tracked controller for
--- context menus and persistent dropdowns.
---
--- The consumer owns all menu content — the builder function receives the raw
--- Blizzard rootDescription and calls Create* methods directly. Foundry owns the
--- entry-point dispatch, the named-registration duplicate-refusal, and the
--- in-place destroy wrapper. MenuResponse is a Blizzard global; consumers access
--- it directly at runtime. Foundry.Menu does not alias or re-export it.
---
--- All flavors: MenuUtil is present on Retail 11.0+, Classic Era 1.15.x,
--- Pandaria Classic 5.5.x, and TBC Classic 2.5.x (confirmed via ui-toc-list.txt
--- manifests and active consumer callsites). No fallback path exists or is needed.
+-- A controller for Blizzard context menus and persistent dropdowns, built
+-- on MenuUtil. The builder function receives the raw rootDescription and
+-- calls Create* methods on it directly. MenuResponse is a Blizzard global,
+-- not re-exported here.
 
 local F = _G.Foundry_1_0
 if not F then
     error("Foundry-1.0: Menu.lua requires the Foundry-1.0 bootstrap (Foundry.lua) "
         .. "to have loaded first; _G.Foundry_1_0 is missing.", 0)
 end
--- Guarded-embedding stand-down (§2.2b): if this module is already registered on the
--- winning copy, this is a redundant embedded copy — load nothing.
+-- Already registered by another embedded copy: load nothing.
 if F:HasModule("Menu") then return end
 
 local Menu = {}
@@ -39,16 +27,12 @@ end
 
 --------------------------------------------------------------------------------
 -- Module-level live-key registry
--- Maps name string → true for every controller that has not been :Destroy()ed.
 --------------------------------------------------------------------------------
 
 local liveKeys = {}
 
 --------------------------------------------------------------------------------
 -- Anonymous-name counter
--- Incremented once per :New call that omits config.name. Never reused within a
--- session; named "F.Menu.anon.N" (1-based). Callers should not rely on the
--- counter value — the name is opaque and for duplicate-refusal only.
 --------------------------------------------------------------------------------
 
 local anonCounter = 0
@@ -68,30 +52,22 @@ local function refuseIfDestroyed(self, method)
     return false
 end
 
--- Opens a one-shot context menu anchored near owner. Extra args are forwarded
--- verbatim to the builder after rootDescription — matching Blizzard's convention
--- for MenuUtil.CreateContextMenu extra-args passthrough.
+-- Opens a one-shot context menu anchored near owner; extra args forward to
+-- the builder after rootDescription.
 function Controller:CreateContextMenu(owner, ...)
     if refuseIfDestroyed(self, "CreateContextMenu") then return end
     _G.MenuUtil.CreateContextMenu(owner, self._generatorWrapper, ...)
 end
 
--- Installs a persistent generator on a Blizzard DropdownButton frame. The same
--- generatorWrapper closure is reused; the _destroyed check fires on every open.
--- Calling :SetupDropdown on a destroyed controller raises via refuseIfDestroyed —
--- the loud path, distinct from the silent no-op when Blizzard fires an already-
--- installed wrapper on a destroyed controller.
+-- Installs a persistent generator on a Blizzard DropdownButton frame.
 function Controller:SetupDropdown(button)
     if refuseIfDestroyed(self, "SetupDropdown") then return end
     button:SetupMenu(self._generatorWrapper)
 end
 
--- Marks the controller destroyed, frees the duplicate-refusal key, and disables
--- the registered wrapper in-place. Neither MenuUtil.CreateContextMenu nor
--- button:SetupMenu offers a public removal API; the _destroyed flag in the shared
--- closure is the designed teardown path — mirrors Tooltip exactly.
--- Idempotent: a second :Destroy() is a silent no-op.
--- Ordering: liveKeys clear MUST precede self._name = nil (ordering bug if reversed).
+-- Destroys the controller and disables the wrapper in-place. Idempotent.
+-- Clear liveKeys before nil-ing _name. An installed dropdown stays
+-- attached but builds nothing after Destroy.
 function Controller:Destroy()
     if self._destroyed then return end
     liveKeys[self._name] = nil
@@ -101,11 +77,8 @@ function Controller:Destroy()
     self._generatorWrapper = nil
 end
 
--- Returns the raw Blizzard objects this controller was built against. A fresh
--- table is returned per call; mutating it does not corrupt controller state.
--- Keys: menuUtil (_G.MenuUtil), menu (_G.Menu — may be nil on clients where it
--- is absent; advisory). Consumers who need Menu.ModifyMenu or other raw APIs
--- access them here.
+-- Returns the raw Blizzard objects: menuUtil (_G.MenuUtil), menu (_G.Menu,
+-- may be nil). Use this for Menu.ModifyMenu or other raw APIs.
 function Controller:GetNativeHandles()
     if refuseIfDestroyed(self, "GetNativeHandles") then return end
     return {
@@ -118,51 +91,22 @@ end
 -- Extending Blizzard-owned tagged menus (Menu.ModifyMenu)
 --------------------------------------------------------------------------------
 
--- The API above wraps menus the consumer owns: CreateContextMenu and
--- SetupDropdown both build content the consumer defines from scratch.
--- Extending a menu Blizzard owns (a world map filter dropdown, a unit frame
--- right-click menu, and so on) is a different shape, and Foundry.Menu has no
--- wrapper for it. The raw global Menu.ModifyMenu(tag, callback) is the
--- Blizzard-supported consumer path for that case, not a workaround;
--- GetNativeHandles() above hands back the raw Menu table for exactly this
--- purpose. Two disciplines govern it, both load-bearing in Blizzard's own
--- implementation:
---
---   1. Register once per tag. Calling Menu.ModifyMenu(tag, callback) again
---      for a tag that already has a registration adds a second, independent
---      callback; it does not replace the first. If that tag's menu was
---      already built this session, a duplicate registration also adds its
---      section to the existing menu immediately, appended after the
---      earlier registration's section. Gate registration behind the
---      consumer's own idempotent init path.
---   2. Build from live state inside the callback. Blizzard fires the
---      registered callback every time it builds the tagged menu's
---      description (every open, plus some dropdown refreshes), and once
---      more immediately at registration time if that tag was already built
---      this session. The callback closure must read current data when it
---      runs; a value captured back when Menu.ModifyMenu was called goes
---      stale the moment the underlying state changes.
---
--- Menu tags are addon-facing string identifiers. Blizzard documents one
--- naming convention (UnitPopup tags follow MENU_UNIT_<UNIT_TYPE>) in
--- Blizzard_Menu's implementation guide; for any other tag, EventTrace shows
--- a "Menu.OpenMenuTag" event when the tagged menu opens, and
--- Menu.PrintOpenMenuTags() lists every tag currently open.
+-- To extend a Blizzard-owned tagged menu (not one this module builds), use
+-- the raw Menu.ModifyMenu(tag, callback) via GetNativeHandles(). Register
+-- once per tag (a second call adds a duplicate section) and read live state
+-- inside the callback (it fires on every menu build, so captured values go
+-- stale).
 
 --------------------------------------------------------------------------------
 -- Factory
 --------------------------------------------------------------------------------
 
--- Create a menu controller. Validation is atomic: every field is checked before
--- any Blizzard API is called. A rejected :New leaves prior registrations untouched.
---
+-- Creates a menu controller.
 -- Config fields:
---   builder (required) — function(owner, rootDescription, ...) called every time
---                         the menu opens. Receives the owner and raw Blizzard
---                         rootDescription. Extra args forwarded from :CreateContextMenu.
---   name    (optional, non-empty string) — duplicate-refusal key; defaults to
---                         "F.Menu.anon.N" (N = module-level counter, never reused).
---                         Two live controllers with the same name are refused.
+--   builder (required) — function(owner, rootDescription, ...), called each
+--                         time the menu opens.
+--   name    (optional)  — duplicate-refusal key; defaults to an
+--                         auto-generated name.
 function Menu:New(config)
     if type(config) ~= "table" then
         F:RaiseDevError("Menu:New: config must be a table")
@@ -192,8 +136,6 @@ function Menu:New(config)
         return
     end
 
-    -- Feature-detect MenuUtil last (house style): a consumer with a typo in
-    -- builder sees the builder error, not a misleading "MenuUtil absent".
     if not hasMenuUtil() then
         F:RaiseDevError("Menu:New: MenuUtil is not available on this client; "
             .. "Foundry.Menu requires Blizzard_Menu (Retail 11.0+, Classic Era 1.15.x, "
@@ -201,9 +143,6 @@ function Menu:New(config)
         return
     end
 
-    -- generatorWrapper captures c by upvalue so :Destroy() (which sets
-    -- c._destroyed) silences all future deliveries with no unregister call --
-    -- identical to Tooltip's in-place disable pattern.
     local c = setmetatable({}, Controller)
     c._name      = name
     c._builder   = builder
