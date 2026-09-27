@@ -10,8 +10,8 @@ if not F then
     error("Foundry-1.0: Commands.lua requires the Foundry-1.0 bootstrap (Foundry.lua) "
         .. "to have loaded first; _G.Foundry_1_0 is missing.", 0)
 end
--- Guarded-embedding stand-down (§2.2b): if this module is already registered on the
--- winning copy, this is a redundant embedded copy — load nothing.
+-- If this module is already registered on the winning copy, this is a
+-- redundant embedded copy; load nothing.
 if F:HasModule("Commands") then return end
 
 local Commands = {}
@@ -27,9 +27,8 @@ local restrictionTypes = {
     { key = "Chat", name = "chat" },
 }
 
--- Refuse commands while any client-reported addon restriction is active. On
--- clients without the modern restriction namespace, retain the established
--- combat-only behavior.
+-- Built-in guard: refuses commands while combat (or another client-reported
+-- addon restriction) is active.
 function Commands.Guards.NotRestricted()
     local restrictedActions = _G.C_RestrictedActions
     local enum = _G.Enum
@@ -52,7 +51,6 @@ function Commands.Guards.NotRestricted()
     return true
 end
 
--- Trim leading and trailing whitespace; internal whitespace is preserved.
 local function trim(s)
     return s:match("^%s*(.-)%s*$")
 end
@@ -64,7 +62,6 @@ end
 local Controller = {}
 Controller.__index = Controller
 
--- Emit one line through the configured printer, or the default chat frame.
 function Controller:_print(line)
     if self._printer then
         self._printer(line)
@@ -73,9 +70,9 @@ function Controller:_print(line)
     end
 end
 
--- Register a subcommand. Validation is atomic: the primary name and every
--- alias are validated into a temporary set before any mutation, so a bad
--- alias leaves the controller unchanged rather than half-registered.
+-- Registers a subcommand: spec.name, spec.handler, and optionally
+-- spec.args/help/aliases. A bad alias leaves the controller unchanged. Name
+-- "help" and "help "-prefixed names are reserved.
 function Controller:Register(spec)
     if self._destroyed then
         F:RaiseDevError("Commands:Register called on a destroyed controller")
@@ -105,16 +102,11 @@ function Controller:Register(spec)
             .. "' requires a handler function")
         return
     end
-    -- args is a display hint PrintHelp concatenates into the help line; a
-    -- non-string stored here would defer the type error to help-render time,
-    -- in the player's chat, long after the bad Register call.
     if spec.args ~= nil and type(spec.args) ~= "string" then
         F:RaiseDevError("Commands:Register: spec.args, when supplied, must be a "
             .. "string (got " .. type(spec.args) .. ")")
         return
     end
-    -- help has the identical deferred-error exposure (FND-034): a table stored
-    -- here would print a raw pointer into the player's chat at render time.
     if spec.help ~= nil and type(spec.help) ~= "string"
         and type(spec.help) ~= "function" then
         F:RaiseDevError("Commands:Register: spec.help, when supplied, must be a "
@@ -133,7 +125,6 @@ function Controller:Register(spec)
         return
     end
 
-    -- Validate every alias before mutating anything.
     local aliasKeys, aliasDisplays = {}, {}
     if spec.aliases ~= nil then
         if type(spec.aliases) ~= "table" then
@@ -174,7 +165,6 @@ function Controller:Register(spec)
         end
     end
 
-    -- All valid; commit atomically.
     local entry = {
         name = primary,
         display = spec.name,
@@ -190,7 +180,7 @@ function Controller:Register(spec)
     end
 end
 
--- Remove a subcommand by its primary name or any alias. Idempotent.
+-- Removes a subcommand by its primary name or any alias. Idempotent.
 function Controller:Unregister(name)
     if self._destroyed then
         F:RaiseDevError("Commands:Unregister called on a destroyed controller")
@@ -208,9 +198,6 @@ function Controller:Unregister(name)
     end
 end
 
--- Find the longest registered name (primary or alias) that is a word-boundary
--- prefix of the input. Returns the matched entry and the original-case
--- remainder, or nil.
 function Controller:_match(trimmed)
     local lowered = trimmed:lower()
     local best, bestLen
@@ -226,12 +213,13 @@ function Controller:_match(trimmed)
     return best, trim(trimmed:sub(bestLen + 1))
 end
 
--- Drive the controller from a raw input string.
+-- Routes a raw input string: guard, then empty input (defaultHandler or
+-- help), then "help", then the longest matching subcommand, then
+-- unknownMessage (or "Unknown command: <input>").
 function Controller:Dispatch(input)
     if self._destroyed then return end
     input = input or ""
 
-    -- 1. Guard runs first, on the raw input.
     if self._guard then
         local allowed, reason = self._guard(input)
         if not allowed then
@@ -244,7 +232,6 @@ function Controller:Dispatch(input)
 
     local trimmed = trim(input)
 
-    -- 2. Empty input.
     if trimmed == "" then
         if self._defaultHandler then
             self._defaultHandler()
@@ -254,24 +241,18 @@ function Controller:Dispatch(input)
         return
     end
 
-    -- 3. Reserved 'help' token at a word boundary.
     local lowered = trimmed:lower()
     if lowered == "help" or lowered:match("^help%s") then
         self:PrintHelp()
         return
     end
 
-    -- 4. Longest-prefix subcommand match.
     local entry, remainder = self:_match(trimmed)
     if entry then
         entry.handler(remainder)
         return
     end
 
-    -- 5. Unknown command. Print the (consumer-overridable) message
-    -- only; the auto-help command list is NOT appended. A consumer that wants
-    -- to point users at the list includes a hint in `unknownMessage`
-    -- (e.g. "type /x help"). Foundry hardcodes no player-facing string.
     local msg = self._unknownMessage
     if type(msg) == "function" then
         msg = msg(trimmed)
@@ -284,7 +265,8 @@ function Controller:Dispatch(input)
     end
 end
 
--- Emit the auto-generated help.
+-- Prints the auto-generated help: description, then each subcommand with
+-- its aliases, args hint, and help text, alphabetically.
 function Controller:PrintHelp()
     if self._destroyed then
         F:RaiseDevError("Commands:PrintHelp called on a destroyed controller")
@@ -321,12 +303,8 @@ function Controller:PrintHelp()
         end
         local help = entry.help
         if type(help) == "function" then
-            -- A raising help function must not abort the render mid-list from
-            -- the player typing the bare slash command (FND-034): its line
-            -- falls back to no help text and the error surfaces once after
-            -- the loop. A non-string return is refused the same way rather
-            -- than tostring-ing a pointer into chat. Gate on the RAISED flag,
-            -- never the error value's truthiness (§3.4.1).
+            -- A help function that raises or returns a non-string falls
+            -- back to no help text for that line; it does not abort the list.
             local ok, result = pcall(help)
             if ok and type(result) == "string" then
                 help = result
@@ -352,7 +330,8 @@ function Controller:PrintHelp()
     end
 end
 
--- The progressive-disclosure escape hatch.
+-- Returns the slash globals, the SlashCmdList key, and the raw handler, for
+-- advanced/escape-hatch use.
 function Controller:GetNativeHandles()
     if self._destroyed then
         F:RaiseDevError("Commands:GetNativeHandles called on a destroyed controller")
@@ -369,10 +348,7 @@ function Controller:GetNativeHandles()
     }
 end
 
--- Tear down every slash registration this controller owns. Idempotent: a
--- second Destroy is a no-op. The slash-list key is cleared during teardown so
--- a stale controller can never nil SlashCmdList for a name a fresh :New has
--- legitimately reclaimed since.
+-- Tears down every slash registration this controller owns. Idempotent.
 function Controller:Destroy()
     if self._destroyed then return end
     if self._restrictionEvents then
@@ -395,7 +371,9 @@ end
 -- Factory
 --------------------------------------------------------------------------------
 
--- Create a controller scoped to one consumer.
+-- Creates a controller scoped to one consumer. config.name and
+-- config.slashes are required; defaultHandler, guard, printer, description,
+-- unknownMessage, and restrictionNotice are optional.
 function Commands:New(config)
     if type(config) ~= "table" then
         F:RaiseDevError("Commands:New: config must be a table")
@@ -430,7 +408,6 @@ function Commands:New(config)
         return
     end
 
-    -- Normalize and validate the slash strings up front, before any mutation.
     local slashes = {}
     for i = 1, #config.slashes do
         local s = config.slashes[i]
@@ -453,7 +430,6 @@ function Commands:New(config)
 
     local key = config.name:upper()
 
-    -- Slash-name collision detection before any global mutation.
     local collision
     if SlashCmdList[key] ~= nil then
         collision = "SlashCmdList key '" .. key .. "'"
@@ -494,9 +470,8 @@ function Commands:New(config)
         c:Dispatch(msg)
     end
 
-    -- Opt-in only: consumers that use the built-in guard without this setting
-    -- get no extra frame and no unsolicited chat output. The event is checked
-    -- dynamically so clients that do not expose it remain silent.
+    -- restrictionNotice (opt-in): prints a notice when a restriction is
+    -- about to activate. Silent on clients without the event.
     if config.restrictionNotice then
         local eventUtils = _G.C_EventUtils
         if eventUtils and type(eventUtils.IsEventValid) == "function"
