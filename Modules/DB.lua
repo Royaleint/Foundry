@@ -446,7 +446,7 @@ function controllerMeta.__index(self, key)
 
     if DENY_LIST[key] then
         refuse("DB: AceDB feature '" .. key
-            .. "' is not supported by Foundry.DB (Charter §3.4)" .. REFERENCE_TAIL)
+            .. "' is not supported by Foundry.DB" .. REFERENCE_TAIL)
     end
 
     return nil
@@ -481,7 +481,7 @@ local function validateDefaults(defaults)
     local wildcard = findWildcard(defaults, "")
     if wildcard then
         return "DB:New: wildcard default key '" .. wildcard
-            .. "' is not supported by Foundry.DB (Charter §4.5)"
+            .. "' is not supported by Foundry.DB"
     end
     return nil
 end
@@ -575,7 +575,7 @@ function DB:New(config)
     if config.defaultProfile ~= true then
         refuse("DB:New: defaultProfile must be the literal true; "
             .. "named-shared-profile and per-character-profile modes are not "
-            .. "supported by Foundry.DB (Charter §2.1)")
+            .. "supported by Foundry.DB")
     end
 
     if config.defaults then
