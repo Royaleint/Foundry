@@ -2,7 +2,7 @@
 
 All notable changes to Foundry-1.0 are recorded here.
 
-## [Unreleased]
+## [1.0.106-beta.1] - 2026-09-26
 
 ### Added
 - **Foundry.Window**, a new module that makes a window draggable and
