@@ -2,6 +2,11 @@
 
 All notable changes to Foundry-1.0 are recorded here.
 
+## [1.0.107] - 2026-09-29
+
+### Fixed
+- Three Foundry.DB error messages no longer mention an internal document.
+
 ## [1.0.106] - 2026-09-26
 
 ### Added
