@@ -2,6 +2,11 @@
 
 All notable changes to Foundry-1.0 are recorded here.
 
+## [1.0.108] - 2026-10-01
+
+### Changed
+- Maintenance release in preparation for future modules.
+
 ## [1.0.107] - 2026-09-29
 
 ### Fixed
