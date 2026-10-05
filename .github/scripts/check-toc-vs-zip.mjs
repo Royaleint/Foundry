@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// check-toc-vs-zip.mjs — release-safety check (STU-064, canonical copy).
+// check-toc-vs-zip.mjs — release-safety check.
 //
 // Verifies that every file referenced by every TOC inside the packaged zip(s)
-// is actually present in the zip. Closes the FND-012 failure class: a
+// is actually present in the zip. Closes this failure class: a
 // `.pkgmeta` `ignore:` entry can strip a file the TOC still lists, which
 // ships one "Error loading <path>" per player per login with no CI signal.
 //
@@ -10,13 +10,12 @@
 // Requires: `unzip` on PATH (preinstalled on GitHub ubuntu runners).
 //
 // Scope: TOC-level references only. XML files can include further files;
-// transitive XML resolution is deliberately out of scope — the FND-012
-// incident class is TOC-level, and XML include errors surface at packaging
-// time far more often than ignore-stripping does.
+// transitive XML resolution is deliberately out of scope: the failure class
+// above is TOC-level, and XML include errors surface at packaging time far
+// more often than ignore-stripping does.
 //
-// SYNC-SOURCE: BawrLabs/scripts/release-checks/check-toc-vs-zip.mjs
-// Per-repo copies live at .github/scripts/ — edit the canonical copy and
-// re-copy; do not let them drift.
+// Shared release check: per-repo copies live at .github/scripts/. Edit the
+// master copy and re-copy; do not let copies drift.
 
 import { execFileSync } from "node:child_process";
 import { readdirSync, existsSync } from "node:fs";

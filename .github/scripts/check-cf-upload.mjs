@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-// check-cf-upload.mjs — release-safety check (STU-064, canonical copy).
+// check-cf-upload.mjs — release-safety check.
 //
 // After the CurseForge upload step, asks CF how many files it now holds for
 // the version just released. Anything other than exactly one is a loud
-// failure. Bounds the FND-015 risk class: the packager's two-layer retry
+// failure. Bounds the duplicate-upload risk: the packager's two-layer retry
 // (curl --retry inside upload_curseforge() plus an outer bash retry) makes a
 // silent duplicate upload structurally possible, and one unexplained
-// duplicate has already appeared on a studio project (Foundry v1.0.100,
+// duplicate has already appeared on an addon (Foundry v1.0.100,
 // root cause never confirmed).
 //
 // Auth: CF_CORE_API_KEY env — a free CurseForge Core API key
@@ -21,9 +21,8 @@
 // Test hook: --files-json <path> bypasses the network and reads the API
 // response shape from a fixture file.
 //
-// SYNC-SOURCE: BawrLabs/scripts/release-checks/check-cf-upload.mjs
-// Per-repo copies live at .github/scripts/ — edit the canonical copy and
-// re-copy; do not let them drift.
+// Shared release check: per-repo copies live at .github/scripts/. Edit the
+// master copy and re-copy; do not let copies drift.
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
@@ -67,7 +66,7 @@ const version = tag.replace(/^v/, "").replace(/-wago$/, "");
 
 // Boundary-aware version match, declared BEFORE the retry loop that uses it
 // (a const after the loop is a temporal-dead-zone crash on the armed network
-// path — caught at Gate 1; the fixture path never enters the loop).
+// path; the fixture path never enters the loop).
 // Rules: "2.5.3" must not match "2.5.30" (leading/trailing digit), must not
 // match "2.5.3.1" (dot-digit continuation), must not match "2.5.3-rc1"
 // (hyphen suffix = a different release), but MUST match "Addon-2.5.3.zip"
@@ -123,7 +122,7 @@ if (matches.length === 0) {
   process.exit(1);
 }
 if (matches.length > 1) {
-  console.error(`::error::check-cf-upload: ${matches.length} files match ${tag} — duplicate upload detected (FND-015 class). Delete the extra file on CF's file management page and investigate the run log.`);
+  console.error(`::error::check-cf-upload: ${matches.length} files match ${tag} — duplicate upload detected. Delete the extra file on CF's file management page and investigate the run log.`);
   process.exit(1);
 }
 console.log("check-cf-upload: PASSED — exactly one file for this release.");
