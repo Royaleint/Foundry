@@ -11,9 +11,9 @@ Foundry exists to give addon authors a focused, modular toolkit built on Blizzar
 Foundry is:
 
 - **Bridges where bridges are missing.** Foundry covers modern Blizzard APIs that don't have actively maintained community wrappers (the new menu system, modern tooltip hooks, ScrollBox).
-- **Less boilerplate, never less control.** Each module collapses a verbose native pattern into a few readable lines — and `:GetNativeHandles()` always hands back the raw Blizzard objects, so you trade typing, not control.
-- **Adopt incrementally.** Start with a single module, keep using Ace3 (or anything else) right alongside it, and add more as they ship — no all-or-nothing commitment.
-- **Grows by demand.** Modules ship when a real addon actually needs them, proven against real use before they land — and you can propose the next one.
+- **Less boilerplate, never less control.** Each module collapses a verbose native pattern into a few readable lines, and `:GetNativeHandles()` always hands back the raw Blizzard objects, so you trade typing, not control.
+- **Adopt incrementally.** Start with a single module, keep using Ace3 (or anything else) right alongside it, and add more as they ship, with no all-or-nothing commitment.
+- **Grows by demand.** Modules ship when a real addon actually needs them, proven against real use before they land, and you can propose the next one.
 
 ## Why
 
@@ -105,13 +105,13 @@ files. The manifest carries the same runtime load order as the standalone TOC.
 
 Foundry's module set isn't fixed at the initial eight. If there's a Blizzard API you'd like to see bridged, here's how new modules get added.
 
-**The path in:** open an issue describing the API you'd like Foundry to cover and how you'd use it in your addon. Concrete is better than abstract — "here's the code I'd write if Foundry had this module" lands faster than "Foundry should support X."
+**The path in:** open an issue describing the API you'd like Foundry to cover and how you'd use it in your addon. Concrete is better than abstract: "here's the code I'd write if Foundry had this module" lands faster than "Foundry should support X."
 
-**What gets a yes:** modules that bridge a real Blizzard API where the raw surface is verbose or hard to discover, and where at least one author has a concrete use case ready to exercise it. The use case doesn't have to be your own — if you're proposing a module someone else needs, point to them and we'll work with them on it.
+**What gets a yes:** modules that bridge a real Blizzard API where the raw surface is verbose or hard to discover, and where at least one author has a concrete use case ready to exercise it. The use case doesn't have to be your own. If you're proposing a module someone else needs, point to them and we'll work with them on it.
 
 **What gets a "not yet":** modules without a clear consumer to validate them. Foundry's quality bar is tied to real-world use; designing in the abstract risks shipping API surface that doesn't survive contact with actual addons. We'd rather wait for a concrete use case than guess at one.
 
-This isn't a high bar — it's the same bar the initial eight modules cleared. If you have an addon and an API you want bridged, that's enough.
+This isn't a high bar. It's the same bar the initial eight modules cleared. If you have an addon and an API you want bridged, that's enough.
 
 ## Installation
 
