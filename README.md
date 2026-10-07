@@ -1,6 +1,6 @@
 # Foundry
 
-A small Blizzard-first library for WoW addon authors who want to build on Blizzard's modern toolkit: the Settings API, the new menu system, ScrollBox, tooltip hooks, and the rest. An alternative to Ace3 for authors who want one.
+Foundry is a modern addon library for WoW authors who want to build on Blizzard's current toolkit: the Settings API, the new menu system, ScrollBox, tooltip hooks, and the rest. It is an Ace3 alternative for authors who want one, and it works alongside Ace3 if you would rather adopt it a piece at a time.
 
 By BawrLabs.
 

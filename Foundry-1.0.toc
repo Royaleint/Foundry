@@ -1,6 +1,6 @@
 ## Interface: 11509, 16001, 20506, 50504, 120105
 ## Title: Foundry-1.0
-## Notes: Foundry library, 1.0.x. Native-first toolkit bridge for WoW addons.
+## Notes: Modern addon library and Ace3 alternative for WoW addon authors, built around Blizzard's current APIs.
 ## Version: @project-version@
 ## Author: BawrLabs
 ## X-License: MIT
