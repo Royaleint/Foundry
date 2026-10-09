@@ -5,11 +5,12 @@
 -- :OnUnloading; the native dispatcher frame is reachable via
 -- :GetNativeHandles().
 --
--- ADDON_LOADED can be delayed: if the player's identity is not yet resolved
+-- The addon-loaded hook can be delayed: if the player's identity is not yet resolved
 -- (name/realm, or on some clients name/surname), addon-loaded and queued
 -- login hooks wait until it resolves, so a hook that builds a database never
 -- sees a placeholder identity. Release also waits for combat to end; a
--- surname that never arrives releases under the first name after ~1s.
+-- surname that never arrives releases under the first name about 1s after
+-- entering the world.
 
 local F = _G.Foundry_1_0
 if not F then
@@ -56,6 +57,8 @@ end
 -- Returns (name, realm, key, legacyKey), or (nil, msg, reason) if identity
 -- has not resolved yet. On a region-wide-unique-names client, key is
 -- name+surname rather than name+realm.
+-- Foundry.DB keys each character's saved data on this return value; changing
+-- its format moves every consumer's per-character data.
 function Lifecycle._PlayerIdentity()
     local regionalUnique = type(_G.RegionalUniqueNamesEnabled) == "function"
         and _G.RegionalUniqueNamesEnabled() == true
@@ -189,6 +192,8 @@ local function ensureDispatcher()
     local frame = CreateFrame("Frame")
     frame:Hide()
 
+    -- Hooks run under pcall and errors are collected; they surface only after
+    -- every consumer's hook has run, since raising mid-loop starves the rest.
     frame:SetScript("OnEvent", function(_, event, ...)
         if event == "ADDON_LOADED" then
             local loadedName = ...
@@ -440,8 +445,8 @@ function Controller:OnLogin(handler)
     end
 end
 
--- Fires once on PLAYER_LOGOUT. Not fired by Destroy. Re-registering raises a
--- dev error.
+-- Fires once on PLAYER_LOGOUT. Not fired by Destroy, and not fired for a
+-- controller still held waiting for identity. Re-registering raises a dev error.
 function Controller:OnLogout(handler)
     if self._destroyed then
         F:RaiseDevError("Lifecycle:OnLogout called on a destroyed controller")
@@ -463,7 +468,8 @@ function Controller:OnLogout(handler)
 end
 
 -- Fires once on ADDONS_UNLOADING, passing closingClient. Silent on clients
--- without that event. No ordering relation with OnLogout is promised.
+-- without that event, and not fired for a controller still held waiting for
+-- identity. No ordering relation with OnLogout is promised.
 function Controller:OnUnloading(handler)
     if self._destroyed then
         F:RaiseDevError("Lifecycle:OnUnloading called on a destroyed controller")

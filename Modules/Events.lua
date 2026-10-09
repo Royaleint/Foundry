@@ -21,9 +21,9 @@ Events.API_VERSION = 2
 local Controller = {}
 Controller.__index = Controller
 
--- Without C_EventUtils, an invalid event name throws from the native call;
--- the controller is left unchanged, so Register* call the native register
--- before any bookkeeping.
+-- Register* call the native register before any bookkeeping, so a throw
+-- leaves the controller unchanged. Without C_EventUtils an invalid event
+-- name can throw from the native call.
 local function isEventValid(event)
     local eventUtils = _G.C_EventUtils
     return not eventUtils or not eventUtils.IsEventValid or eventUtils.IsEventValid(event)
@@ -170,7 +170,9 @@ function Bucket:Cancel()
     self:_teardown()
 end
 
--- Cancels only the pending flush timer; native unregister is the caller's job.
+-- Cancels the pending flush timer and marks the bucket cancelled, so a later
+-- Cancel() or a stray flush/onFire is a no-op. Native unregister is the
+-- caller's job.
 function Bucket:_teardown()
     if self._cancelled then return end
     self._cancelled = true
@@ -289,10 +291,13 @@ function Controller:RegisterBucket(spec)
         if deadline then
             local remaining = deadline - getTime()
             if remaining > 0 then
+                -- Trailing re-arms one timer per window, never one per event.
                 bucket._timer = newTimer(remaining, flush)
                 return
             end
         end
+        -- Clear pending state before invoking: a re-trigger from inside the
+        -- handler must open a new window.
         bucket._timer = nil
         bucket._deadline = nil
         bucket._handler()
