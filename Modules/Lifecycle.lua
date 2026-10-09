@@ -5,10 +5,10 @@
 -- :OnUnloading; the native dispatcher frame is reachable via
 -- :GetNativeHandles().
 --
--- The addon-loaded hook can be delayed: if the player's identity is not yet resolved
--- (name/realm, or on some clients name/surname), addon-loaded and queued
--- login hooks wait until it resolves, so a hook that builds a database never
--- sees a placeholder identity. Release also waits for combat to end; a
+-- The addon-loaded hook can be delayed: if the player's identity is not yet
+-- resolved (name/realm, or on some clients name/surname), addon-loaded and
+-- queued login hooks wait until it resolves, so a hook that builds a database
+-- never sees a placeholder identity. Release also waits for combat to end; a
 -- surname that never arrives releases under the first name about 1s after
 -- entering the world.
 
@@ -192,8 +192,9 @@ local function ensureDispatcher()
     local frame = CreateFrame("Frame")
     frame:Hide()
 
-    -- Hooks run under pcall and errors are collected; they surface only after
-    -- every consumer's hook has run, since raising mid-loop starves the rest.
+    -- Hooks run under pcall; each loop's first error is held until every
+    -- hook has run, since raising mid-loop starves the rest. In a dev build
+    -- only the first held error raises.
     frame:SetScript("OnEvent", function(_, event, ...)
         if event == "ADDON_LOADED" then
             local loadedName = ...

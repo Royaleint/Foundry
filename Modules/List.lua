@@ -186,6 +186,7 @@ function List:New(config)
     c._inInitializer = false
 
     local parent = config.parent
+    -- Every check runs before CreateFrame; a refusal after it would leak the frames.
     local scrollBox = CreateFrame("Frame", nil, parent, "WowScrollBoxList")
     local scrollBar = CreateFrame("EventFrame", nil, parent, "MinimalScrollBar")
     -- Default fill anchor: a starting point only. Re-anchor via
@@ -200,9 +201,9 @@ function List:New(config)
     if hasExtent then
         view:SetElementExtent(config.extent)
     elseif hasCalc then
-        -- Guards the calculator's return value: a nil or non-number return
-        -- would corrupt Blizzard's extent arithmetic with a cryptic crash;
-        -- this raises in dev and falls back to 1px.
+        -- Guards the calculator's return: anything but a number > 0 crashes
+        -- deep in Blizzard's extent math; dev raises, release prints and
+        -- returns 1.
         local consumerCalc = config.extentCalculator
         view:SetElementExtentCalculator(function(index, elementData)
             local extent = consumerCalc(index, elementData)

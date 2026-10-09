@@ -2,6 +2,15 @@
 
 All notable changes to Foundry-1.0 are recorded here.
 
+## [1.0.109] - 2026-10-09
+
+### Changed
+- **Documentation: the Commands, Events, Lifecycle and List module comments
+  are trimmed to short notes for addon authors.** The Events notes now say what
+  leading and trailing buckets do and when an invalid event name can throw.
+  The Lifecycle header now says that a hook held for the character's full
+  name also waits for combat to end. No change to behavior.
+
 ## [1.0.108] - 2026-10-01
 
 ### Changed
