@@ -10,7 +10,7 @@ if not F then
     error("Foundry-1.0: Tooltip.lua requires the Foundry-1.0 bootstrap (Foundry.lua) "
         .. "to have loaded first; _G.Foundry_1_0 is missing.", 0)
 end
--- Already registered by another embedded copy: load nothing.
+-- Another copy of the library already registered this module: load nothing.
 if F:HasModule("Tooltip") then return end
 
 local Tooltip = {}
@@ -35,16 +35,18 @@ local liveKeys = {}
 -- Per-type dispatchers
 --
 -- TooltipDataProcessor has no removal API, so exactly one post-call is
--- registered per tooltip type for the module lifetime, dispatching into a
--- mutable list of live controllers -- Destroy actually stops the cost.
+-- registered per tooltip type for the module lifetime. It dispatches into a
+-- mutable list of live controllers, so Destroy really stops a handler running.
 --------------------------------------------------------------------------------
 
-local dispatchers = {}   -- tooltipType → array of live controllers
+local dispatchers = {}   -- tooltipType -> array of live controllers
 
 local function ensureDispatcher(tooltipType)
     local list = dispatchers[tooltipType]
     if list then return list end
     list = {}
+    -- Register before recording: if AddTooltipPostCall throws, no dispatcher
+    -- entry is left behind for this type.
     _G.TooltipDataProcessor.AddTooltipPostCall(tooltipType, function(tooltip, data)
         local i = 1
         while i <= #list do
@@ -102,8 +104,9 @@ function Controller:GetNativeHandles()
     }
 end
 
--- Only flags; the dispatcher sweeps flagged entries in place, so never
--- table.remove here (mid-dispatch Destroy would corrupt the loop).
+-- Destroys the controller and frees its name. Idempotent. Only flags the
+-- entry: the dispatcher sweeps flagged entries itself, so never table.remove
+-- here (a Destroy from inside a handler would corrupt the running loop).
 function Controller:Destroy()
     if self._destroyed then return end
     liveKeys[self._name] = nil
@@ -119,11 +122,11 @@ end
 
 -- Creates a tooltip post-call controller.
 -- Config fields:
---   type     (required) — Enum.TooltipDataType value (a number).
---   handler  (required) — function(tooltip, data), called per matching tooltip.
---   tooltips (optional) — array of tooltip frames to restrict to; nil fires
---                         for all tooltips of the registered type.
---   name     (optional) — duplicate-refusal key; defaults to tostring(type).
+--   type     (required) -- Enum.TooltipDataType value (a number).
+--   handler  (required) -- function(tooltip, data), called per matching tooltip.
+--   tooltips (optional) -- array of tooltip frames to restrict to; nil fires
+--                          for all tooltips of the registered type.
+--   name     (optional) -- duplicate-refusal key; defaults to tostring(type).
 function Tooltip:New(config)
     if type(config) ~= "table" then
         F:RaiseDevError("Tooltip:New: config must be a table")

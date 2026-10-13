@@ -11,7 +11,7 @@ if not F then
     error("Foundry-1.0: Settings.lua requires the Foundry-1.0 bootstrap (Foundry.lua) "
         .. "to have loaded first; _G.Foundry_1_0 is missing.", 0)
 end
--- Already registered by another embedded copy: load nothing.
+-- Another copy of the library already registered this module: load nothing.
 if F:HasModule("Settings") then return end
 
 local Settings = {}
@@ -57,8 +57,8 @@ local function refuseIfDestroyed(self, method)
     return false
 end
 
--- Opens the settings panel to this controller's category. Taint-safe to
--- call from an insecure OnClick.
+-- Opens the settings panel to this controller's category. On the modern
+-- path this is taint-safe from an insecure OnClick; no timer defer needed.
 function Controller:Open()
     if refuseIfDestroyed(self, "Open") then return end
     if self._mode == "settings" then
@@ -69,6 +69,7 @@ function Controller:Open()
         _G.InterfaceOptionsFrame:OpenToCategory(self._frame)
         _G.InterfaceOptionsFrame:OpenToCategory(self._frame)
     else
+        -- Unreachable for a live controller: :New refuses when neither API exists.
         return false, "unsupported-open"
     end
 end
@@ -84,7 +85,7 @@ function Controller:GetCategoryID()
 end
 
 -- Returns the live Blizzard objects: frame, category (nil legacy),
--- categoryID (nil legacy), mode, layout.
+-- categoryID (nil legacy), mode ("settings" or "interface-options"), layout.
 function Controller:GetNativeHandles()
     if refuseIfDestroyed(self, "GetNativeHandles") then return end
     local categoryID = nil
@@ -117,10 +118,10 @@ end
 
 -- Creates a settings controller.
 -- Config fields:
---   title  (required) — player-facing category title.
---   frame  (required) — the consumer-built panel to register.
---   parent (optional) — a live Foundry.Settings controller, for a subcategory.
---   name   (optional) — duplicate-refusal key; defaults to title.
+--   title  (required) -- player-facing category title.
+--   frame  (required) -- the consumer-built panel to register.
+--   parent (optional) -- a live Foundry.Settings controller, for a subcategory.
+--   name   (optional) -- duplicate-refusal key; defaults to title.
 function Settings:New(config)
     if type(config) ~= "table" then
         F:RaiseDevError("Settings:New: config must be a table")
@@ -170,6 +171,8 @@ function Settings:New(config)
     local layout
     local mode
 
+    -- Every check runs before any Register* call: a registered category can
+    -- never be removed.
     local cached = registeredCategories[name]
     if cached then
         local parentCategory = parent and parent._category or nil
@@ -205,8 +208,9 @@ function Settings:New(config)
         end
         mode = "settings"
     elseif hasLegacyOptions() then
-        -- Legacy: the sidebar label comes from frame.name (title unused);
-        -- parent nests nothing.
+        -- Legacy: the sidebar label comes from frame.name, not title, and a
+        -- parent nests nothing (the child registers as a sibling). Not reached
+        -- on any current supported client; exercised only by tests.
         _G.InterfaceOptions_AddCategory(frame)
         mode = "interface-options"
     else

@@ -10,7 +10,7 @@ if not F then
     error("Foundry-1.0: Menu.lua requires the Foundry-1.0 bootstrap (Foundry.lua) "
         .. "to have loaded first; _G.Foundry_1_0 is missing.", 0)
 end
--- Already registered by another embedded copy: load nothing.
+-- Another copy of the library already registered this module: load nothing.
 if F:HasModule("Menu") then return end
 
 local Menu = {}
@@ -94,8 +94,8 @@ end
 -- To extend a Blizzard-owned tagged menu (not one this module builds), use
 -- the raw Menu.ModifyMenu(tag, callback) via GetNativeHandles(). Register
 -- once per tag (a second call adds a duplicate section) and read live state
--- inside the callback (it fires on every menu build, so captured values go
--- stale).
+-- inside the callback. It fires on every menu build, and once at registration
+-- if that menu already exists, so captured values go stale.
 
 --------------------------------------------------------------------------------
 -- Factory
@@ -103,9 +103,9 @@ end
 
 -- Creates a menu controller.
 -- Config fields:
---   builder (required) — function(owner, rootDescription, ...), called each
+--   builder (required) -- function(owner, rootDescription, ...), called each
 --                         time the menu opens.
---   name    (optional)  — duplicate-refusal key; defaults to an
+--   name    (optional) -- duplicate-refusal key; defaults to an
 --                         auto-generated name.
 function Menu:New(config)
     if type(config) ~= "table" then
@@ -136,6 +136,8 @@ function Menu:New(config)
         return
     end
 
+    -- Feature-detect last: a config mistake reports as the config error, not
+    -- as a missing MenuUtil.
     if not hasMenuUtil() then
         F:RaiseDevError("Menu:New: MenuUtil is not available on this client; "
             .. "Foundry.Menu requires Blizzard_Menu (Retail 11.0+, Classic Era 1.15.x, "

@@ -12,8 +12,7 @@ if not F then
     error("Foundry-1.0: Window.lua requires the Foundry-1.0 bootstrap (Foundry.lua) "
         .. "to have loaded first; _G.Foundry_1_0 is missing.", 0)
 end
--- If this module is already registered on the winning copy, this is a
--- redundant embedded copy; load nothing.
+-- Another copy of the library already registered this module: load nothing.
 if F:HasModule("Window") then return end
 
 local Window = {}
@@ -64,8 +63,9 @@ local attached = {}
 -- Save (OnDragStop)
 --------------------------------------------------------------------------------
 
--- If win is reparented or re-anchored off UIParent after Attach, drag
--- positions are not saved (dev error).
+-- Skips the save (dev error) when, at drag stop, win is no longer parented
+-- to UIParent or its first anchor is relative to another frame. A nil
+-- relativeTo counts as UIParent-relative.
 local NOT_UIPARENT_RELATIVE = "Window: attached frame's parent or anchor is no longer "
     .. "UIParent-relative; geometry not saved"
 
@@ -89,15 +89,15 @@ end
 -- Wires movement and persisted position onto win.
 --
 -- Config fields:
---   handle   (required) — frame receiving the drag scripts; win itself or any
---                         frame the caller chooses. Foundry does not verify
---                         descent from win.
---   geometry (required) — caller-owned table; Foundry reads/writes the four
---                         keys point/relPoint/x/y in place, held by reference.
---   default  (required) — {point, relPoint, x, y} relative to UIParent, applied
---                         when geometry is empty or malformed. Copied at Attach
---                         so a caller mutating its own literal afterward cannot
---                         change what Reset applies.
+--   handle   (required) -- frame receiving the drag scripts; win itself or any
+--                          frame the caller chooses. Foundry does not verify
+--                          descent from win.
+--   geometry (required) -- caller-owned table; Foundry reads/writes the four
+--                          keys point/relPoint/x/y in place, held by reference.
+--   default  (required) -- {point, relPoint, x, y} relative to UIParent, applied
+--                          when geometry is empty or malformed. Copied at Attach
+--                          so a caller mutating its own literal afterward cannot
+--                          change what Reset applies.
 --
 -- Returns win on success, nil after a refused call.
 function Window:Attach(win, config)
@@ -164,6 +164,8 @@ function Window:Attach(win, config)
         return nil
     end
 
+    -- Every check runs above this line; nothing on win or handle is touched
+    -- until all pass.
     win:SetMovable(true)
     win:SetUserPlaced(false) -- clears any position the game's layout cache saved, before restore
     win:SetClampedToScreen(true)
@@ -175,6 +177,7 @@ function Window:Attach(win, config)
     end)
     handle:SetScript("OnDragStop", function()
         win:StopMovingOrSizing()
+        -- Again after every drag, so the game's layout cache does not take over the position.
         win:SetUserPlaced(false)
         saveGeometry(win, geometry)
     end)
