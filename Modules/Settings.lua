@@ -1,9 +1,8 @@
 -- Foundry.Settings
 --
 -- A thin bridge over Blizzard's options-panel registration surface. One :New(config)
--- selects the correct registration path (modern Settings.* API or legacy
--- InterfaceOptions_AddCategory fallback) and returns a controller that owns the
--- registered Blizzard category object. Foundry owns only the registration and the
+-- registers the panel through the modern Settings.* API and returns a controller
+-- that owns the registered Blizzard category object. Foundry owns only the registration and the
 -- resulting category; the consumer owns the panel frame and all of its controls.
 
 local F = _G.Foundry_1_0
@@ -29,17 +28,13 @@ local liveKeys = {}
 local registeredCategories = {}
 
 --------------------------------------------------------------------------------
--- Path selection (feature detection, not version checks or pcall)
+-- API detection (feature detection, not version checks or pcall)
 --------------------------------------------------------------------------------
 
 local function hasModernSettings()
     return type(_G.Settings) == "table"
         and type(_G.Settings.RegisterCanvasLayoutCategory) == "function"
         and type(_G.Settings.RegisterAddOnCategory) == "function"
-end
-
-local function hasLegacyOptions()
-    return type(_G.InterfaceOptions_AddCategory) == "function"
 end
 
 --------------------------------------------------------------------------------
@@ -57,25 +52,19 @@ local function refuseIfDestroyed(self, method)
     return false
 end
 
--- Opens the settings panel to this controller's category. On the modern
--- path this is taint-safe from an insecure OnClick; no timer defer needed.
+-- Opens the settings panel to this controller's category by calling
+-- Settings.OpenToCategory directly. No timer defer is used.
 function Controller:Open()
     if refuseIfDestroyed(self, "Open") then return end
     if self._mode == "settings" then
         _G.Settings.OpenToCategory(self._category:GetID())
-    elseif self._mode == "interface-options" then
-        -- Called twice: absorbs a first-call quirk where
-        -- InterfaceAddOnsList_Update hasn't run yet.
-        _G.InterfaceOptionsFrame:OpenToCategory(self._frame)
-        _G.InterfaceOptionsFrame:OpenToCategory(self._frame)
     else
-        -- Unreachable for a live controller: :New refuses when neither API exists.
+        -- Unreachable for a live controller: :New refuses when the Settings API is missing.
         return false, "unsupported-open"
     end
 end
 
--- Returns the numeric category ID for Settings.OpenToCategory (nil on the
--- legacy path).
+-- Returns the numeric category ID for Settings.OpenToCategory.
 function Controller:GetCategoryID()
     if refuseIfDestroyed(self, "GetCategoryID") then return end
     if self._mode == "settings" then
@@ -84,8 +73,8 @@ function Controller:GetCategoryID()
     return nil
 end
 
--- Returns the live Blizzard objects: frame, category (nil legacy),
--- categoryID (nil legacy), mode ("settings" or "interface-options"), layout.
+-- Returns the live Blizzard objects: frame, category, categoryID, mode
+-- ("settings"), layout.
 function Controller:GetNativeHandles()
     if refuseIfDestroyed(self, "GetNativeHandles") then return end
     local categoryID = nil
@@ -189,11 +178,6 @@ function Settings:New(config)
         category, layout, mode = cached.category, cached.layout, cached.mode
     elseif hasModernSettings() then
         if parent then
-            if parent._mode ~= "settings" then
-                F:RaiseDevError("Settings:New: config.parent was registered on the legacy path; "
-                    .. "subcategory registration requires a modern-path parent")
-                return
-            end
             if type(parent._category) ~= "table" then
                 F:RaiseDevError("Settings:New: config.parent has no valid category object")
                 return
@@ -207,14 +191,9 @@ function Settings:New(config)
             _G.Settings.RegisterAddOnCategory(category)
         end
         mode = "settings"
-    elseif hasLegacyOptions() then
-        -- Legacy: the sidebar label comes from frame.name, not title, and a
-        -- parent nests nothing (the child registers as a sibling). Not reached
-        -- on any current supported client; exercised only by tests.
-        _G.InterfaceOptions_AddCategory(frame)
-        mode = "interface-options"
     else
-        F:RaiseDevError("Settings:New: no supported options-registration API on this client")
+        F:RaiseDevError("Settings:New: Blizzard's Settings API (Settings.RegisterCanvasLayoutCategory "
+            .. "and Settings.RegisterAddOnCategory) is not available on this client")
         return
     end
 
