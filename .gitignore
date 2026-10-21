@@ -7,23 +7,23 @@ Thumbs.db
 # Packager output
 .release/
 
-# Generated dev-build TOC (STU-074) — never commit, never ship.
+# Generated dev-build TOC: never commit, never ship.
 Foundry-1.0_DevBuild.toc
 
-# Git worktrees (studio standard: feature branches live in .worktrees/)
+# Git worktrees (feature branches live in .worktrees/)
 .worktrees/
 
 # Wiki staging. The GitHub wiki is a SEPARATE repo (Foundry.wiki.git).
-# Drafts live here for review, then publish to the wiki repo — they are not
+# Drafts live here for review, then publish to the wiki repo; they are not
 # part of the code repo's history.
 .wiki/
 
-# Private dev environment (separate repo: Royaleint/Foundry_Dev) — tracker,
+# Private dev environment (a separate nested repo): tracker,
 # plans, and dev notes. Never part of the public code repo's history.
 Foundry_Dev/
 
 # Local agent instructions.
 /AGENTS.md
 
-# Claude Code session state and studio commands (tracked in the private dev repo, never here).
+# Claude Code session state and local commands (never tracked here).
 .claude/

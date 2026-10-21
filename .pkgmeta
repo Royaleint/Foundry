@@ -1,7 +1,7 @@
-# Foundry — CurseForge packager metadata.
+# Foundry: CurseForge packager metadata.
 #
 # The addon lives at the repo root (Foundry-1.0.toc + Foundry.lua + Modules/) and
-# packages as Foundry-1.0/ — the same flat layout as the studio's other addons
+# packages as Foundry-1.0/ the same flat layout as the other Bawr Labs addons
 # (Homestead, Triage, BawrSpam). CurseForge's server-side packager reads the
 # version from a root <package-as>/<package-as>.toc, so the addon must be at the
 # repo root with a matching TOC (an earlier subfolder + move-folders layout failed
@@ -11,7 +11,7 @@ package-as: Foundry-1.0
 
 enable-nolib-creation: no
 
-# Foundry embeds no libraries — no externals.
+# Foundry embeds no libraries, so there are no externals.
 
 # RELEASE_NOTES.html is generated at CI time (extracted from CHANGELOG.md and
 # converted from markdown to HTML by the release workflow). CF's API claims to
@@ -23,8 +23,8 @@ manual-changelog:
 
 # Repo-meta files: keep out of the packaged addon. LICENSE ships inside
 # the addon (root LICENSE -> Foundry-1.0/LICENSE in the zip). There is no
-# Dev-only in-game self-test directory in this repo (FND-012) — those files
-# live in the private Foundry_Dev/Foundry-1.0-Dev/ companion addon instead,
+# in-game self-test directory in this repo; those files
+# live in a separate, unpublished companion addon instead,
 # so a packaged release can never reference a file the packager stripped.
 ignore:
   - .claude

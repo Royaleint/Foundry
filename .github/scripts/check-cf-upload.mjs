@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// check-cf-upload.mjs — release-safety check.
+// check-cf-upload.mjs: release-safety check.
 //
 // After the CurseForge upload step, asks CF how many files it now holds for
 // the version just released. Anything other than exactly one is a loud
@@ -9,7 +9,7 @@
 // duplicate has already appeared on an addon (Foundry v1.0.100,
 // root cause never confirmed).
 //
-// Auth: CF_CORE_API_KEY env — a free CurseForge Core API key
+// Auth: CF_CORE_API_KEY env (a free CurseForge Core API key)
 // (console.curseforge.com), NOT the upload token. If the secret is absent
 // the check WARNS AND SKIPS (exit 0) so adoption never blocks a release
 // before the key is provisioned; once the key exists, failures are hard.
@@ -31,7 +31,7 @@ const ATTEMPTS = 4;          // CF file listings can lag the upload slightly
 const ATTEMPT_DELAY_MS = 20000;
 
 function warnSkip(msg) {
-  console.log(`::warning::check-cf-upload skipped — ${msg}`);
+  console.log(`::warning::check-cf-upload skipped: ${msg}`);
   process.exit(0);
 }
 
@@ -103,12 +103,12 @@ if (fixtureIdx >= 0) {
       console.log(`CF API error on attempt ${attempt}/${ATTEMPTS}: ${err.message}`);
     }
     if (attempt < ATTEMPTS) {
-      console.log(`no confirmed file for ${version} yet (attempt ${attempt}/${ATTEMPTS}) — waiting ${ATTEMPT_DELAY_MS / 1000}s`);
+      console.log(`no confirmed file for ${version} yet (attempt ${attempt}/${ATTEMPTS}); waiting ${ATTEMPT_DELAY_MS / 1000}s`);
       await new Promise((r) => setTimeout(r, ATTEMPT_DELAY_MS));
     }
   }
   if (lastErr) {
-    console.error(`::error::check-cf-upload: CF Core API unreachable after ${ATTEMPTS} attempts (${lastErr.message}) — could not verify the upload. Check the CF file list manually.`);
+    console.error(`::error::check-cf-upload: CF Core API unreachable after ${ATTEMPTS} attempts (${lastErr.message}); could not verify the upload. Check the CF file list manually.`);
     process.exit(1);
   }
 }
@@ -118,11 +118,11 @@ console.log(`CF project ${projectID}: ${files.length} recent file(s); ${matches.
 for (const f of matches) console.log(`  - id=${f.id} "${f.displayName}" (${f.fileName}) uploaded ${f.fileDate}`);
 
 if (matches.length === 0) {
-  console.error(`::error::check-cf-upload: NO file matching ${tag} on CurseForge after ${ATTEMPTS} attempts — the upload may have failed silently or the naming convention changed.`);
+  console.error(`::error::check-cf-upload: NO file matching ${tag} on CurseForge after ${ATTEMPTS} attempts: the upload may have failed silently or the naming convention changed.`);
   process.exit(1);
 }
 if (matches.length > 1) {
-  console.error(`::error::check-cf-upload: ${matches.length} files match ${tag} — duplicate upload detected. Delete the extra file on CF's file management page and investigate the run log.`);
+  console.error(`::error::check-cf-upload: ${matches.length} files match ${tag}: duplicate upload detected. Delete the extra file on CF's file management page and investigate the run log.`);
   process.exit(1);
 }
-console.log("check-cf-upload: PASSED — exactly one file for this release.");
+console.log("check-cf-upload: PASSED: exactly one file for this release.");

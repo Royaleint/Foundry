@@ -466,7 +466,7 @@ test("OnDragStop save guard: a nil relativeTo is accepted and the save proceeds"
 
     -- The save contract treats a nil relativeTo as UIParent-relative, not as a
     -- refusal cause (whether any client's GetPoint actually returns nil here is
-    -- a Gate 2 question, not this test's concern).
+    -- an in-game question, not this test's concern).
     win._points.relativeTo = nil
     win._points.x = 42
 

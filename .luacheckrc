@@ -1,4 +1,4 @@
--- Foundry — luacheck configuration.
+-- Foundry: luacheck configuration.
 -- WoW addon library (Lua 5.1). Run `luacheck .` from the repo root.
 
 std = "lua51"
@@ -15,7 +15,7 @@ globals = {
 read_globals = {
     "CreateFrame",
     "C_Timer",  -- Foundry.Events RegisterBucket schedules its flush via C_Timer.NewTimer.
-    "GetTime",  -- Foundry.Events trailing-edge buckets track their deadline with it (FND-033).
+    "GetTime",  -- Foundry.Events trailing-edge buckets track their deadline with it.
     "C_AddOns",
     "IsLoggedIn",  -- Foundry.Lifecycle seeds its login catch-up flag from this at dispatcher creation.
     "UnitName",
@@ -25,7 +25,7 @@ read_globals = {
     "ScrollUtil",
     "CreateScrollBoxListLinearView",
     "CreateDataProvider",
-    "TooltipDataProcessor",  -- Foundry.Tooltip drives this (ships on Retail, Classic Era, and Pandaria Classic; FND-031).
+    "TooltipDataProcessor",  -- Foundry.Tooltip drives this (ships on Retail, Classic Era, and Pandaria Classic).
     -- Foundry.Menu bridges the Blizzard_Menu system (present on all supported flavors).
     "MenuUtil",              -- Entry points: CreateContextMenu; SetupMenu on DropdownButton.
     "Menu",                  -- Raw escape hatch via GetNativeHandles().menu; may be nil on some clients.

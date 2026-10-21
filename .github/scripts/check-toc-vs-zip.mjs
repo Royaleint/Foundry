@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// check-toc-vs-zip.mjs — release-safety check.
+// check-toc-vs-zip.mjs: release-safety check.
 //
 // Verifies that every file referenced by every TOC inside the packaged zip(s)
 // is actually present in the zip. Closes this failure class: a
@@ -29,7 +29,7 @@ function fail(msg) {
 }
 
 if (!existsSync(releaseDir)) {
-  fail(`release dir '${releaseDir}' does not exist — run the packager (build-only is fine) before this check`);
+  fail(`release dir '${releaseDir}' does not exist; run the packager (build-only is fine) before this check`);
   process.exit(1);
 }
 
@@ -53,7 +53,7 @@ for (const zipName of zips) {
 
   const tocs = entries.filter((e) => e.toLowerCase().endsWith(".toc"));
   if (!tocs.length) {
-    fail(`${zipName}: contains no .toc file at all — not a valid addon package`);
+    fail(`${zipName}: contains no .toc file at all: not a valid addon package`);
     continue;
   }
 
@@ -71,22 +71,22 @@ for (const zipName of zips) {
     }
     if (missing.length) {
       totalMissing += missing.length;
-      fail(`${zipName} :: ${tocEntry} references ${missing.length} file(s) missing from the zip — every player would see "Error loading" at login:`);
+      fail(`${zipName} :: ${tocEntry} references ${missing.length} file(s) missing from the zip: every player would see "Error loading" at login:`);
       for (const m of missing) console.error(`    MISSING: ${m}`);
     } else {
-      console.log(`ok ${zipName} :: ${tocEntry} — all referenced files present`);
+      console.log(`ok ${zipName} :: ${tocEntry}: all referenced files present`);
     }
   }
 }
 
 if (totalMissing) {
-  console.error(`check-toc-vs-zip: FAILED — ${totalMissing} missing file reference(s) across ${zips.length} zip(s). A .pkgmeta ignore rule probably strips a file the TOC still lists.`);
+  console.error(`check-toc-vs-zip: FAILED: ${totalMissing} missing file reference(s) across ${zips.length} zip(s). A .pkgmeta ignore rule probably strips a file the TOC still lists.`);
   process.exit(1);
 }
 if (process.exitCode) {
   // A non-missing-file failure (e.g. a zip with no TOC) already set the exit
-  // code — do not print a contradictory PASSED line.
-  console.error("check-toc-vs-zip: FAILED — see errors above.");
+  // code; do not print a contradictory PASSED line.
+  console.error("check-toc-vs-zip: FAILED: see errors above.");
   process.exit(1);
 }
-console.log(`check-toc-vs-zip: PASSED — ${checkedTocs} TOC(s) across ${zips.length} zip(s), every referenced file ships.`);
+console.log(`check-toc-vs-zip: PASSED: ${checkedTocs} TOC(s) across ${zips.length} zip(s), every referenced file ships.`);

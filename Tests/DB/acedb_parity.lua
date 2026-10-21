@@ -1,11 +1,11 @@
 -- Foundry.DB <-> AceDB-3.0 dual-library parity comparator.
 --
--- The spec §9 dual-library proof, executed not eyeballed: each consumer fixture
+-- The dual-library proof, executed not eyeballed: each consumer fixture
 -- is loaded under REAL AceDB-3.0 AND under Foundry.DB, and their observable state
 -- and post-strip raw SavedVariables are compared deep-equal -- normalizing
--- EXACTLY the two §3.3 carve-outs (unpruned empty unmanaged sections; preserved
+-- EXACTLY the two carve-outs (unpruned empty unmanaged sections; preserved
 -- scalar under a table-typed default), with each applied normalization itself
--- asserted when exercised. It also proves the REVERSE direction Gate 4's rollback
+-- asserted when exercised. It also proves the REVERSE direction the rollback
 -- leans on: a Foundry-written post-strip store loads under AceDB with identical
 -- observable state.
 --
@@ -14,10 +14,10 @@
 -- Foundry, never linked into shipped code. The clean-room rule bars copying AceDB
 -- code, not testing against it.
 --
--- Ace checkout resolution order (spec/plan Phase C; FND-020):
+-- Ace checkout resolution order (first match wins):
 --   1. os.getenv("FOUNDRY_ACE_PATH")  -- a Libs/ dir holding AceDB-3.0/, LibStub/,
 --                                        CallbackHandler-1.0/
---   2. Foundry_Dev/vendor/AceLibs     -- the private dev repo's pinned oracle copy
+--   2. the vendored AceLibs copy      -- a pinned oracle copy from a separate local dev checkout
 --                                        (relative from the repo root, then the
 --                                        absolute local path so worktree checkouts
 --                                        resolve it too)
@@ -75,7 +75,7 @@ if not ACE then
 end
 
 --------------------------------------------------------------------------------
--- Identity mocks needed by AceDB at FILE LOAD (acedb-semantics.md §1): AceDB
+-- Identity mocks needed by AceDB at FILE LOAD: AceDB
 -- captures all identity keys with unguarded concatenation at file scope.
 --------------------------------------------------------------------------------
 
@@ -152,7 +152,7 @@ end
 -- we wipe _G.LibStub first and re-load the three libs in order. AceDB captures
 -- identity at load, so identity must be installed before this runs.
 --
--- `regional`, when present (FND-049), is a table `{ surname = ... }`
+-- `regional`, when present, is a table `{ surname = ... }`
 -- (surname itself may be nil -- the table's PRESENCE, not its contents, is the
 -- switch). It installs the regional identity mocks AFTER the ordinary
 -- defaults above and immediately before the three loadfile calls, so a
@@ -206,7 +206,7 @@ local function fireFoundryLogout()
 end
 
 --------------------------------------------------------------------------------
--- Comparison helpers, with the two §3.3 carve-out normalizations. Each
+-- Comparison helpers, with the two carve-out normalizations. Each
 -- normalization, WHEN it actually changes something, is asserted via the returned
 -- `applied` table so the proof can confirm it was exercised rather than passing
 -- vacuously.
@@ -329,7 +329,7 @@ test("parity: a stored false beats a default true -- identical under both librar
 end)
 
 --------------------------------------------------------------------------------
--- post-strip raw-SV parity (the lossless round-trip of §3.3)
+-- post-strip raw-SV parity (the lossless round-trip of the carve-outs)
 --------------------------------------------------------------------------------
 
 -- parity-synthetic-poststrip
@@ -350,7 +350,7 @@ test("parity: synthetic shape -- raw SV after logout strip matches AceDB (carve-
     local _3 = fdb.profile.vendorTracer; local _4 = fdb.global
     fireFoundryLogout()
 
-    -- Normalize the two §3.3 carve-outs on both sides.
+    -- Normalize the two carve-outs on both sides.
     local applied = {}
     normalizeEmptyUnmanaged(_G.PStripAce, applied, "ace")
     normalizeEmptyUnmanaged(_G.PStripF, applied, "foundry")
@@ -424,7 +424,7 @@ test("parity: carve-out 2 (stored scalar under a table-typed default) -- Foundry
     -- The documented divergence, asserted on both sides.
     T.eq(type(aceSub), "table", "AceDB clobbered the stored false to a table (its own behavior on a legal file)")
     T.eq(foundrySub, false, "Foundry PRESERVED the stored false (D2 -- never destroys stored data)")
-    -- This is exactly the §3.3 carve-out 2 slot class: Foundry never produces the
+    -- This is exactly the second carve-out slot class: Foundry never produces the
     -- loss; reverting to AceDB can. The deep-equal proofs above exclude this slot
     -- by construction (no such slot appears in the consumer fixtures).
 end)
@@ -551,7 +551,7 @@ test("parity: the BawrSpam sanitized fixture -- post-strip raw SV matches AceDB 
 end)
 
 --------------------------------------------------------------------------------
--- regional full-name key parity (FND-049; needs the vendored r39 AceDB oracle)
+-- regional full-name key parity (needs the vendored r39 AceDB oracle)
 --------------------------------------------------------------------------------
 
 -- Stop rule: if the minor assertion fails, the r39 oracle has not been

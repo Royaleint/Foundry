@@ -1,6 +1,6 @@
 -- Foundry.Events behavior tests. Loaded by Tests/run.lua, which passes the
 -- harness table T. Returns a list of { name, fn } cases covering the public
--- contract (§2/§3 of the Reference and CYCLE-2-EVENTS plan) plus the edge cases
+-- contract plus the edge cases
 -- the master matrix enumerates: dev-raise vs release-refuse axis, atomic
 -- validation, one-handler-per-event across all register methods, the fixed
 -- RegisterOnce unregister-before-invoke order, GetNativeHandles snapshot
@@ -1258,7 +1258,7 @@ test("leading bucket: a handler that re-triggers a member event opens a fresh wi
     T.eq(hits, 2, "the fresh window flushes once")
 end)
 
--- bucket-trailing-deadline (FND-033: deadline + re-arm, not cancel-per-fire)
+-- bucket-trailing-deadline (deadline + re-arm, not cancel-per-fire)
 test("trailing bucket: fires move the deadline without allocating; flush re-arms once", function()
     local F = T.fresh()
     local c = F.Events:New("A")
@@ -1629,7 +1629,7 @@ test("GetNativeHandles snapshots the bucket onFire closure for each member event
 end)
 
 --------------------------------------------------------------------------------
--- Native-throw atomicity (FND-026): Midnight's RegisterEvent throws on an
+-- Native-throw atomicity: Midnight's RegisterEvent throws on an
 -- unknown/removed event name. The error must propagate with the controller
 -- unchanged -- no phantom IsRegistered, and a corrected retry must succeed.
 --------------------------------------------------------------------------------

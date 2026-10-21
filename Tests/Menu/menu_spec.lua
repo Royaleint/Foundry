@@ -6,20 +6,20 @@
 -- refusal, anonymous counter, and version pins.
 --
 -- Stub design:
---   freshMenu([tocVersion])   — calls T.fresh(), clears menu globals (MenuUtil /
+--   freshMenu([tocVersion]): calls T.fresh(), clears menu globals (MenuUtil /
 --                               Menu / MenuResponse), returns F. Menu.lua is
 --                               loaded by T.loadFoundry() so freshMenu() does
 --                               not need to load it manually.
---   installMenuUtil()         — installs _G.MenuUtil + _G.Menu + _G.MenuResponse;
+--   installMenuUtil(): installs _G.MenuUtil + _G.Menu + _G.MenuResponse;
 --                               returns spy state { createCalls, lastWrapper }.
 --                               state.createCalls[n] = { owner, wrapper, extra }
 --                               where extra = { ... } captures the varargs passed
 --                               to MenuUtil.CreateContextMenu after the wrapper.
---   makeDropdownButton()      — fake DropdownButton; SetupMenu spy records { wrapper }.
---   makeElementDescription()  — fake elementDescription with SetEnabled / SetTooltip
+--   makeDropdownButton(): fake DropdownButton; SetupMenu spy records { wrapper }.
+--   makeElementDescription(): fake elementDescription with SetEnabled / SetTooltip
 --                               spies and CreateButton / CreateRadio Create* spies.
---   makeRootDescription()     — alias for makeElementDescription (unified table).
---   valid([over])             — minimal valid config { builder = fn }; fields
+--   makeRootDescription(): alias for makeElementDescription (unified table).
+--   valid([over]): minimal valid config { builder = fn }; fields
 --                               overrideable via over.
 
 local T = ...
@@ -44,11 +44,11 @@ end
 
 -- Install the full MenuUtil / Menu / MenuResponse stubs.
 -- Returns spy state:
---   state.createCalls  — array of { owner, wrapper, extra } per call.
+--   state.createCalls: array of { owner, wrapper, extra } per call.
 --                         extra = { ... } captures the varargs passed to
 --                         CreateContextMenu AFTER the wrapper (the Foundry side
 --                         of vararg forwarding).
---   state.lastWrapper  — the most recent wrapper fn passed in.
+--   state.lastWrapper: the most recent wrapper fn passed in.
 local function installMenuUtil()
     local state = { createCalls = {}, lastWrapper = nil }
     _G.MenuUtil = {
@@ -303,7 +303,7 @@ test(":CreateContextMenu forwards extras to MenuUtil AND builder", function()
     local c = F.Menu:New({
         builder = function(...) received = { ... } end,
     })
-    -- Call with extras — Foundry must forward them to MenuUtil.CreateContextMenu.
+    -- Call with extras: Foundry must forward them to MenuUtil.CreateContextMenu.
     c:CreateContextMenu(owner, "extra1", 42)
     -- Assert the Foundry→MenuUtil forward (the impl's `...` pass-through).
     local extra = state.createCalls[1].extra
@@ -332,7 +332,7 @@ test(":CreateContextMenu with no extras: no nil injection on either side", funct
     local c = F.Menu:New({
         builder = function(...) argCount = select("#", ...) end,
     })
-    -- No extras passed — Foundry must not inject nils into the MenuUtil call.
+    -- No extras passed: Foundry must not inject nils into the MenuUtil call.
     c:CreateContextMenu(owner)
     T.eq(#state.createCalls[1].extra, 0, "MenuUtil received 0 extras (no nil injection)")
     -- Simulate Blizzard firing the wrapper with no extras.

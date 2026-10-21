@@ -3,13 +3,13 @@
 --
 -- Foundry.DB is the AceDB-3.0 replacement and the highest-risk module in the
 -- library: save-file bugs are silent until a user's data is already gone. These
--- cases assert the SPEC's behavioral contract (CYCLE-3-DB-SPEC.md Rev 3) directly
--- against the module, with HOSTILE-GRADE mocks from the start (Cycle-2b lesson 1:
--- a green harness with friendly mocks hid four real bugs). Where the spec and the
--- implementation disagree, the test asserts the SPEC and is left FAILING, marked
+-- cases assert the design contract for the DB module directly
+-- against the module, with HOSTILE-GRADE mocks from the start (an earlier lesson:
+-- a green harness with friendly mocks once hid four real bugs). Where the contract and the
+-- implementation disagree, the test asserts the contract and is left FAILING, marked
 -- clearly -- never bent to make the implementation pass.
 --
--- Group prefixes mirror spec §9: empty-init, populated-init, leftover-keys,
+-- Group prefixes: empty-init, populated-init, leftover-keys,
 -- defaults-backfill, logout-strip, dynamic-keys, schema-steps, malformed,
 -- downgrade, identity-timing, plus api-guard, unsupported-matrix, escape-hatch,
 -- destroy, ready-hook, shared-defaults, strip-isolation, version-pins.
@@ -132,22 +132,22 @@ test("harness: Foundry.DB module loads and registers under the harness", functio
 end)
 
 --------------------------------------------------------------------------------
--- version-pins (spec §9 version-pins): the four updated pins + DB/F markers
+-- version-pins: the four updated pins + DB/F markers
 --------------------------------------------------------------------------------
 
 -- version-pins-library-and-module
 test("version-pins: F.API_VERSION == 6 and DB.API_VERSION == 2", function()
     local F = T.fresh()
     T.eq(F.API_VERSION, 6, "library API_VERSION is 6 (DB 3 -> 4, List 4 -> 5, Settings/RegisterBucket 5 -> 6)")
-    T.eq(F.DB.API_VERSION, 2, "DB per-module marker == 2 (size-warning hook added, FND-046)")
+    T.eq(F.DB.API_VERSION, 2, "DB per-module marker == 2 (size-warning hook added)")
     -- Sibling markers unchanged.
-    T.eq(F.Commands.API_VERSION, 2, "Commands marker == 2 (restriction guard added, FND-045)")
-    T.eq(F.Events.API_VERSION, 2, "Events marker == 2 (RegisterBucket added, FND-008)")
+    T.eq(F.Commands.API_VERSION, 2, "Commands marker == 2 (restriction guard added)")
+    T.eq(F.Events.API_VERSION, 2, "Events marker == 2 (RegisterBucket added)")
     T.eq(F.Lifecycle.API_VERSION, 4, "Lifecycle marker == 4 (the full-name character identity)")
 end)
 
 --------------------------------------------------------------------------------
--- api-guard (spec §9 api-guard): validation atomicity, error ordering,
+-- api-guard: validation atomicity, error ordering,
 -- duplicate live sv, defaultProfile mode rejection
 --------------------------------------------------------------------------------
 
@@ -253,7 +253,7 @@ test("api-guard: a defaults section that is not a table is rejected", function()
 end)
 
 -- api-guard-wildcard-rejected-shallow
-test("api-guard: a top-level '*' wildcard default key is rejected (spec §4.5)", function()
+test("api-guard: a top-level '*' wildcard default key is rejected", function()
     local F = freshLoaded()
     T.raises(function()
         newHS(F, { defaults = { global = { ["*"] = { count = 0 } } } })
@@ -279,11 +279,11 @@ test("api-guard: a second :New for a live (un-Destroyed) sv is rejected", functi
 end)
 
 -- api-guard-dup-live-sv-release
--- [D3 CONTRACT CASE -- PASSING]: refused construction raises in BOTH builds via
--- the `refuse()` transport (not F:RaiseDevError). Spec §7 row 1: no checked return
+-- [CONTRACT CASE -- PASSING]: refused construction raises in BOTH builds via
+-- the `refuse()` transport (not F:RaiseDevError). no checked return
 -- exists at either consumer's call site, so the raise IS the release refusal.
-test("api-guard: duplicate-live-sv refuses in a RELEASE build (raise, D3)", function()
-    -- Bad-config refusals raise in BOTH builds (spec §7 row 1, D3): no checked
+test("api-guard: duplicate-live-sv refuses in a RELEASE build (raise)", function()
+    -- Bad-config refusals raise in BOTH builds: no checked
     -- return at either consumer's call site. So the release build raises too.
     local F = freshLoaded("1.0.0")
     T.falsy(F.IS_DEV_BUILD, "release build")
@@ -305,18 +305,18 @@ test("api-guard: after Destroy the sv slot frees and a later :New may reuse it",
 end)
 
 -- api-guard-bad-config-release-raises
--- [D3 CONTRACT CASE -- PASSING]: a bad-config refusal raises in both builds via
--- `refuse()`. Spec §7 row 1: the raise is the release refusal (no checked return).
-test("api-guard: a bad config in a RELEASE build raises (D3 -- refused construction)", function()
+-- [CONTRACT CASE -- PASSING]: a bad-config refusal raises in both builds via
+-- `refuse()`. the raise is the release refusal (no checked return).
+test("api-guard: a bad config in a RELEASE build raises (refused construction)", function()
     local F = freshLoaded("1.0.0")
     T.falsy(F.IS_DEV_BUILD, "release build")
-    -- Spec §7 row 1: refused construction raises a named error in BOTH builds.
+    -- refused construction raises a named error in BOTH builds.
     T.raises(function() F.DB:New({ name = "", sv = "TestDB", defaultProfile = true }) end,
         "release refuses with raise", "name must be a non-empty string")
 end)
 
 --------------------------------------------------------------------------------
--- identity-timing (spec §9 identity-timing): timing guard + identity gate
+-- identity-timing: timing guard + identity gate
 --------------------------------------------------------------------------------
 
 -- identity-timing-loading-refuses
@@ -509,9 +509,9 @@ test("identity-timing: identity is computed lazily at :New, not at module load",
 end)
 
 -- identity-timing-release-refuses-with-raise
--- [D3 CONTRACT CASE -- PASSING]: invalid-identity refusal raises in both builds
--- via `refuse()`. Spec §7 row 2: the raise is the release refusal (no mutation).
-test("identity-timing: invalid identity refuses in a RELEASE build with a raise (D3)", function()
+-- [CONTRACT CASE -- PASSING]: invalid-identity refusal raises in both builds
+-- via `refuse()`. the raise is the release refusal (no mutation).
+test("identity-timing: invalid identity refuses in a RELEASE build with a raise", function()
     local F = freshLoaded("1.0.0")
     T.falsy(F.IS_DEV_BUILD, "release build")
     T.identity = { name = "Unknown", realm = "Test Realm" }
@@ -521,7 +521,7 @@ test("identity-timing: invalid identity refuses in a RELEASE build with a raise 
 end)
 
 --------------------------------------------------------------------------------
--- empty-init (spec §9 empty-init): fresh save creation + both §4.3 step-3 variants
+-- empty-init: fresh save creation + both step-3 variants
 --------------------------------------------------------------------------------
 
 -- empty-init-creates-sv
@@ -579,7 +579,7 @@ test("empty-init: a :New with no defaults still creates the SV and writes profil
 end)
 
 --------------------------------------------------------------------------------
--- populated-init (spec §9 populated-init): fixtures load; table identity
+-- populated-init: fixtures load; table identity
 --------------------------------------------------------------------------------
 
 -- populated-init-homestead-fixture
@@ -656,7 +656,7 @@ test("populated-init: db.sv is the live SavedVariables root (BawrSpam cross-char
 end)
 
 --------------------------------------------------------------------------------
--- defaults-backfill (spec §9 defaults-backfill): apply semantics
+-- defaults-backfill: apply semantics
 --------------------------------------------------------------------------------
 
 -- backfill-scalar-into-nil-only
@@ -715,7 +715,7 @@ test("defaults-backfill: the defaults table is never written into during apply",
 end)
 
 --------------------------------------------------------------------------------
--- malformed (spec §9 malformed): structural refusal + value-level preserve-skip
+-- malformed: structural refusal + value-level preserve-skip
 --------------------------------------------------------------------------------
 
 -- malformed-sv-nontable
@@ -786,9 +786,9 @@ test("malformed: the committed malformed-char-bucket fixture refuses, value pres
 end)
 
 -- malformed-release-raises
--- [D3 CONTRACT CASE -- PASSING]: a malformed-SV refusal raises in both builds via
--- `refuse()`. Spec §7 row 3: the raise is the release refusal (SV untouched).
-test("malformed: a malformed SV refuses in a RELEASE build with a raise (D3)", function()
+-- [CONTRACT CASE -- PASSING]: a malformed-SV refusal raises in both builds via
+-- `refuse()`. the raise is the release refusal (SV untouched).
+test("malformed: a malformed SV refuses in a RELEASE build with a raise", function()
     local F = freshLoaded("1.0.0")
     T.falsy(F.IS_DEV_BUILD, "release build")
     _G.TestDB = "corrupt"
@@ -811,7 +811,7 @@ test("malformed: value-level type-mismatch-under-table-default is preserve-and-s
     T.raises(function() local _ = db.global end, "dev mismatch diagnostic", "conflicts with its table-typed default")
 end)
 
--- malformed-mismatch-flags-section-before-defaults (FND-035)
+-- malformed-mismatch-flags-section-before-defaults
 test("malformed: a dev mismatch raise mid-materialize still flags the section for the strip", function()
     -- The dev-build onMismatch raise aborts materialize mid-applyDefaults. The
     -- section MUST already be flagged materialized by then: defaults written
@@ -849,7 +849,7 @@ test("malformed: value-level type-mismatch preserves the stored scalar (release,
 end)
 
 --------------------------------------------------------------------------------
--- downgrade (spec §9 downgrade): newer-stored-version refusal
+-- downgrade: newer-stored-version refusal
 --------------------------------------------------------------------------------
 
 local function schemaFor(version)
@@ -892,9 +892,9 @@ test("downgrade: the committed downgrade-stamped fixture (v99) refuses against a
 end)
 
 -- downgrade-release-raises
--- [D3 CONTRACT CASE -- PASSING]: a downgrade refusal raises in both builds via
--- `refuse()`. Spec §7 row 4 / §8.3: the raise is the release refusal (SV untouched).
-test("downgrade: a downgrade refuses in a RELEASE build with a raise (D3)", function()
+-- [CONTRACT CASE -- PASSING]: a downgrade refusal raises in both builds via
+-- `refuse()`. the raise is the release refusal (SV untouched).
+test("downgrade: a downgrade refuses in a RELEASE build with a raise", function()
     local F = freshLoaded("1.0.0")
     T.falsy(F.IS_DEV_BUILD, "release build")
     _G.TestDB = { profileKeys = { [CHARKEY] = "Default" }, global = { schemaVersion = 5 } }
@@ -916,7 +916,7 @@ test("downgrade: stored == declared is NOT a downgrade (construction proceeds)",
 end)
 
 --------------------------------------------------------------------------------
--- schema-steps (spec §9 schema-steps): the migration seam
+-- schema-steps: the migration seam
 --------------------------------------------------------------------------------
 
 -- schema-fresh-stamps-no-migrate
@@ -992,7 +992,7 @@ test("schema-steps: the stamp survives a full logout strip (it is outside defaul
 end)
 
 -- schema-key-in-defaults-rejected
-test("schema-steps: schema.key covered by declared defaults is rejected at :New (§8.2 step 0)", function()
+test("schema-steps: schema.key covered by declared defaults is rejected at :New", function()
     local F = freshLoaded()
     -- Both committed consumers' CURRENT defaults declare global.schemaVersion -- a
     -- defaults-covered stamp would be stripped at every logout, making migrate run
@@ -1034,7 +1034,7 @@ test("schema-steps: migrate raising a FALSY error (error(nil)) still refuses (ra
 end)
 
 -- schema-migrate-raises-store-still-stripped
-test("schema-steps: after a migrate refusal the store is STILL stripped at logout (§4.3)", function()
+test("schema-steps: after a migrate refusal the store is STILL stripped at logout", function()
     local F = freshLoaded()
     -- migrate writes a default-equal value then raises; the store is refused, but
     -- its (partially written) SV must still be stripped at logout.
@@ -1079,9 +1079,9 @@ test("schema-steps: a schema.key not rooted at 'global' is rejected", function()
     end, "bad root section", "schema.key must be rooted at 'global'")
 end)
 
--- schema-validation-bare-root (FND-019): a single-segment key passes the root
+-- schema-validation-bare-root: a single-segment key passes the root
 -- check but would make writeStamp overwrite sv.global (the section TABLE) with
--- the version NUMBER -- silent data loss this session, then the §8.4 structural
+-- the version NUMBER -- silent data loss this session, then the structural
 -- check refuses the save forever. Refused at :New, before any disk write.
 test("schema-steps: a bare 'global' schema.key (no sub-key) is rejected, SV untouched", function()
     local F = freshLoaded()
@@ -1134,7 +1134,7 @@ end)
 
 -- schema-key-char-root-rejected (Rev 4, F1) -- on BOTH build axes. A char-rooted
 -- stamp is a keyed-map section: the old validation green-lit it, the stamp wrote a
--- scalar sibling of the per-character buckets, and the §8.4 structural check then
+-- scalar sibling of the per-character buckets, and the structural check then
 -- refused construction on every LATER load -- a permanent lockout. The Rev 4
 -- contract rejects the root at :New before any mutation, so the lockout can never
 -- be constructed. Assert the named message AND that _G[sv] is byte-untouched:
@@ -1193,7 +1193,7 @@ end)
 -- schema-key-f1-lockout-cannot-be-constructed (Rev 4, F1) -- the EXACT old failure
 -- is now structurally impossible: drive the full session-1 -> logout -> session-2
 -- sequence the probe used; assert the char-scalar stamp never reaches disk, so
--- session 2's §8.4 structural check has nothing to reject.
+-- session 2's structural check has nothing to reject.
 test("schema-steps: the F1 char-stamp lockout can no longer be constructed", function()
     local F = freshLoaded()
     local schema = { version = 2, key = "char.schemaVersion", migrate = noop }
@@ -1212,7 +1212,7 @@ test("schema-steps: the F1 char-stamp lockout can no longer be constructed", fun
 end)
 
 -- schema-stamp-non-number-dev-diagnostic (Rev 4, F3) -- a PRESENT-but-non-number
--- stamp bypasses §8.3's downgrade check by type, so the otherwise-silent overwrite
+-- stamp bypasses the downgrade check by type, so the otherwise-silent overwrite
 -- path gets dev visibility. Dev build: RaiseDevError RAISES the named diagnostic,
 -- the author sees the corrupt stamp immediately (and :New halts before migrate).
 test("schema-steps: a present-but-non-number stamp raises a loud dev diagnostic (F3)", function()
@@ -1229,8 +1229,8 @@ test("schema-steps: a present-but-non-number stamp raises a loud dev diagnostic 
 end)
 
 -- schema-stamp-non-number-release-path (Rev 4, F3) -- release build PRINTS the
--- diagnostic AND the by-spec nil-path proceeds: migrate(db, nil) runs and the stamp
--- is overwritten to the declared version (the §8.2 step-4 path, now made visible).
+-- diagnostic AND the nil-path proceeds: migrate(db, nil) runs and the stamp
+-- is overwritten to the declared version (the step-4 path, now made visible).
 test("schema-steps: a present-but-non-number stamp prints then migrates+stamps in release (F3)", function()
     local F = freshLoaded("1.0.0")
     T.falsy(F.IS_DEV_BUILD, "release build")
@@ -1251,7 +1251,7 @@ test("schema-steps: a present-but-non-number stamp prints then migrates+stamps i
 end)
 
 --------------------------------------------------------------------------------
--- logout-strip (spec §9 logout-strip): the strip contract on raw SV
+-- logout-strip: the strip contract on raw SV
 --------------------------------------------------------------------------------
 
 -- strip-scalar-equal-removed
@@ -1372,7 +1372,7 @@ test("logout-strip: an unmaterialized section is not defaults-walked (nothing to
 end)
 
 --------------------------------------------------------------------------------
--- dynamic-keys (spec §9 dynamic-keys): the data-loss trap, key-by-key
+-- dynamic-keys: the data-loss trap, key-by-key
 --------------------------------------------------------------------------------
 
 -- dynamic-wholesale-assignment
@@ -1460,7 +1460,7 @@ test("dynamic-keys: BawrSpam history/cursor/stats survive load -> mutate -> stri
 end)
 
 --------------------------------------------------------------------------------
--- leftover-keys (spec §9 leftover-keys): legacy keys round-trip
+-- leftover-keys: legacy keys round-trip
 --------------------------------------------------------------------------------
 
 -- leftover-keys-roundtrip
@@ -1510,7 +1510,7 @@ test("leftover-keys: a stale 'profiles' section on a BawrSpam-shape file round-t
 end)
 
 --------------------------------------------------------------------------------
--- unsupported-matrix (spec §9 unsupported-matrix): §5 deny-list, read + write
+-- unsupported-matrix: deny-list, read + write
 --------------------------------------------------------------------------------
 
 local UNSUPPORTED_SECTIONS = { "realm", "class", "race", "faction", "factionrealm", "factionrealmregion", "locale" }
@@ -1549,15 +1549,14 @@ test("unsupported-matrix: every unsupported METHOD call raises in dev with the f
 end)
 
 -- unsupported-read-release-raises
--- [D3 CONTRACT CASE -- PASSING]: an unsupported read raises in both builds -- the
--- __index deny-list path routes through `refuse()`, not F:RaiseDevError. Spec §7
--- row 5 / §5 mechanism note: a nil read is the silent feature-disable §3.4 bans,
--- so the raise is the release refusal.
-test("unsupported-matrix: an unsupported read RAISES in a release build too (D3)", function()
+-- [CONTRACT CASE -- PASSING]: an unsupported read raises in both builds -- the
+-- __index deny-list path routes through `refuse()`, not F:RaiseDevError. The
+-- raise is the release refusal, because a nil read would be the silent feature-disable the contract bans.
+test("unsupported-matrix: an unsupported read RAISES in a release build too", function()
     local F = freshLoaded("1.0.0")
     T.falsy(F.IS_DEV_BUILD, "release build")
     local db = newHS(F, { defaults = { global = {} } })
-    -- Spec §7 row 5 / D3: unsupported access raises in BOTH builds (no checked
+    -- unsupported access raises in BOTH builds (no checked
     -- return for a data read).
     T.raises(function() local _ = db.realm end, "release section read raises", "AceDB feature 'realm'")
     T.raises(function() local _ = db.SetProfile end, "release method read raises", "AceDB feature 'SetProfile'")
@@ -1601,25 +1600,25 @@ test("unsupported-matrix: writing an ABSENT underscore-prefixed field raises (re
 end)
 
 -- unsupported-write-underscore-store
--- SPEC ASSERTION (spec §2.2: "all underscore-prefixed fields" writes "fail per §7
--- ... via the controller's __newindex guard"). The controller stores its state at
+-- CONTRACT ASSERTION (all underscore-prefixed fields: writes must fail
+-- via the controller's __newindex guard). The controller stores its state at
 -- the PRESENT rawset key `_store`; in Lua 5.1 __newindex fires only on ABSENT keys,
 -- so `db._store = ...` raw-updates the live store pointer WITHOUT the guard firing.
--- This test asserts the SPEC (the write must be refused) and is expected to FAIL
+-- This test asserts the contract (the write must be refused) and is expected to FAIL
 -- until the implementation closes the gap (e.g. storing the controller state off a
 -- side table keyed by the controller, so no underscore key is present on it). Left
 -- failing and reported -- not bent to pass.
-test("unsupported-matrix: writing the PRESENT _store field is refused (spec §2.2 underscore guard)", function()
+test("unsupported-matrix: writing the PRESENT _store field is refused (underscore guard)", function()
     local F = freshLoaded()
     local db = newHS(F, { defaults = { global = { a = 1 } } })
     T.raises(function() db._store = "hijack" end, "write _store refused", "reserved or unsupported")
 end)
 
 -- unsupported-write-release-raises
--- [D3 CONTRACT CASE -- PASSING]: an unsupported write raises in both builds -- the
--- __newindex guard routes through `refuse()`, not F:RaiseDevError. Spec §5
--- mechanism note: the raise is the release refusal.
-test("unsupported-matrix: an unsupported write RAISES in a release build too (D3)", function()
+-- [CONTRACT CASE -- PASSING]: an unsupported write raises in both builds -- the
+-- __newindex guard routes through `refuse()`, not F:RaiseDevError. The
+-- raise is the release refusal.
+test("unsupported-matrix: an unsupported write RAISES in a release build too", function()
     local F = freshLoaded("1.0.0")
     T.falsy(F.IS_DEV_BUILD, "release build")
     local db = newHS(F, { defaults = { global = {} } })
@@ -1640,7 +1639,7 @@ test("unsupported-matrix: an UNKNOWN (non-reserved) name behaves as plain Lua, b
 end)
 
 --------------------------------------------------------------------------------
--- escape-hatch (spec §9 escape-hatch): GetNativeHandles
+-- escape-hatch: GetNativeHandles
 --------------------------------------------------------------------------------
 
 -- escape-hatch-shape
@@ -1670,7 +1669,7 @@ test("escape-hatch: mutating a snapshot never affects live behavior", function()
 end)
 
 --------------------------------------------------------------------------------
--- destroy (spec §9 destroy): Destroy + destroyed-controller guards
+-- destroy: Destroy + destroyed-controller guards
 --------------------------------------------------------------------------------
 
 -- destroy-frees-slot
@@ -1705,7 +1704,7 @@ test("destroy: double-Destroy refuses (method call on a destroyed controller)", 
 end)
 
 -- destroy-method-call-dev-raises
-test("destroy: a method call on a destroyed controller raises in dev (§7 row 6)", function()
+test("destroy: a method call on a destroyed controller raises in dev", function()
     local F = freshLoaded()
     local db = newHS(F, { defaults = { global = {} } })
     db:Destroy()
@@ -1714,7 +1713,7 @@ test("destroy: a method call on a destroyed controller raises in dev (§7 row 6)
 end)
 
 -- destroy-method-call-release-refuses
-test("destroy: a method call on a destroyed controller prints+refuses in RELEASE (§7 row 6 -- nil)", function()
+test("destroy: a method call on a destroyed controller prints+refuses in RELEASE (returns nil)", function()
     local F = freshLoaded("1.0.0")
     T.falsy(F.IS_DEV_BUILD, "release build")
     local db = newHS(F, { defaults = { global = {} } })
@@ -1760,7 +1759,7 @@ test("destroy: a method invoked on a non-controller value gets a named refusal (
 end)
 
 -- destroy-section-read-dev-raises
-test("destroy: a section-property READ on a destroyed controller raises in dev (§7 row 7)", function()
+test("destroy: a section-property READ on a destroyed controller raises in dev", function()
     local F = freshLoaded()
     local db = newHS(F, { defaults = { global = {} } })
     db:Destroy()
@@ -1771,12 +1770,12 @@ test("destroy: a section-property READ on a destroyed controller raises in dev (
 end)
 
 -- destroy-section-read-release-raises
--- [D3 CONTRACT CASE -- PASSING]: a destroyed-controller SECTION READ raises in both
--- builds -- the __index destroyed-section guard routes through `refuse()`. Spec §7
--- row 7 / D3: a property read has no checkable nil-refusal path (identical rationale
--- to row 5), so the raise is the release refusal. The destroyed METHOD-call case
--- (row 6, print+nil via F:RaiseDevError) is a different class and stays print+nil.
-test("destroy: a section-property READ on a destroyed controller RAISES in release too (D3, §7 row 7)", function()
+-- [CONTRACT CASE -- PASSING]: a destroyed-controller SECTION READ raises in both
+-- builds -- the __index destroyed-section guard routes through `refuse()`. The
+-- property read has no checkable nil-refusal path (identical rationale
+-- to the deny-list read), so the raise is the release refusal. The destroyed METHOD-call case
+-- (print+nil via F:RaiseDevError) is a different class and stays print+nil.
+test("destroy: a section-property READ on a destroyed controller RAISES in release too", function()
     local F = freshLoaded("1.0.0")
     T.falsy(F.IS_DEV_BUILD, "release build")
     local db = newHS(F, { defaults = { global = {} } })
@@ -1787,7 +1786,7 @@ test("destroy: a section-property READ on a destroyed controller RAISES in relea
 end)
 
 -- destroy-then-strip-still-runs
-test("destroy: a Destroyed controller's store is STILL stripped at logout (§2.2/§4.3)", function()
+test("destroy: a Destroyed controller's store is STILL stripped at logout", function()
     local F = freshLoaded()
     local db = newHS(F, { defaults = { global = { a = 1 } } })
     db.global.dyn = "keep"   -- materialize + add a dynamic key
@@ -1825,7 +1824,7 @@ test("destroy: re-:New excludes the stale store; the newest store's strip is ide
     local db1 = newHS(F, { defaults = { global = { a = 1 } } })
     db1.global.dyn = "v1"
     db1:Destroy()
-    -- Re-:New the same sv (allowed since the slot freed). Under the FND-030
+    -- Re-:New the same sv (allowed since the slot freed). Under the
     -- newest-per-sv rule the OLD store is excluded from the strip set; only
     -- db2's store strips. Fire logout twice: a repeated post-logout seam must
     -- re-strip idempotently (the genuine remaining double-strip path).
@@ -1837,7 +1836,7 @@ test("destroy: re-:New excludes the stale store; the newest store's strip is ide
     T.eq(_G.TestDB.global.a, nil, "default-equal stripped; second strip a no-op (idempotent)")
 end)
 
--- destroy-stale-defaults-no-user-deletion (FND-030)
+-- destroy-stale-defaults-no-user-deletion
 test("destroy: a stale store's changed-out defaults cannot delete a user value at logout", function()
     local F = freshLoaded()
     local db1 = newHS(F, { defaults = { global = { opt = "OLD" } } })
@@ -1850,7 +1849,7 @@ test("destroy: a stale store's changed-out defaults cannot delete a user value a
         defaults = { global = { opt = "NEW" } } })
     db2.global.opt = "OLD"
     fireLogout()
-    -- Only the newest store per sv strips (FND-030). Under the old all-stores
+    -- Only the newest store per sv strips. Under the old all-stores
     -- rule the stale store's walk removed opt because it equals the OLD
     -- default -- silent deletion of a deliberate user choice.
     T.eq(_G.TestDB.global.opt, "OLD",
@@ -1858,7 +1857,7 @@ test("destroy: a stale store's changed-out defaults cannot delete a user value a
 end)
 
 --------------------------------------------------------------------------------
--- ready-hook (spec §9 ready-hook): OnReady synchronous catch-up
+-- ready-hook: OnReady synchronous catch-up
 --------------------------------------------------------------------------------
 
 -- ready-hook-synchronous
@@ -1899,7 +1898,7 @@ test("ready-hook: OnReady on a destroyed controller refuses", function()
 end)
 
 --------------------------------------------------------------------------------
--- saved-variables-too-large hook (FND-046)
+-- saved-variables-too-large hook
 --------------------------------------------------------------------------------
 
 test("size-warning: SAVED_VARIABLES_TOO_LARGE reaches only the matching addon's DB callback", function()
@@ -2031,7 +2030,7 @@ test("size-warning: a callback erroring nil is recorded as a callback failure", 
 end)
 
 --------------------------------------------------------------------------------
--- shared-defaults (spec §9 shared-defaults): one defaults table, two controllers
+-- shared-defaults: one defaults table, two controllers
 --------------------------------------------------------------------------------
 
 -- shared-defaults-not-mutated
@@ -2077,7 +2076,7 @@ test("shared-defaults: one controller's strip leaves the other's data intact", f
 end)
 
 --------------------------------------------------------------------------------
--- strip-isolation (spec §9 strip-isolation): one strip error can't starve another
+-- strip-isolation: one strip error can't starve another
 --------------------------------------------------------------------------------
 
 -- strip-isolation-sibling-error
@@ -2147,7 +2146,7 @@ test("strip-isolation: a consumer OnLogout that ERRORS does not prevent the DB s
 end)
 
 --------------------------------------------------------------------------------
--- FND-007 #1: DB graft-guard. When a NEWER DB.lua loads against an OLDER winning
+-- DB graft-guard. When a NEWER DB.lua loads against an OLDER winning
 -- core whose Lifecycle lacks the post-logout seam DB:New consumes, DB must stand
 -- down at load time (loud, F.DB absent) rather than graft and crash deep in :New.
 --
@@ -2247,8 +2246,8 @@ test("graft-guard: normal core with the seam present -> DB registers (guard iner
 end)
 
 --------------------------------------------------------------------------------
--- Full-name character identity (FND-049): the key on clients with region-wide
--- unique names, and the one-time move off the pre-FND-049 "Name - Realm" key,
+-- Full-name character identity: the key on clients with region-wide
+-- unique names, and the one-time move off the earlier "Name - Realm" key,
 -- skipped whenever another character with the same first name already has
 -- saved data there. L = "Aldric - Test Realm" (the legacy key), N =
 -- "Aldric Vane" (the full-name key), P = "Brennet - Test Realm" (an

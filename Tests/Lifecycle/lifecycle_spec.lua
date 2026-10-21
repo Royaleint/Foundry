@@ -1,6 +1,6 @@
 -- Foundry.Lifecycle behavior tests. Loaded by Tests/run.lua, which passes the
--- harness table T. Returns a list of { name, fn } cases covering the §2 contract
--- (CYCLE-2B-LIFECYCLE plan) and the §3 Phase C enumeration: the single shared
+-- harness table T. Returns a list of { name, fn } cases covering the public contract
+-- and the full enumeration of lifecycle cases: the single shared
 -- dispatcher (one frame, three RegisterEvent, O(1) demux); New/adopt-existing
 -- with ZERO owner-table pollution; Load-on-Demand catch-up and the
 -- addon-loaded-vs-login asymmetry; idempotency; re-register rejection in BOTH
@@ -122,7 +122,7 @@ test("HasModule / RequireModule behavior for Lifecycle; additive version markers
     -- Sibling modules still register and keep their own markers.
     T.truthy(F:HasModule("Events"), "Events still registered")
     T.truthy(F:HasModule("Commands"), "Commands still registered")
-    T.eq(F.Events.API_VERSION, 2, "Events per-module marker == 2 (RegisterBucket added, FND-008)")
+    T.eq(F.Events.API_VERSION, 2, "Events per-module marker == 2 (RegisterBucket added)")
 end)
 
 -- one-frame-three-reg
@@ -423,7 +423,7 @@ test("a controller registered after login catches up synchronously inside :New's
     T.eq(fired, 1, "no second fire on a stray later PLAYER_LOGIN")
 end)
 
--- catchup-login-late-dispatcher (FND-019): the dispatcher itself is created
+-- catchup-login-late-dispatcher: the dispatcher itself is created
 -- AFTER PLAYER_LOGIN already fired (an all-Load-on-Demand consumer is the
 -- session's first Lifecycle user). The one-shot event will never be delivered
 -- to the new frame, so the IsLoggedIn() probe at dispatcher creation must seed
@@ -674,7 +674,7 @@ test("logout error-continue: first hook throws, the sibling's logout STILL fires
     a:OnLogout(function() error("A logout boom") end)
     b:OnLogout(function() bRan = true end)
     T.raises(function() T.Fire(fr, "PLAYER_LOGOUT") end, "dev surfaces after fan-out", "A logout boom")
-    T.truthy(bRan, "controller B's logout STILL ran (Cycle-3 DB strip depends on this)")
+    T.truthy(bRan, "controller B's logout STILL ran (the DB logout strip depends on this)")
 end)
 
 -- error-addonloaded-single-fire
@@ -868,7 +868,7 @@ test("two controllers' GetNativeHandles().frame are the SAME shared identity (in
 end)
 
 --------------------------------------------------------------------------------
--- Dev-only _TestFire seam (Phase F.2 release-axis coverage)
+-- Dev-only _TestFire seam (release-axis coverage)
 --
 -- _TestFire is the in-game analogue of T.Fire: it drives a startup phase through
 -- the LIVE shared dispatcher's real OnEvent path WITHOUT touching the frame's
@@ -902,7 +902,7 @@ test("_TestFire (dev) drives a phase through the LIVE dispatcher without touchin
 end)
 
 -- testfire-release-refuses
-test("_TestFire REFUSES in a release build (prints, fires nothing) — never a player phase injector", function()
+test("_TestFire REFUSES in a release build (prints, fires nothing), never a player phase injector", function()
     local F = T.fresh("1.0.0")
     T.falsy(F.IS_DEV_BUILD, "release build")
     local c = F.Lifecycle:New(nil, "A")
@@ -923,7 +923,7 @@ end)
 -- testfire-dev-raises-in-release-build-via-override
 test("_TestFire refusal is gated on IS_DEV_BUILD, not the build axis literal: override release stays usable", function()
     -- A forced dev build on a real version string (override) is still a dev build,
-    -- so _TestFire works — proving the gate keys on IS_DEV_BUILD, the single source
+    -- so _TestFire works, proving the gate keys on IS_DEV_BUILD, the single source
     -- of truth, not on the raw token.
     T.installMocks("9.9.9"); _G.FOUNDRY_DEV_BUILD_OVERRIDE = true
     local F = T.loadFoundry()
@@ -980,7 +980,7 @@ end)
 --   1. Premature addon-loaded fire: catch-up gated on IsAddOnLoaded's FIRST
 --      return (loadedOrLoading), firing mid-load before SavedVariables exist.
 --   2. Falsy hook-error silently swallowed: `if err then surface` dropped
---      error(nil)/error(false)/error() (a §3.4.1 fail-loud violation).
+--      error(nil)/error(false)/error() (a fail-loud violation).
 --   3. Re-entrancy skip: inserting into loginControllers during a pairs() fan-out
 --      (a hook that :New+:OnLogin a controller) skipped existing subscribers.
 --   4. Post-fire re-register accepted: the one-shot cleared the hook slot, so the
@@ -1090,7 +1090,7 @@ test("finding-4: re-registering an addon-loaded hook AFTER it fired is rejected"
 end)
 
 --------------------------------------------------------------------------------
--- Cycle-3 DB strip seam: _RegisterPostLogout (spec §6.4, plan R2)
+-- DB strip seam: _RegisterPostLogout
 --
 -- The private post-logout-fan-out registration seam DB rides for its logout strip.
 -- Ordering is contractual: the seam's callbacks run AFTER the consumer logout
@@ -1676,7 +1676,7 @@ test("identity hold: identity resolving during combat releases nothing until PLA
 end)
 
 --------------------------------------------------------------------------------
--- Full-name character identity (FND-049): _PlayerIdentity's regional branch.
+-- Full-name character identity: _PlayerIdentity's regional branch.
 -- On a client with region-wide unique names (Forever), identity is first name
 -- plus surname rather than first name plus realm; a nil surname is capped by
 -- the same poll the hold already uses, and settles under the first name
@@ -1712,7 +1712,7 @@ test("identity: regional with a string surname builds 'First Surname' from UnitN
     T.eq(name, "Aldric", "name")
     T.eq(realm, "Test Realm", "realm")
     T.eq(key, "Aldric Vane", "key is 'First Surname'")
-    T.eq(legacyKey, "Aldric - Test Realm", "legacyKey is the pre-FND-049 key")
+    T.eq(legacyKey, "Aldric - Test Realm", "legacyKey is the earlier key")
 end)
 
 test("identity: regional without UnitNameUnmodified takes the legacy path and never reads UnitName's second return", function()
