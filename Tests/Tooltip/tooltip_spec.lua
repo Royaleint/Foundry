@@ -588,4 +588,103 @@ test("a handler destroying its own controller mid-dispatch is safe", function()
     T.eq(laterHits, 2, "later fires skip the destroyed controller cleanly")
 end)
 
+--------------------------------------------------------------------------------
+-- List changes during a dispatch: a handler that destroys and creates
+-- controllers of its own type, throws, or triggers another render of its type
+-- must not make the walk skip a controller.
+--------------------------------------------------------------------------------
+
+-- Empties a log table in place (the handlers hold a reference to it).
+local function clear(t)
+    for i = #t, 1, -1 do t[i] = nil end
+end
+
+-- Creates a named controller whose handler logs its name to 'ran', then runs
+-- the optional extra function.
+local function logged(F, ran, name, extra)
+    return F.Tooltip:New(valid({ name = name, handler = function()
+        ran[#ran + 1] = name
+        if extra then extra() end
+    end }))
+end
+
+test("a handler that destroys an earlier controller then creates one skips none", function()
+    local F = T.fresh()
+    local state = installTDP()
+    local ran = {}
+    local made = false
+    local a = logged(F, ran, "A")
+    logged(F, ran, "B", function()
+        if not made then
+            made = true
+            a:Destroy()
+            logged(F, ran, "D")
+        end
+    end)
+    logged(F, ran, "C")
+    fire(state, 1, makeTooltip(), {})
+    T.eq(table.concat(ran, ","), "A,B,C,D",
+        "C still runs, and D (created mid-dispatch) runs in the same render")
+    clear(ran)
+    fire(state, 1, makeTooltip(), {})
+    T.eq(#ran, 3, "next render runs the three live controllers")
+end)
+
+test("a handler that destroys itself as the last entry then creates one still reaches it", function()
+    local F = T.fresh()
+    local state = installTDP()
+    local ran = {}
+    local made = false
+    logged(F, ran, "A")
+    local b
+    b = logged(F, ran, "B", function()
+        if not made then
+            made = true
+            b:Destroy()
+            logged(F, ran, "D")
+        end
+    end)
+    fire(state, 1, makeTooltip(), {})
+    T.eq(table.concat(ran, ","), "A,B,D", "D created after the destroyed tail runs this render")
+    clear(ran)
+    fire(state, 1, makeTooltip(), {})
+    T.eq(table.concat(ran, ","), "A,D", "destroyed B stays gone")
+end)
+
+test("a throwing handler aborts the render but New still sweeps afterwards", function()
+    local F = T.fresh()
+    local state = installTDP()
+    local ran = {}
+    local a = logged(F, ran, "A")
+    local b = logged(F, ran, "B", function() error("handler boom", 0) end)
+    local c = logged(F, ran, "C")
+    T.raises(function() fire(state, 1, makeTooltip(), {}) end, "handler error surfaces", "handler boom")
+    T.eq(table.concat(ran, ","), "A,B", "the error aborted the walk, as before")
+    b:Destroy()
+    logged(F, ran, "D")
+    clear(ran)
+    fire(state, 1, makeTooltip(), {})
+    T.eq(table.concat(ran, ","), "A,C,D", "dispatch runs every live controller after the error")
+end)
+
+test("a re-entrant render of the same type does not make the outer render skip", function()
+    local F = T.fresh()
+    local state = installTDP()
+    local ran = {}
+    local depth = 0
+    local a = logged(F, ran, "A")
+    logged(F, ran, "B", function()
+        if depth == 0 then
+            depth = 1
+            a:Destroy()
+            fire(state, 1, makeTooltip(), {})
+            depth = 0
+        end
+    end)
+    logged(F, ran, "C")
+    fire(state, 1, makeTooltip(), {})
+    T.eq(table.concat(ran, ","), "A,B,B,C,C",
+        "inner render runs B and C; outer render still reaches C after the inner sweep")
+end)
+
 return tests
