@@ -37,9 +37,40 @@ local liveKeys = {}
 -- TooltipDataProcessor has no removal API, so exactly one post-call is
 -- registered per tooltip type for the module lifetime. It dispatches into a
 -- mutable list of live controllers, so Destroy really stops a handler running.
+--
+-- The list is singly linked through each controller's _next field, so that
+-- removing an entry never shifts the position of another. A handler may
+-- Destroy and New controllers of its own type, or trigger another render of
+-- that type, while a dispatch is walking the list, and the walk needs no
+-- in-progress state that an erroring handler could leave set. Two rules keep
+-- an in-flight walk correct:
+--   1. An unlinked entry keeps its _next. A walk standing on it still follows
+--      the chain forward into entries that are in the list. The cost: a
+--      destroyed controller that its owner still references keeps every
+--      later controller of its type reachable. Set the handle to nil after
+--      Destroy to let them be collected.
+--   2. The tail is never unlinked. A controller created while a walk stands on
+--      the tail is appended to the tail's _next, so that walk still reaches it.
+--      A destroyed tail is unlinked by a later sweep, once something follows it.
 --------------------------------------------------------------------------------
 
-local dispatchers = {}   -- tooltipType -> array of live controllers
+local dispatchers = {}   -- tooltipType -> { head = controller, tail = controller }
+
+-- Unlinks destroyed controllers, except the tail (rule 2 above). Runs from
+-- New and after each dispatch; the rules above make it safe while a walk is
+-- in progress.
+local function sweep(list)
+    local prev, c = nil, list.head
+    while c do
+        local nextC = c._next
+        if c._destroyed and nextC then
+            if prev then prev._next = nextC else list.head = nextC end
+        else
+            prev = c
+        end
+        c = nextC
+    end
+end
 
 local function ensureDispatcher(tooltipType)
     local list = dispatchers[tooltipType]
@@ -48,18 +79,15 @@ local function ensureDispatcher(tooltipType)
     -- Register before recording: if AddTooltipPostCall throws, no dispatcher
     -- entry is left behind for this type.
     _G.TooltipDataProcessor.AddTooltipPostCall(tooltipType, function(tooltip, data)
-        local i = 1
-        while i <= #list do
-            local c = list[i]
-            if c._destroyed then
-                table.remove(list, i)
-            else
-                if not c._filter or c._filter[tooltip] then
-                    c._handler(tooltip, data)
-                end
-                i = i + 1
+        local c = list.head
+        while c do
+            if not c._destroyed and (not c._filter or c._filter[tooltip]) then
+                c._handler(tooltip, data)
             end
+            -- Read after the handler: it may have appended to the tail.
+            c = c._next
         end
+        sweep(list)
     end)
     dispatchers[tooltipType] = list
     return list
@@ -105,8 +133,8 @@ function Controller:GetNativeHandles()
 end
 
 -- Destroys the controller and frees its name. Idempotent. Only flags the
--- entry: the dispatcher sweeps flagged entries itself, so never table.remove
--- here (a Destroy from inside a handler would corrupt the running loop).
+-- entry and leaves _next alone: a walk may be standing on this controller,
+-- and the sweep unlinks it later.
 function Controller:Destroy()
     if self._destroyed then return end
     liveKeys[self._name] = nil
@@ -198,11 +226,9 @@ function Tooltip:New(config)
     local list = ensureDispatcher(tooltipType)
     -- Also sweep here: the dispatcher only sweeps on render, so a
     -- never-rendered type would grow unbounded.
-    local i = 1
-    while i <= #list do
-        if list[i]._destroyed then table.remove(list, i) else i = i + 1 end
-    end
-    list[#list + 1] = c
+    sweep(list)
+    if list.tail then list.tail._next = c else list.head = c end
+    list.tail = c
 
     liveKeys[name] = true
 
