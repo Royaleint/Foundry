@@ -74,7 +74,7 @@ test("Register name 'help' fails loudly in dev build", function()
         "reserved help", "reserved")
 end)
 
--- register-args-type (FND-019): args is validated at Register like every other
+-- register-args-type: args is validated at Register like every other
 -- documented field; an unvalidated non-string used to defer the type error to
 -- PrintHelp's concatenation, in the player's chat at help-render time.
 test("Register: spec.args, when supplied, must be a string", function()
@@ -524,7 +524,7 @@ test("printer and unknownMessage compose: custom message via custom printer", fu
 end)
 
 --------------------------------------------------------------------------------
--- Destroy idempotence and successor protection (FND-028)
+-- Destroy idempotence and successor protection
 --------------------------------------------------------------------------------
 
 -- 41
@@ -549,7 +549,7 @@ test("Destroy is idempotent: a second Destroy cannot kill a successor's command"
 end)
 
 --------------------------------------------------------------------------------
--- spec.help validation and render-time protection (FND-034)
+-- spec.help validation and render-time protection
 --------------------------------------------------------------------------------
 
 -- 42

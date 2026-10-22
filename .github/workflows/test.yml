@@ -1,4 +1,4 @@
-# Test gate: luacheck + the full Tests/run.lua suite (issue #2 follow-up, FND-022).
+# Test gate: luacheck + the full Tests/run.lua suite (issue #2 follow-up).
 name: Tests
 
 on:

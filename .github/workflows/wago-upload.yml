@@ -1,9 +1,9 @@
 name: Wago Upload (manual)
 
 # Recovery tool: re-run ONLY the Wago upload for an already-released tag.
-# Exists because release.yml is a single job — "re-run failed jobs" would also
+# Exists because release.yml is a single job; "re-run failed jobs" would also
 # re-run the CurseForge upload, and CF accepts duplicate files for the same
-# version (the FND-015 failure mode). Dispatch from main with the tag as input
+# version (a duplicate-upload failure mode). Dispatch from main with the tag as input
 # (dispatching on the tag ref itself only works if the tag contains this file).
 
 on:
@@ -65,7 +65,7 @@ jobs:
           fi
           pandoc --wrap=none -f commonmark -t html RELEASE_NOTES.md -o RELEASE_NOTES.html
 
-      - name: Package and Release — Wago only
+      - name: Package and Release (Wago only)
         uses: BigWigsMods/packager@v2
         with:
           args: -p 0 ${{ inputs.wago_id != '' && format('-a {0}', inputs.wago_id) || '' }}

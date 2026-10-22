@@ -114,7 +114,7 @@ local function installNeither()
 end
 
 -- A minimal valid consumer frame: a table that satisfies the frame validation
--- (must have GetObjectType). Settings:New never calls CreateFrame — the consumer
+-- (must have GetObjectType). Settings:New never calls CreateFrame, the consumer
 -- supplies the frame. T.frames stays 0 for all Settings tests.
 local function makeFrame()
     return {
@@ -217,7 +217,7 @@ test("Both stubs present (impossible on real client): modern wins", function()
     -- both surfaces: modern must win.
     local F = T.fresh()
     local state, rootCategory = installModern()
-    -- Now inject the legacy surface too — this violates the single-surface rule
+    -- Now inject the legacy surface too, this violates the single-surface rule
     -- intentionally to test the precedence logic only.
     local legacyCalls = {}
     _G.InterfaceOptions_AddCategory = function(frame)
@@ -401,12 +401,12 @@ test("duplicate key freed on :Destroy; a same-name :New succeeds again", functio
     local F = T.fresh()
     installModern()
     -- Same frame across the cycle: re-registration re-binds the cached
-    -- category (FND-032) rather than registering a duplicate.
+    -- category rather than registering a duplicate.
     local frame = makeFrame()
     local c1 = F.Settings:New(valid({ title = "Addon", frame = frame }))
     T.truthy(c1, "first registration")
     c1:Destroy()
-    -- After destroy, the key is free — re-registration must succeed.
+    -- After destroy, the key is free, re-registration must succeed.
     local c2 = F.Settings:New(valid({ title = "Addon", frame = frame }))
     T.truthy(c2, "re-registration after :Destroy succeeds")
 end)
@@ -568,7 +568,7 @@ test(":Destroy marks controller destroyed and frees the duplicate-refusal key", 
     local F = T.fresh()
     installModern()
     -- Same frame across the cycle: the freed key re-binds the cached
-    -- category (FND-032) rather than registering a duplicate.
+    -- category rather than registering a duplicate.
     local frame = makeFrame()
     local c = F.Settings:New(valid({ title = "Addon", frame = frame }))
     T.truthy(c, "controller created")
@@ -714,7 +714,7 @@ test("release build: a validation error prints and returns nil, does not raise",
 end)
 
 --------------------------------------------------------------------------------
--- Registered-category re-bind (FND-032): New/Destroy cycles must not register
+-- Registered-category re-bind: New/Destroy cycles must not register
 -- a duplicate options-panel category.
 --------------------------------------------------------------------------------
 

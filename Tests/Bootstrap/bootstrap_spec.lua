@@ -1,7 +1,7 @@
 -- Foundry bootstrap (Foundry.lua) behavior tests. Loaded by Tests/run.lua, which
 -- passes the harness table T. Returns a list of { name, fn } cases.
 --
--- Scope: the FND-007 #2 version-aware suppression diagnostic. When a copy of the
+-- Scope: the version-aware suppression diagnostic. When a copy of the
 -- major version already won _G.Foundry_1_0, a later-loading copy must suppress
 -- itself (the bootstrap gate). A DEV winner emits a diagnostic only on API_VERSION
 -- skew; a release winner emits only when it suppresses an enabled DevBuild.
@@ -48,7 +48,7 @@ end
 -- winner installed (the fresh copy wins and reports itself). Never hardcode it
 -- here: a hardcoded pin silently turned case (ii) below from a same-version
 -- embed into a skew when the library bumped 5 -> 6, leaving the same-version
--- silence clause with no test covering it (FND-017).
+-- silence clause with no test covering it.
 local function currentApiVersion()
     T.installMocks("@project-version@")
     T.loadModule("Foundry.lua")
@@ -120,7 +120,7 @@ test("suppression: release winner reports when it suppresses an enabled DevBuild
     T.truthy(ok, "diagnostic names the release winner and the suppressed DevBuild (missing: " .. tostring(missing) .. ")")
 end)
 
--- Red-without-change: case (ii) is the discriminator for the FND-007 #2 change,
+-- Red-without-change: case (ii) is the discriminator for the version-aware change,
 -- NOT case (i). Case (i) fires with or without the third condition (current-1 ~=
 -- current is true either way), so it cannot prove the change. Case (ii) can: with
 -- the third condition (existing.API_VERSION ~= F.API_VERSION) deleted from

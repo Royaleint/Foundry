@@ -1,6 +1,6 @@
 -- Foundry.Tooltip behavior tests. Loaded by Tests/run.lua, which passes the
 -- harness table T. Returns a list of { name, fn } cases covering the v1 public
--- contract: feature detection (cross-flavor; FND-031), atomic :New validation, handler
+-- contract: feature detection (cross-flavor), atomic :New validation, handler
 -- dispatch, tooltip whitelist filter, :Destroy disable-in-place, :GetNativeHandles,
 -- duplicate-key refusal, line emitters, and version pins.
 --
@@ -257,7 +257,7 @@ test("validation is ordered: tooltips checked before name", function()
 end)
 
 test("validation is ordered: name checked before feature-detect", function()
-    -- name is bad (empty), TDP absent — name error must surface first.
+    -- name is bad (empty), TDP absent, name error must surface first.
     local F = T.fresh()
     installNoTDP()
     T.raises(function() F.Tooltip:New(valid({ name = "" })) end,
@@ -340,7 +340,7 @@ test("explicit name= overrides default key; distinct names coexist", function()
     installTDP()
     local c1 = F.Tooltip:New(valid({ type = ITEM_TYPE, name = "Homestead" }))
     T.truthy(c1, "first explicit name")
-    -- Same type but different explicit name — no conflict.
+    -- Same type but different explicit name, no conflict.
     local c2 = F.Tooltip:New(valid({ type = ITEM_TYPE, name = "Sift" }))
     T.truthy(c2, "second explicit name coexists")
 end)
@@ -522,7 +522,7 @@ test("release build: absent TDP prints and returns nil, does not raise", functio
 end)
 
 --------------------------------------------------------------------------------
--- Single dispatcher per type (FND-029): New/Destroy cycles must not accumulate
+-- Single dispatcher per type: New/Destroy cycles must not accumulate
 -- TooltipDataProcessor registrations, and dispatch reaches only live
 -- controllers.
 --------------------------------------------------------------------------------

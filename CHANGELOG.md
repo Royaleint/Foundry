@@ -2,6 +2,19 @@
 
 All notable changes to Foundry-1.0 are recorded here.
 
+## [1.0.111] - 2026-10-21
+
+### Fixed
+- Foundry.List now refuses a NaN or infinite `config.extent`, and handles a NaN
+  or infinite value from `extentCalculator` the same way, matching how it already
+  treated zero and negative values. Dev builds raise an error. Release builds print
+  a message and then refuse the list (`config.extent`) or fall back to an extent of
+  1 (`extentCalculator`).
+
+### Changed
+- The TOC notes and README now describe Foundry as a modern addon library and
+  Ace3 alternative.
+
 ## [1.0.110] - 2026-10-13
 
 ### Changed

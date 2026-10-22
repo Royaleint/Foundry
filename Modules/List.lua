@@ -153,8 +153,8 @@ function List:New(config)
         F:RaiseDevError("List:New: config.extent and config.extentCalculator are mutually exclusive")
         return
     end
-    if hasExtent and (type(config.extent) ~= "number" or config.extent <= 0) then
-        F:RaiseDevError("List:New: config.extent must be a number > 0")
+    if hasExtent and (type(config.extent) ~= "number" or not (config.extent > 0 and config.extent < math.huge)) then
+        F:RaiseDevError("List:New: config.extent must be a finite number > 0")
         return
     end
     if hasCalc and type(config.extentCalculator) ~= "function" then
@@ -165,7 +165,7 @@ function List:New(config)
     -- one is silently clamped to 1px by Blizzard and explodes as a range
     -- error later.
     if hasElementType and not hasExtent and not hasCalc then
-        F:RaiseDevError("List:New: elementType rows require config.extent (> 0) or config.extentCalculator")
+        F:RaiseDevError("List:New: elementType rows require config.extent (finite, > 0) or config.extentCalculator")
         return
     end
 
@@ -201,14 +201,14 @@ function List:New(config)
     if hasExtent then
         view:SetElementExtent(config.extent)
     elseif hasCalc then
-        -- Guards the calculator's return: anything but a number > 0 crashes
+        -- Guards the calculator's return: anything but a finite number > 0 crashes
         -- deep in Blizzard's extent math; dev raises, release prints and
         -- returns 1.
         local consumerCalc = config.extentCalculator
         view:SetElementExtentCalculator(function(index, elementData)
             local extent = consumerCalc(index, elementData)
-            if type(extent) ~= "number" or extent <= 0 then
-                F:RaiseDevError("List: extentCalculator must return a number > 0 (got "
+            if type(extent) ~= "number" or not (extent > 0 and extent < math.huge) then
+                F:RaiseDevError("List: extentCalculator must return a finite number > 0 (got "
                     .. tostring(extent) .. ")")
                 return 1
             end

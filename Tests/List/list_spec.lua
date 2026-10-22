@@ -147,13 +147,24 @@ end)
 
 test("New: non-positive / non-number extent refused", function()
     local F = T.fresh()
-    T.raises(function() F.List:New(valid({ extent = 0 })) end, "zero extent", "config.extent must be a number > 0")
-    T.raises(function() F.List:New(valid({ extent = -3 })) end, "negative extent", "config.extent must be a number > 0")
-    T.raises(function() F.List:New(valid({ extent = "x" })) end, "string extent", "config.extent must be a number > 0")
+    T.raises(function() F.List:New(valid({ extent = 0 })) end, "zero extent", "config.extent must be a finite number > 0")
+    T.raises(function() F.List:New(valid({ extent = -3 })) end, "negative extent", "config.extent must be a finite number > 0")
+    T.raises(function() F.List:New(valid({ extent = "x" })) end, "string extent", "config.extent must be a finite number > 0")
     -- Atomicity spot-check at a DEEP (mid-list) rejection: the extent check sits well
     -- past name/parent/element-identity, yet a rejected :New still builds nothing.
     -- This proves "a rejected :New builds nothing" beyond the early-rejection paths.
     T.eq(#T.frames, 0, "no frame created on a deep (non-positive extent) rejection")
+end)
+
+test("New: NaN and infinite extent refused", function()
+    local F = T.fresh()
+    T.raises(function() F.List:New(valid({ extent = 0 / 0 })) end, "NaN extent",
+        "config.extent must be a finite number > 0")
+    T.raises(function() F.List:New(valid({ extent = math.huge })) end, "+inf extent",
+        "config.extent must be a finite number > 0")
+    T.raises(function() F.List:New(valid({ extent = -math.huge })) end, "-inf extent",
+        "config.extent must be a finite number > 0")
+    T.eq(#T.frames, 0, "no frame created on a non-finite extent rejection")
 end)
 
 test("New: extentCalculator not a function refused", function()
@@ -239,7 +250,7 @@ end)
 
 test("extentCalculator runtime guard: nil/non-positive return raises (dev), valid passes through", function()
     local F = T.fresh()
-    -- A calculator that returns nil for every row — the exact Gate-2 crash shape
+    -- A calculator that returns nil for every row, the shape that crashed in game
     -- (variable-height rows with no rowHeight). :New still accepts it (it IS a
     -- function); the wrapped calculator is what guards the RETURN value.
     local cfg = valid()
@@ -252,7 +263,7 @@ test("extentCalculator runtime guard: nil/non-positive return raises (dev), vali
     -- Dev build: the wrapped calculator raises a clear, located List error rather
     -- than letting nil flow into Blizzard's extent math.
     T.raises(function() calc(1, { id = 1 }) end, "nil return raises",
-        "extentCalculator must return a number")
+        "extentCalculator must return a finite number")
 
     -- Happy path: a valid number flows through the wrapper unchanged.
     local F2 = T.fresh()
@@ -275,13 +286,13 @@ test("extentCalculator runtime guard: release build prints and returns a positiv
     local fallback = calc(1, { id = 1 })
     T.eq(type(fallback), "number", "release returns a number fallback (never nil)")
     T.truthy(fallback > 0, "fallback is positive so Blizzard's extent math is safe")
-    T.outputContains("extentCalculator must return a number",
+    T.outputContains("extentCalculator must return a finite number",
         "release printed the diagnostic instead of raising")
 end)
 
 test("extentCalculator runtime guard: a non-positive numeric return is caught (0 and -5)", function()
     -- The existing guard tests cover only the nil return. A numeric-but-non-positive
-    -- return (0 or negative) is the OTHER half of the `<= 0` branch and must be
+    -- return (0 or negative) is the non-positive half of the check and must be
     -- caught too: a 0 or negative extent is exactly what makes Blizzard clamp to 1px
     -- and explode at display. The -5 case also pins the diagnostic's rendered value
     -- ("(got -5)", via tostring) so a numeric value is reported, not its type.
@@ -292,7 +303,7 @@ test("extentCalculator runtime guard: a non-positive numeric return is caught (0
     local cZero = F.List:New(zeroCfg)
     local calcZero = cZero:GetNativeHandles().view._calc
     T.raises(function() calcZero(1, { id = 1 }) end, "zero return raises",
-        "extentCalculator must return a number > 0")
+        "extentCalculator must return a finite number > 0")
 
     local F2 = T.fresh()
     local negCfg = valid()
@@ -303,7 +314,7 @@ test("extentCalculator runtime guard: a non-positive numeric return is caught (0
     -- The full contiguous substring locks BOTH the message and the tostring render
     -- of the offending value (a plain "> 0" expect would pass with the old type()).
     T.raises(function() calcNeg(1, { id = 1 }) end, "negative return raises with the value",
-        "extentCalculator must return a number > 0 (got -5)")
+        "extentCalculator must return a finite number > 0 (got -5)")
 
     -- Release build: the same non-positive return prints the diagnostic (with the
     -- rendered value) and degrades to a positive fallback instead of raising.
@@ -317,6 +328,34 @@ test("extentCalculator runtime guard: a non-positive numeric return is caught (0
     T.eq(type(fallback), "number", "release returns a number fallback (never <= 0)")
     T.truthy(fallback > 0, "fallback is positive so Blizzard's extent math is safe")
     T.outputContains("(got -5)", "release printed the rendered offending value")
+end)
+
+test("extentCalculator runtime guard: NaN and infinite returns are caught (dev raises, release falls back)", function()
+    local nonFinite = {
+        { "NaN", 0 / 0 },
+        { "+inf", math.huge },
+        { "-inf", -math.huge },
+    }
+    for _, case in ipairs(nonFinite) do
+        local label, value = case[1], case[2]
+        local F = T.fresh()
+        local cfg = valid()
+        cfg.extent = nil
+        cfg.extentCalculator = function() return value end
+        local calc = F.List:New(cfg):GetNativeHandles().view._calc
+        T.raises(function() calc(1, { id = 1 }) end, label .. " return raises",
+            "extentCalculator must return a finite number > 0")
+
+        local F2 = T.fresh("1.0.0")
+        local relCfg = valid()
+        relCfg.extent = nil
+        relCfg.extentCalculator = function() return value end
+        local relCalc = F2.List:New(relCfg):GetNativeHandles().view._calc
+        local fallback = relCalc(1, { id = 1 })
+        T.eq(fallback, 1, label .. " release returns the fallback extent of 1")
+        T.outputContains("extentCalculator must return a finite number > 0",
+            label .. " release printed the diagnostic")
+    end
 end)
 
 test("New: single-initializer path only (selection never wired)", function()

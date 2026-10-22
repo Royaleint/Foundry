@@ -64,7 +64,7 @@ function T.installMocks(tocVersion)
 
     _G.SlashCmdList = {}
 
-    -- Player/realm identity for Foundry.DB (spec §3.4: charKey = "Name - Realm").
+    -- Player/realm identity for Foundry.DB (charKey = "Name - Realm").
     -- T-controllable per test via T.identity. The DEFAULT is a multi-word realm
     -- with internal spaces ("Test Realm") so a charKey separator/space bug cannot
     -- hide -- a wrong separator or a stripped space changes the key and orphans a
@@ -73,9 +73,9 @@ function T.installMocks(tocVersion)
     -- fixture's bucket key. UnitName("player") returns (name, serverName-or-nil) on
     -- the real client; the realm comes from GetRealmName(), so the mock returns
     -- (name, nil) from UnitName and the realm from GetRealmName -- the real shape
-    -- AceDB and DB both consume (acedb-semantics.md §1).
+    -- AceDB and DB both consume.
     -- surname is the region-wide-unique-names field (Forever): nil by default,
-    -- so the default identity takes the ordinary "Name - Realm" path (FND-049).
+    -- so the default identity takes the ordinary "Name - Realm" path.
     T.identity = { name = "Tester", realm = "Test Realm", surname = nil }
     -- unmodifiedOnly makes the UnitName mock return a value a test for the
     -- regional-without-UnitNameUnmodified path must never read ("Wrong"), so
@@ -164,7 +164,7 @@ function T.installMocks(tocVersion)
     -- The existing event-frame buckets and OnEvent plumbing are unchanged, so the
     -- Commands/Events/Lifecycle/DB suites are unaffected.
     T.frames = {}
-    -- Midnight-throw simulation (FND-026): event names in this set make the
+    -- Midnight-throw simulation: event names in this set make the
     -- stub's RegisterEvent/RegisterUnitEvent error, mirroring Retail 12.0+
     -- rejecting unknown/removed event names. Reset here so no case leaks it.
     T.throwOnRegister = nil
@@ -399,7 +399,7 @@ function T.installMocks(tocVersion)
         AddManagedScrollBarVisibilityBehavior = function(scrollBox, scrollBar)
             return { _box = scrollBox, _bar = scrollBar, _managed = true }
         end,
-        -- v1 List must NEVER wire native selection; the spec cuts it. The stub
+        -- v1 List must NEVER wire native selection; the design cuts it. The stub
         -- counts calls so a test can assert List makes none.
         AddSelectionBehavior = function()
             _G.ScrollUtil._selectionCalls = _G.ScrollUtil._selectionCalls + 1
@@ -416,7 +416,7 @@ function T.installMocks(tocVersion)
     -- which invokes cb exactly once and only if the handle was never cancelled
     -- (one-shot, like the real C_Timer.NewTimer firing).
     T.timers = {}
-    -- Deterministic clock for the trailing-edge deadline logic (FND-033):
+    -- Deterministic clock for the trailing-edge deadline logic:
     -- Events.lua reads GetTime(); tests advance T.now explicitly.
     T.now = 0
     _G.GetTime = function() return T.now end
@@ -520,7 +520,7 @@ end
 -- (e.g. T.loadFixture(T.testsDir .. "/DB/fixtures/empty.lua")).
 T.testsDir = testsDir
 
--- The Foundry repo root, exposed so the FND-007 injection specs can loadfile a
+-- The Foundry repo root, exposed so the injection specs can loadfile a
 -- SINGLE module file (Foundry.lua or Modules/DB.lua) against a hand-injected
 -- _G.Foundry_1_0 / hand-stubbed F.Lifecycle -- the graft scenarios the normal
 -- T.loadFoundry() path cannot reproduce (it pre-registers DB and loads a real,
@@ -534,11 +534,11 @@ function T.loadModule(relpath)
     return assert(loadfile(foundryRoot .. "/" .. relpath))("Foundry-1.0")
 end
 
--- Load a SavedVariables-format fixture — a bare `NAME = { ... }` global
--- assignment, exactly the on-disk WTF shape — into a fresh sandbox env and
+-- Load a SavedVariables-format fixture, a bare `NAME = { ... }` global
+-- assignment, exactly the on-disk WTF shape, into a fresh sandbox env and
 -- return that env (so the caller reads env.NAME). Path-parameterized on
 -- purpose: specs load the committed fixtures under Tests/DB/fixtures/, and
--- the Gate-2 real-save-file proofs pass an absolute path to a live WTF file
+-- the real-save-file proofs pass an absolute path to a live WTF file
 -- through this very same loader, so both modes exercise identical code.
 -- The sandbox env is fresh and empty per call: fixtures are pure data and
 -- never see (or pollute) the test mocks or real globals.

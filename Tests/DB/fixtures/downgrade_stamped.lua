@@ -1,5 +1,5 @@
 -- Synthetic fixture: populated save stamped with a NEWER schema version than
--- the build under test declares (spec §8.3: downgrade protection — refuse
+-- the build under test declares (downgrade protection: refuse
 -- construction, SV byte-for-byte untouched, no profileKeys write-back).
 -- Tests declare schema.version lower than 99 against this file.
 SyntheticDB = {
