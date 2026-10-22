@@ -250,7 +250,7 @@ end)
 
 test("extentCalculator runtime guard: nil/non-positive return raises (dev), valid passes through", function()
     local F = T.fresh()
-    -- A calculator that returns nil for every row — the exact Gate-2 crash shape
+    -- A calculator that returns nil for every row, the shape that crashed in game
     -- (variable-height rows with no rowHeight). :New still accepts it (it IS a
     -- function); the wrapped calculator is what guards the RETURN value.
     local cfg = valid()
