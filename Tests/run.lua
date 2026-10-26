@@ -40,6 +40,7 @@ function T.installMocks(tocVersion)
     _G.Settings                     = nil
     _G.InterfaceOptions_AddCategory = nil
     _G.InterfaceOptionsFrame        = nil
+    _G.CreateSettingsButtonInitializer = nil
     _G.TooltipDataProcessor = nil
     _G.C_EventUtils = nil
     _G.C_RestrictedActions = nil
