@@ -72,7 +72,7 @@ end)
 
 test("library API_VERSION does not advance when Window is loaded", function()
     local F = T.fresh()
-    T.eq(F.API_VERSION, 6, "library API_VERSION unchanged after Window load")
+    T.eq(F.API_VERSION, 7, "library API_VERSION unchanged after Window load")
 end)
 
 --------------------------------------------------------------------------------

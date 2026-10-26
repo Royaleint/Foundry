@@ -16,7 +16,7 @@ end
 if F:HasModule("Settings") then return end
 
 local Settings = {}
-Settings.API_VERSION = 1
+Settings.API_VERSION = 2
 
 -- true lets the Settings search find a launcher entry by its title and button text.
 local LAUNCHER_ADD_SEARCH_TAGS = true

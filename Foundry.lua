@@ -25,7 +25,7 @@ local F = {}
 F.IS_DEV_BUILD = isDevBuild
 F.VERSION = isDevBuild and DEV_VERSION or tocVersion
 F.SOURCE = ADDON_NAME
-F.API_VERSION = 6
+F.API_VERSION = 7
 F._LOAD_TOKEN = {}   -- per-load identity token
 
 -- Dev builds raise; release builds print and return, so callers must still

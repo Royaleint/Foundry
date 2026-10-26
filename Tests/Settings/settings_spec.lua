@@ -242,14 +242,15 @@ end
 -- Version pins
 --------------------------------------------------------------------------------
 
-test("version pins: Settings.API_VERSION == 1 and F.API_VERSION == 6", function()
+test("version pins: Settings.API_VERSION == 2 and F.API_VERSION == 7", function()
     local F = T.fresh()
     installModern()
-    T.eq(F.Settings.API_VERSION, 1, "Settings per-module API_VERSION == 1")
-    T.eq(F.API_VERSION, 6, "library API_VERSION == 6 (the v1.0.6 bump covers Settings + RegisterBucket)")
+    T.eq(F.Settings.API_VERSION, 2, "Settings per-module API_VERSION == 2")
+    T.eq(F.API_VERSION, 7, "library API_VERSION == 7 (Settings launcher mode)")
     T.eq(F:RequireModule("Settings", 1), F.Settings, "RequireModule min=1 returns the module")
-    T.raises(function() F:RequireModule("Settings", 99) end,
-        "RequireModule too-high", "version")
+    T.eq(F:RequireModule("Settings", 2), F.Settings, "RequireModule min=2 returns the module")
+    T.raises(function() F:RequireModule("Settings", 3) end,
+        "RequireModule min=3 raises", "version")
 end)
 
 --------------------------------------------------------------------------------

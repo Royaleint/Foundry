@@ -136,9 +136,9 @@ end)
 --------------------------------------------------------------------------------
 
 -- version-pins-library-and-module
-test("version-pins: F.API_VERSION == 6 and DB.API_VERSION == 2", function()
+test("version-pins: F.API_VERSION == 7 and DB.API_VERSION == 2", function()
     local F = T.fresh()
-    T.eq(F.API_VERSION, 6, "library API_VERSION is 6 (DB 3 -> 4, List 4 -> 5, Settings/RegisterBucket 5 -> 6)")
+    T.eq(F.API_VERSION, 7, "library API_VERSION is 7 (DB 3 -> 4, List 4 -> 5, Settings/RegisterBucket 5 -> 6, Settings launcher 6 -> 7)")
     T.eq(F.DB.API_VERSION, 2, "DB per-module marker == 2 (size-warning hook added)")
     -- Sibling markers unchanged.
     T.eq(F.Commands.API_VERSION, 2, "Commands marker == 2 (restriction guard added)")

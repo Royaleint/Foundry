@@ -510,10 +510,10 @@ test("release build: a validation error prints and refuses (returns nil), never 
     T.outputContains("config must be a table", "release printed the diagnostic")
 end)
 
-test("version pins: List.API_VERSION == 1 and F.API_VERSION == 6", function()
+test("version pins: List.API_VERSION == 1 and F.API_VERSION == 7", function()
     local F = T.fresh()
     T.eq(F.List.API_VERSION, 1, "List per-module marker == 1")
-    T.eq(F.API_VERSION, 6, "library API_VERSION == 6 (List bumped 4 -> 5; Settings/RegisterBucket 5 -> 6)")
+    T.eq(F.API_VERSION, 7, "library API_VERSION == 7 (List bumped 4 -> 5; Settings/RegisterBucket 5 -> 6; Settings launcher 6 -> 7)")
 end)
 
 test("New: managedScrollBarVisibility opt-in wires the behavior; omitting it leaves it unset", function()
