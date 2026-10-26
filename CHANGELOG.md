@@ -2,6 +2,20 @@
 
 All notable changes to Foundry-1.0 are recorded here.
 
+## [1.0.112] - 2026-10-26
+
+### Fixed
+- Foundry.Tooltip no longer skips a handler during a render when another
+  handler of the same tooltip type destroys a controller and then creates a
+  new one. The new controller now runs in that same render too, including
+  when the handler that created it destroyed itself and was the last handler
+  in the list.
+
+### Changed
+- If your addon still holds a destroyed tooltip controller, it keeps later
+  controllers of the same tooltip type from being freed until you release it.
+  Set your reference to nil after calling `Destroy`.
+
 ## [1.0.111] - 2026-10-21
 
 ### Fixed
