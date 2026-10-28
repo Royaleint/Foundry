@@ -2,6 +2,16 @@
 
 All notable changes to Foundry-1.0 are recorded here.
 
+## [1.0.113] - 2026-10-28
+
+### Changed
+- Foundry.Settings now always uses Blizzard's Settings API. Every client
+  Foundry supports has it, so addons on those clients see no change, and
+  `GetNativeHandles().mode` is always `"settings"`. On a client without the
+  Settings API, `Settings:New` registers nothing. Dev builds raise an error.
+  Release builds print a message and return without registering, instead of
+  falling back to the old InterfaceOptions panel.
+
 ## [1.0.112] - 2026-10-26
 
 ### Fixed
