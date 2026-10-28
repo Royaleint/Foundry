@@ -129,18 +129,128 @@ local function valid(over)
     return cfg
 end
 
+-- Launcher flavor: installModern() plus the vertical-layout functions and the
+-- global CreateSettingsButtonInitializer. Every Blizzard settings call, canvas
+-- ones included, appends its name to state.log in call order. Setting
+-- state.throwOn[fnName] makes that function error after it is logged.
+-- The vertical category is a distinct object from the canvas root category
+-- (same GetID 35), so tests can tell which one a call received.
+local function installLauncher()
+    local state, rootCategory = installModern()
+    state.log                  = {}
+    state.throwOn              = {}
+    state.verticalCalls        = {}
+    state.initializerCalls     = {}
+    state.registerInitializerCalls = {}
+
+    local verticalCategory = {
+        _id = 35,
+        GetID = function(self) return self._id end,
+    }
+
+    local function logged(fnName, fn)
+        return function(...)
+            state.log[#state.log + 1] = fnName
+            if state.throwOn[fnName] then
+                error("stub throw: " .. fnName, 0)
+            end
+            return fn(...)
+        end
+    end
+
+    local S = _G.Settings
+    for _, fnName in ipairs({
+        "RegisterCanvasLayoutCategory", "RegisterCanvasLayoutSubcategory", "RegisterAddOnCategory",
+    }) do
+        S[fnName] = logged(fnName, S[fnName])
+    end
+
+    S.RegisterVerticalLayoutCategory = logged("RegisterVerticalLayoutCategory", function(title)
+        state.verticalCalls[#state.verticalCalls + 1] = { title = title }
+        return verticalCategory, { _isVerticalLayout = true }
+    end)
+
+    S.RegisterInitializer = logged("RegisterInitializer", function(category, initializer)
+        state.registerInitializerCalls[#state.registerInitializerCalls + 1] =
+            { category = category, initializer = initializer }
+    end)
+
+    -- Blizzard asserts addSearchTags ~= nil on every client.
+    _G.CreateSettingsButtonInitializer = logged("CreateSettingsButtonInitializer", function(...)
+        local name, buttonText, buttonClick, tooltip, addSearchTags = ...
+        assert(addSearchTags ~= nil, "addSearchTags must not be nil")
+        local initializer = { _isInitializer = true }
+        state.initializerCalls[#state.initializerCalls + 1] = {
+            name          = name,
+            buttonText    = buttonText,
+            buttonClick   = buttonClick,
+            tooltip       = tooltip,
+            addSearchTags = addSearchTags,
+            argCount      = select("#", ...),
+            initializer   = initializer,
+        }
+        return initializer
+    end)
+
+    return state, verticalCategory, rootCategory
+end
+
+-- A launch function that records each call and its argument count.
+local function makeLaunch()
+    local rec = { calls = 0, argCounts = {} }
+    rec.fn = function(...)
+        rec.calls = rec.calls + 1
+        rec.argCounts[#rec.argCounts + 1] = select("#", ...)
+    end
+    return rec
+end
+
+-- A minimal valid launcher config. Tests override fields via 'over'.
+local function validLauncher(over)
+    local cfg = {
+        title      = "TestAddon",
+        buttonText = "Open TestAddon",
+        launch     = function() end,
+    }
+    if over then
+        for k, v in pairs(over) do cfg[k] = v end
+    end
+    return cfg
+end
+
+-- Simulates the player clicking the registered button: Blizzard's OnClick
+-- passes (button, mouseButton, down).
+local function click(state, index)
+    state.initializerCalls[index or 1].buttonClick({}, "LeftButton", false)
+end
+
+local LAUNCHER_CALLS = {
+    "RegisterVerticalLayoutCategory",
+    "CreateSettingsButtonInitializer",
+    "RegisterInitializer",
+    "RegisterAddOnCategory",
+}
+
+local function assertLog(log, expected, msg)
+    T.eq(#log, #expected, msg .. ": call count")
+    for i, fnName in ipairs(expected) do
+        T.eq(log[i], fnName, msg .. ": call " .. i)
+    end
+end
+
 --------------------------------------------------------------------------------
 -- Version pins
 --------------------------------------------------------------------------------
 
-test("version pins: Settings.API_VERSION == 1 and F.API_VERSION == 6", function()
+test("version pins: Settings.API_VERSION == 2 and F.API_VERSION == 7", function()
     local F = T.fresh()
     installModern()
-    T.eq(F.Settings.API_VERSION, 1, "Settings per-module API_VERSION == 1")
-    T.eq(F.API_VERSION, 6, "library API_VERSION == 6 (the v1.0.6 bump covers Settings + RegisterBucket)")
+    T.eq(F.Settings.API_VERSION, 2, "Settings per-module API_VERSION == 2")
+    T.eq(F.API_VERSION, 7, "library API_VERSION == 7 (Settings launcher mode)")
     T.eq(F:RequireModule("Settings", 1), F.Settings, "RequireModule min=1 returns the module")
-    T.raises(function() F:RequireModule("Settings", 99) end,
-        "RequireModule too-high", "version")
+    T.eq(F:RequireModule("Settings", 2), F.Settings, "RequireModule min=2 returns the module")
+    T.raises(function() F:RequireModule("Settings", 3) end,
+        "RequireModule min=3 raises", "version")
 end)
 
 --------------------------------------------------------------------------------
@@ -696,6 +806,303 @@ test("cycling the PARENT does not break a child re-bind (category identity survi
     T.eq(#state.registerRootCalls, 1, "parent never re-registered")
     T.eq(#state.registerSubCalls, 1, "child never re-registered")
     T.eq(child2:GetCategoryID(), 36, "child re-bound through the cycled parent")
+end)
+
+--------------------------------------------------------------------------------
+-- Launcher mode: a vertical-layout category holding one button
+--------------------------------------------------------------------------------
+
+local M1 = "Settings:New: supply exactly one of config.frame or config.launch"
+local M2 = "Settings:New: config.frame must be a WoW frame (table with GetObjectType), or supply config.launch instead"
+local M3 = "Settings:New: config.frame must be a WoW frame (table with GetObjectType)"
+local M4 = "Settings:New: config.buttonText is only used with config.launch"
+local M5 = "Settings:New: config.launch must be a function"
+local M6 = "Settings:New: config.buttonText must be a non-empty string when config.launch is used"
+local M7 = "Settings:New: config.parent is not supported with config.launch"
+local M8 = "Settings:New: Blizzard's Settings API for launcher categories (Settings.RegisterVerticalLayoutCategory, "
+    .. "Settings.RegisterInitializer, Settings.RegisterAddOnCategory and CreateSettingsButtonInitializer) "
+    .. "is not available on this client"
+local M10 = "Settings: the launcher button for 'TestAddon' was clicked after its controller was destroyed; "
+    .. "call :New again with the same title and buttonText to restore it"
+
+test("launcher: four Blizzard calls in order, RegisterAddOnCategory last; no canvas calls, no frames", function()
+    local F = T.fresh()
+    local state, verticalCategory = installLauncher()
+    local c = F.Settings:New(validLauncher())
+    T.truthy(c, "controller created")
+    assertLog(state.log, LAUNCHER_CALLS, "launcher registration")
+    T.eq(#state.registerRootCalls, 0, "RegisterCanvasLayoutCategory not called")
+    T.eq(#state.registerSubCalls, 0, "RegisterCanvasLayoutSubcategory not called")
+    T.eq(state.verticalCalls[1].title, "TestAddon", "vertical category takes the title")
+    T.eq(state.registerInitializerCalls[1].category, verticalCategory, "RegisterInitializer got the category")
+    T.eq(state.registerInitializerCalls[1].initializer, state.initializerCalls[1].initializer,
+        "RegisterInitializer got the created initializer")
+    T.eq(state.registerAddOnCalls[1].category, verticalCategory, "RegisterAddOnCategory got the category")
+    T.eq(#T.frames, 0, "launcher :New never calls CreateFrame")
+end)
+
+test("launcher: button initializer receives title, buttonText, nil tooltip, search tags on, and a wrapper", function()
+    local F = T.fresh()
+    local state = installLauncher()
+    local launch = function() end
+    F.Settings:New(validLauncher({ title = "MyAddon", buttonText = "Open MyAddon", launch = launch }))
+    local call = state.initializerCalls[1]
+    T.eq(call.argCount,      5,              "exactly five arguments passed")
+    T.eq(call.name,          "MyAddon",      "name is the title")
+    T.eq(call.buttonText,    "Open MyAddon", "buttonText forwarded")
+    T.eq(call.tooltip,       nil,            "tooltip is nil")
+    T.eq(call.addSearchTags, true,           "addSearchTags is true")
+    T.eq(type(call.buttonClick), "function", "click handler is a function")
+    T.truthy(call.buttonClick ~= launch,     "click handler is a wrapper, not the consumer's launch")
+end)
+
+test("launcher click: calls launch once with no arguments; after :Destroy dev raises; re-New dispatches to the new launch", function()
+    local F = T.fresh()
+    local state = installLauncher()
+    local first = makeLaunch()
+    local c = F.Settings:New(validLauncher({ launch = first.fn }))
+    click(state)
+    T.eq(first.calls, 1, "launch called once")
+    T.eq(first.argCounts[1], 0, "launch received no arguments")
+
+    c:Destroy()
+    T.raises(function() click(state) end, "click after destroy", M10)
+    T.eq(first.calls, 1, "launch not called after :Destroy")
+
+    local second = makeLaunch()
+    local c2 = F.Settings:New(validLauncher({ launch = second.fn }))
+    T.truthy(c2, "re-New with a different launch re-binds")
+    click(state)
+    T.eq(second.calls, 1, "new launch runs")
+    T.eq(second.argCounts[1], 0, "new launch received no arguments")
+    T.eq(first.calls, 1, "old launch does not run")
+end)
+
+test("launcher click after :Destroy in a release build is silent", function()
+    local F = T.fresh("1.0.0")
+    local state = installLauncher()
+    local rec = makeLaunch()
+    local c = F.Settings:New(validLauncher({ launch = rec.fn }))
+    c:Destroy()
+    click(state)
+    T.eq(#T.output, 0, "no output line")
+    T.eq(rec.calls, 0, "launch not called")
+end)
+
+test("launcher refusals: each raises its message, makes no Blizzard calls, and leaves the name free", function()
+    local cases = {
+        { "frame and launch",           function() return validLauncher({ frame = makeFrame() }) end, M1 },
+        { "invalid frame and launch",   function() return validLauncher({ frame = {} }) end,          M1 },
+        { "neither frame nor launch",   function() return { title = "TestAddon" } end,                M2 },
+        { "invalid frame alone",        function() return valid({ frame = {} }) end,                  M3 },
+        { "frame with empty buttonText", function() return valid({ buttonText = "" }) end,            M4 },
+        { "frame with buttonText",      function() return valid({ buttonText = "Open" }) end,         M4 },
+        { "launch = false",             function() return validLauncher({ launch = false }) end,      M5 },
+        { "launch is a string",         function() return validLauncher({ launch = "open" }) end,     M5 },
+        { "buttonText nil", function()
+            local cfg = validLauncher(); cfg.buttonText = nil; return cfg
+        end, M6 },
+        { "buttonText empty",           function() return validLauncher({ buttonText = "" }) end,     M6 },
+        { "buttonText not a string",    function() return validLauncher({ buttonText = 5 }) end,      M6 },
+        { "launch with parent table",   function() return validLauncher({ parent = {} }) end,         M7 },
+    }
+    for _, case in ipairs(cases) do
+        local label, build, message = case[1], case[2], case[3]
+        local F = T.fresh()
+        local state = installLauncher()
+        T.raises(function() F.Settings:New(build()) end, label, message)
+        T.eq(#state.log, 0, label .. ": no Blizzard calls")
+        local after = installLauncher()
+        T.truthy(F.Settings:New(validLauncher()), label .. ": the name is still free")
+        assertLog(after.log, LAUNCHER_CALLS, label .. ": later :New registers fresh")
+    end
+
+    -- A live canvas parent is refused as well, with no further calls.
+    local F = T.fresh()
+    local state = installLauncher()
+    local parent = F.Settings:New(valid({ title = "Parent" }))
+    local before = #state.log
+    T.raises(function()
+        F.Settings:New(validLauncher({ parent = parent }))
+    end, "launch with live parent", M7)
+    T.eq(#state.log, before, "launch with live parent: no Blizzard calls")
+end)
+
+test("launcher refusals: a missing launcher API function refuses with no calls; the name stays free", function()
+    local removals = {
+        { "RegisterVerticalLayoutCategory", function() _G.Settings.RegisterVerticalLayoutCategory = nil end },
+        { "RegisterInitializer",            function() _G.Settings.RegisterInitializer = nil end },
+        { "RegisterAddOnCategory",          function() _G.Settings.RegisterAddOnCategory = nil end },
+        { "CreateSettingsButtonInitializer", function() _G.CreateSettingsButtonInitializer = nil end },
+    }
+    for _, removal in ipairs(removals) do
+        local label, remove = removal[1], removal[2]
+        local F = T.fresh()
+        local state = installLauncher()
+        remove()
+        T.raises(function() F.Settings:New(validLauncher()) end, "missing " .. label, M8)
+        T.eq(#state.log, 0, "missing " .. label .. ": no Blizzard calls")
+        local after = installLauncher()
+        T.truthy(F.Settings:New(validLauncher()), "missing " .. label .. ": the name is still free")
+        assertLog(after.log, LAUNCHER_CALLS, "missing " .. label .. ": later :New registers fresh")
+    end
+end)
+
+test("launcher validation order: title, then mode, then fields, then parent", function()
+    local F = T.fresh()
+    installLauncher()
+    T.raises(function() F.Settings:New({ title = "" }) end,
+        "title before mode", "config.title must be a non-empty string")
+    T.raises(function() F.Settings:New(validLauncher({ frame = "notaframe" })) end,
+        "exactly-one before frame type", M1)
+    local cfg = validLauncher({ launch = false }); cfg.buttonText = nil
+    T.raises(function() F.Settings:New(cfg) end, "launch type before buttonText", M5)
+    T.raises(function()
+        F.Settings:New(validLauncher({ buttonText = "", parent = {} }))
+    end, "fields before parent", M6)
+    T.raises(function()
+        F.Settings:New(validLauncher({ parent = {}, name = "" }))
+    end, "parent before name", M7)
+    -- M3 text is unchanged for an invalid frame without a launch.
+    T.raises(function() F.Settings:New(valid({ frame = {} })) end, "invalid frame", M3)
+end)
+
+test("launcher :Open opens the category, never launch; :GetCategoryID returns its ID", function()
+    local F = T.fresh()
+    local state = installLauncher()
+    local rec = makeLaunch()
+    local c = F.Settings:New(validLauncher({ launch = rec.fn }))
+    c:Open()
+    T.eq(#state.openCalls, 1, "OpenToCategory called once")
+    T.eq(state.openCalls[1].categoryID, 35, "opened at the category's ID")
+    T.eq(rec.calls, 0, ":Open does not call launch")
+    T.eq(c:GetCategoryID(), 35, "GetCategoryID returns 35")
+end)
+
+test("launcher :GetNativeHandles shape; canvas gains kind; a matching re-New reuses the cached objects", function()
+    local F = T.fresh()
+    local state, verticalCategory = installLauncher()
+    local c = F.Settings:New(validLauncher())
+    local h = c:GetNativeHandles()
+    T.eq(h.frame,       nil,              "frame is nil for a launcher")
+    T.eq(h.category,    verticalCategory, "category is the vertical category")
+    T.eq(h.categoryID,  35,               "categoryID from category:GetID()")
+    T.eq(h.mode,        "settings",       "mode is 'settings'")
+    T.truthy(h.layout and h.layout._isVerticalLayout, "layout is the vertical layout")
+    T.eq(h.initializer, state.initializerCalls[1].initializer, "initializer is the button initializer")
+    T.eq(h.kind,        "launcher",       "kind is 'launcher'")
+
+    local canvas = F.Settings:New(valid({ title = "CanvasAddon" }))
+    local ch = canvas:GetNativeHandles()
+    T.eq(ch.kind,        "canvas", "canvas kind is 'canvas'")
+    T.eq(ch.initializer, nil,      "canvas has no initializer")
+
+    c:Destroy()
+    T.eq(c._launch,      nil, "_launch released")
+    T.eq(c._initializer, nil, "_initializer released")
+    local before = #state.log
+    local c2 = F.Settings:New(validLauncher())
+    local h2 = c2:GetNativeHandles()
+    T.eq(#state.log, before, "re-New makes no Blizzard calls")
+    T.eq(h2.initializer, h.initializer, "same initializer object")
+    T.eq(h2.category,    h.category,    "same category object")
+    T.eq(h2.layout,      h.layout,      "same layout object")
+    T.eq(h2.kind,        "launcher",    "kind is 'launcher'")
+end)
+
+test("launcher re-bind: the API check applies to fresh registrations only", function()
+    local F = T.fresh()
+    local state = installLauncher()
+    local c = F.Settings:New(validLauncher())
+    c:Destroy()
+    _G.CreateSettingsButtonInitializer = nil
+    _G.Settings.RegisterVerticalLayoutCategory = nil
+    local before = #state.log
+    T.truthy(F.Settings:New(validLauncher()), "matching re-New succeeds without the launcher API")
+    T.eq(#state.log, before, "no Blizzard calls")
+end)
+
+test("launcher re-bind: mismatches refuse with a token and make no calls", function()
+    local F = T.fresh()
+    local state = installLauncher()
+    local frame = makeFrame()
+
+    local c = F.Settings:New(validLauncher())
+    c:Destroy()
+    local before = #state.log
+    T.raises(function()
+        F.Settings:New(validLauncher({ buttonText = "Open Something Else" }))
+    end, "different buttonText", "with a different buttonText")
+    T.raises(function()
+        F.Settings:New(validLauncher({ title = "Other Title", name = "TestAddon" }))
+    end, "different title", "with a different title")
+    T.raises(function()
+        F.Settings:New(valid({ title = "TestAddon", frame = frame }))
+    end, "launcher to canvas", "with a different kind")
+    T.eq(#state.log, before, "launcher-side refusals: no Blizzard calls")
+
+    local canvas = F.Settings:New(valid({ title = "CanvasAddon", frame = frame }))
+    canvas:Destroy()
+    before = #state.log
+    T.raises(function()
+        F.Settings:New(validLauncher({ title = "CanvasAddon" }))
+    end, "canvas to launcher", "with a different kind")
+    T.eq(#state.log, before, "canvas-side refusal: no Blizzard calls")
+end)
+
+test("launcher as parent: a canvas child registers under the launcher's category", function()
+    local F = T.fresh()
+    local state, verticalCategory = installLauncher()
+    local parent = F.Settings:New(validLauncher({ title = "ParentAddon" }))
+    local addOnBefore = #state.registerAddOnCalls
+    local childFrame = makeFrame()
+    local child = F.Settings:New({ title = "ChildPanel", frame = childFrame, parent = parent })
+    T.truthy(child, "child controller created")
+    T.eq(#state.registerSubCalls, 1, "RegisterCanvasLayoutSubcategory called once")
+    T.eq(state.registerSubCalls[1].parentCategory, verticalCategory, "child registered under the launcher's category")
+    T.eq(state.registerSubCalls[1].frame, childFrame, "child frame forwarded")
+    T.eq(#state.registerAddOnCalls, addOnBefore, "RegisterAddOnCategory not called again")
+end)
+
+test("live-key duplicate refusal applies across canvas and launcher", function()
+    local F = T.fresh()
+    local state = installLauncher()
+    F.Settings:New(validLauncher({ title = "Addon" }))
+    local before = #state.log
+    T.raises(function() F.Settings:New(valid({ title = "Addon" })) end,
+        "canvas over live launcher", "a live controller already owns the name")
+
+    F.Settings:New(valid({ title = "Other" }))
+    T.raises(function() F.Settings:New(validLauncher({ title = "Other" })) end,
+        "launcher over live canvas", "a live controller already owns the name")
+    T.eq(#state.log, before + 2, "only the canvas registration's two calls were made")
+end)
+
+test("release build: a launcher refusal prints and returns nil", function()
+    local F = T.fresh("1.0.0")
+    local state = installLauncher()
+    local c = F.Settings:New(validLauncher({ launch = false }))
+    T.eq(c, nil, "release :New returns nil")
+    T.outputContains(M5, "release printed the diagnostic")
+    T.eq(#state.log, 0, "no Blizzard calls")
+end)
+
+test("launcher: a throw in a registration step propagates and holds no name or cache entry", function()
+    for step = 2, 4 do
+        local fnName = LAUNCHER_CALLS[step]
+        local F = T.fresh()
+        local state = installLauncher()
+        state.throwOn[fnName] = true
+        T.raises(function() F.Settings:New(validLauncher()) end,
+            "throw at " .. fnName, "stub throw: " .. fnName)
+        T.eq(#state.log, step, fnName .. ": registration stopped at the throwing call")
+        T.eq(state.log[step], fnName, fnName .. ": the throwing call is last")
+
+        state.throwOn[fnName] = nil
+        state.log = {}
+        T.truthy(F.Settings:New(validLauncher()), fnName .. ": the name is still free")
+        assertLog(state.log, LAUNCHER_CALLS, fnName .. ": retry registers from the first call")
+    end
 end)
 
 return tests

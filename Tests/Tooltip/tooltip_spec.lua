@@ -89,7 +89,7 @@ end)
 test("library API_VERSION does not advance when Tooltip is loaded", function()
     local F = T.fresh()
     installTDP()
-    T.eq(F.API_VERSION, 6, "library API_VERSION unchanged after Tooltip load")
+    T.eq(F.API_VERSION, 7, "library API_VERSION unchanged after Tooltip load")
 end)
 
 --------------------------------------------------------------------------------
