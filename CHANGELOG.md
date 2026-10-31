@@ -2,6 +2,21 @@
 
 All notable changes to Foundry-1.0 are recorded here.
 
+## [1.0.114] - 2026-10-31
+
+### Added
+- **Foundry.Settings: launcher entries.**
+  `F.Settings:New({ title = ..., buttonText = ..., launch = fn })` registers an
+  entry under AddOns in the Settings panel that holds one button. Clicking it
+  calls your function with no arguments, which should show your own options
+  window. Use it when your options live in your own window instead of
+  building a placeholder panel. The entry's title and button text are found by
+  the Settings search. Settings moves to API_VERSION 2 and the library to
+  API_VERSION 7. Foundry is embedded, so the first copy loaded serves every
+  addon, and it may be an older one from another addon. To raise an error on an
+  older copy, call `F:RequireModule("Settings", 2)`. To fall back instead,
+  check `F.Settings and (F.Settings.API_VERSION or 0) >= 2` before using it.
+
 ## [1.0.113] - 2026-10-28
 
 ### Changed
