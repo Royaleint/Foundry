@@ -12,8 +12,9 @@ All notable changes to Foundry-1.0 are recorded here.
   window. Use it when your options live in your own window instead of
   building a placeholder panel. The entry's title and button text are found by
   the Settings search. Settings moves to API_VERSION 2 and the library to
-  API_VERSION 7. Foundry is embedded, so the first copy loaded serves every
-  addon, and it may be an older one from another addon. To raise an error on an
+  API_VERSION 7. Only one Foundry copy runs, the first one loaded, so it may be
+  older than the copy you shipped (see "Which copy runs, and why" on the
+  Packaging Foundry wiki page). To raise an error on an
   older copy, call `F:RequireModule("Settings", 2)`. To fall back instead,
   check `F.Settings and (F.Settings.API_VERSION or 0) >= 2` before using it.
 
