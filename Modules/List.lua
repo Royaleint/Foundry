@@ -169,8 +169,10 @@ function List:New(config)
         return
     end
 
-    if config.spacing ~= nil and type(config.spacing) ~= "number" then
-        F:RaiseDevError("List:New: config.spacing must be a number")
+    if config.spacing ~= nil
+        and (type(config.spacing) ~= "number" or config.spacing ~= config.spacing
+            or config.spacing == math.huge or config.spacing == -math.huge) then
+        F:RaiseDevError("List:New: config.spacing must be a finite number")
         return
     end
 

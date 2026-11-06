@@ -177,7 +177,36 @@ end)
 
 test("New: spacing not a number refused", function()
     local F = T.fresh()
-    T.raises(function() F.List:New(valid({ spacing = "wide" })) end, "spacing type", "config.spacing must be a number")
+    T.raises(function() F.List:New(valid({ spacing = "wide" })) end, "spacing type", "config.spacing must be a finite number")
+end)
+
+test("New: NaN and infinite spacing refused", function()
+    local F = T.fresh()
+    T.raises(function() F.List:New(valid({ spacing = 0 / 0 })) end, "NaN spacing",
+        "config.spacing must be a finite number")
+    T.raises(function() F.List:New(valid({ spacing = math.huge })) end, "+inf spacing",
+        "config.spacing must be a finite number")
+    T.raises(function() F.List:New(valid({ spacing = -math.huge })) end, "-inf spacing",
+        "config.spacing must be a finite number")
+    T.eq(#T.frames, 0, "no frame created on a non-finite spacing rejection")
+    T.eq(#T.views, 0, "no view created on a non-finite spacing rejection")
+end)
+
+test("New: non-finite spacing in a release build prints and refuses", function()
+    local F = T.fresh("1.0.0")
+    T.eq(F.List:New(valid({ spacing = 0 / 0 })), nil, "NaN spacing refused in release")
+    T.outputContains("config.spacing must be a finite number", "release printed the diagnostic")
+    T.eq(#T.views, 0, "no view created in release refusal")
+end)
+
+test("New: finite spacing (0, positive, negative) reaches the view unchanged", function()
+    local F = T.fresh()
+    F.List:New(valid({ spacing = 0 }))
+    T.eq(T.views[#T.views]._spacing, 0, "zero spacing wired")
+    F.List:New(valid({ spacing = 4 }))
+    T.eq(T.views[#T.views]._spacing, 4, "positive spacing wired")
+    F.List:New(valid({ spacing = -2 }))
+    T.eq(T.views[#T.views]._spacing, -2, "finite negative spacing wired")
 end)
 
 test("New: validation is ordered (type error before precondition)", function()
