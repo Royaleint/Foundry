@@ -131,9 +131,17 @@ function T.installMocks(tocVersion)
     T.loggedIn = false
     _G.IsLoggedIn = function() return T.loggedIn end
 
+    -- Per-addon-name Version overrides: T.addonVersions[addonName] = "1.2.3"
+    -- answers that name instead of tocVersion. Empty by default, so every name
+    -- gets tocVersion. T.loadCopy fills it for the copy it loads.
+    T.addonVersions = {}
     _G.C_AddOns = {
-        GetAddOnMetadata = function(_, key)
-            if key == "Version" then return tocVersion end
+        GetAddOnMetadata = function(addonName, key)
+            if key == "Version" then
+                local override = T.addonVersions[addonName]
+                if override ~= nil then return override end
+                return tocVersion
+            end
             return nil
         end,
         -- The REAL C_AddOns.IsAddOnLoaded returns TWO booleans: loadedOrLoading,
@@ -578,6 +586,51 @@ function T.loadFoundry()
     return _G.Foundry_1_0
 end
 
+-- Load a set of Foundry files from any root, in order, under one addon name,
+-- the way the TOC would. Returns the Foundry table now serving
+-- (_G.Foundry_1_0).
+--   root      directory holding the files
+--   files     relative paths, in load order
+--   addonName the name each file receives as its first argument; also the key
+--             the GetAddOnMetadata mock answers for (default "Foundry-1.0")
+--   version   optional: the Version answered for addonName; nil leaves the
+--             mock's default (the tocVersion given to installMocks)
+-- Call after installMocks; several copies may be loaded one after another.
+function T.loadCopy(spec)
+    local addonName = spec.addonName or "Foundry-1.0"
+    if spec.version ~= nil then T.addonVersions[addonName] = spec.version end
+    for _, rel in ipairs(spec.files) do
+        local chunk = assert(loadfile(spec.root .. "/" .. rel))
+        chunk(addonName)
+    end
+    return _G.Foundry_1_0
+end
+
+-- The pinned release copies under Tests/OldCopies, with their load order.
+T.OLD_COPIES = {
+    ["v1.0.4"] = {
+        "Foundry.lua", "Modules/Commands.lua", "Modules/Events.lua",
+        "Modules/Lifecycle.lua", "Modules/DB.lua",
+    },
+    ["v1.0.114"] = {
+        "Foundry.lua", "Modules/Commands.lua", "Modules/Events.lua",
+        "Modules/Lifecycle.lua", "Modules/DB.lua", "Modules/List.lua",
+        "Modules/Settings.lua", "Modules/Tooltip.lua", "Modules/Menu.lua",
+        "Modules/Window.lua",
+    },
+}
+
+-- Load one pinned release copy ("v1.0.4" or "v1.0.114") under the current
+-- mocks; returns the Foundry table.
+function T.loadOldCopy(tag, addonName, version)
+    return T.loadCopy({
+        root = testsDir .. "/OldCopies/" .. tag,
+        files = assert(T.OLD_COPIES[tag], "unknown pinned copy " .. tostring(tag)),
+        addonName = addonName,
+        version = version,
+    })
+end
+
 -- Install dev-build mocks (default) and load; returns the Foundry table.
 function T.fresh(tocVersion)
     T.installMocks(tocVersion == nil and "@project-version@" or tocVersion)
@@ -627,6 +680,10 @@ local suites = {
     { label = "Foundry.Menu",      cases = assert(loadfile(testsDir .. "/Menu/menu_spec.lua"))(T) },
     { label = "Foundry.Window",    cases = assert(loadfile(testsDir .. "/Window/window_spec.lua"))(T) },
     { label = "Foundry.Packaging", cases = assert(loadfile(testsDir .. "/Packaging/packaging_spec.lua"))(T) },
+    { label = "Foundry.OldCopies", cases = assert(loadfile(testsDir .. "/OldCopies/copies_spec.lua"))(T) },
+    { label = "Foundry.DB.equivalence", cases = assert(loadfile(testsDir .. "/DB/equivalence_spec.lua"))(T) },
+    { label = "Foundry.Layout.perf", cases = assert(loadfile(testsDir .. "/Layout/perf_spec.lua"))(T) },
+    { label = "Foundry.Layout.errors", cases = assert(loadfile(testsDir .. "/Layout/error_levels_spec.lua"))(T) },
 }
 
 local anyFailed = false
