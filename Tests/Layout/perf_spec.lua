@@ -8,7 +8,8 @@
 --   * each path a callback relay sits on may cost at most 10 more per call
 -- Secondary check, timing: five interleaved rounds per side, the fastest round
 -- of each; the current code may be at most 15% slower on DB reads and event
--- dispatch. Set FOUNDRY_TIMING_REPORT_ONLY=1 to print the ratio and not fail
+-- dispatch; the measurement is repeated up to three times and fails only if
+-- every attempt is over. Set FOUNDRY_TIMING_REPORT_ONLY=1 to print the ratio and not fail
 -- on it (shared CI machines are noisy; the instruction counts stay the gate).
 --
 -- Adding a relay path: append a row to RELAY_PATHS. `setup(F)` runs on a fresh
@@ -31,6 +32,7 @@ local ITERATIONS = 1000
 local TIMING_ITERATIONS = 1000000
 local TIMING_ROUNDS = 5
 local TIMING_LIMIT = 1.15
+local TIMING_ATTEMPTS = 3
 
 local function noop() end
 
@@ -234,25 +236,33 @@ for _, path in ipairs(HOT_PATHS) do
             calls[build] = path.setup(surfaces.load(build))
             calls[build]()
         end
-        local best = { pinned = math.huge, current = math.huge }
-        for round = 1, TIMING_ROUNDS do
-            -- Alternate which side goes first so neither always runs warm.
-            local order = round % 2 == 1 and { "pinned", "current" } or { "current", "pinned" }
-            for _, build in ipairs(order) do
-                collectgarbage()
-                local seconds = timed(calls[build], TIMING_ITERATIONS)
-                if seconds < best[build] then best[build] = seconds end
+        -- A slow scheduler slice can land on one side of one measurement, so
+        -- the whole interleaved measurement is repeated and only a ratio over
+        -- the limit in every attempt fails.
+        local ratios = {}
+        for attempt = 1, TIMING_ATTEMPTS do
+            local best = { pinned = math.huge, current = math.huge }
+            for round = 1, TIMING_ROUNDS do
+                -- Alternate which side goes first so neither always runs warm.
+                local order = round % 2 == 1 and { "pinned", "current" } or { "current", "pinned" }
+                for _, build in ipairs(order) do
+                    collectgarbage()
+                    local seconds = timed(calls[build], TIMING_ITERATIONS)
+                    if seconds < best[build] then best[build] = seconds end
+                end
             end
-        end
-        local ratio = best.current / best.pinned
-        if os.getenv("FOUNDRY_PERF_REPORT") or os.getenv("FOUNDRY_TIMING_REPORT_ONLY") then
-            report(string.format("timing %-32s pinned %.3fs  current %.3fs  ratio %.3f",
-                path.name, best.pinned, best.current, ratio))
+            local ratio = best.current / best.pinned
+            ratios[attempt] = string.format("%.3f", ratio)
+            if os.getenv("FOUNDRY_PERF_REPORT") or os.getenv("FOUNDRY_TIMING_REPORT_ONLY") then
+                report(string.format("timing %-32s attempt %d pinned %.3fs  current %.3fs  ratio %.3f",
+                    path.name, attempt, best.pinned, best.current, ratio))
+            end
+            if ratio <= TIMING_LIMIT then break end
         end
         if not os.getenv("FOUNDRY_TIMING_REPORT_ONLY") then
-            T.truthy(ratio <= TIMING_LIMIT,
-                path.name .. ": current/pinned time ratio " .. string.format("%.3f", ratio)
-                .. " exceeds " .. TIMING_LIMIT)
+            T.truthy(tonumber(ratios[#ratios]) <= TIMING_LIMIT,
+                path.name .. ": current/pinned time ratio over " .. TIMING_LIMIT
+                .. " in every attempt (" .. table.concat(ratios, ", ") .. ")")
         end
     end)
 end

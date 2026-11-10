@@ -28,8 +28,6 @@ local walker = assert(loadfile(T.testsDir .. "/Layout/walker.lua"))(T)
 local tests = {}
 local function test(name, fn) tests[#tests + 1] = { name = name, fn = fn } end
 
-local function noop() end
-
 --------------------------------------------------------------------------------
 -- what is allowed to stay a local
 --------------------------------------------------------------------------------
@@ -113,13 +111,27 @@ end
 
 -- Uses every module once and returns what a test or the client would hold.
 local function runScenario(F)
-    local s = { inst = {}, holders = {}, launched = 0 }
+    local s = { inst = {}, holders = {}, launched = 0, callbacks = {} }
+
+    -- Every callback the scenario hands to the library is a function of its
+    -- own, made here and recorded. Two sites sharing one function value would
+    -- let the walker count a captured callback as reachable through the other
+    -- site's field.
+    local function cb(label, body)
+        local fn = function(...)
+            if body then return body(...) end
+            return label
+        end
+        s.callbacks[#s.callbacks + 1] = { fn = fn, label = label }
+        return fn
+    end
 
     -- DB: two stores, one destroyed.
     T.loadedAddons["ScenarioAddon"] = true
     local db1 = F.DB:New({
         name = "ScenarioAddon", sv = "TestDB", defaultProfile = true,
         defaults = { profile = { a = 1 }, global = { g = 1 } },
+        schema = { version = 1, key = "global.schemaStamp", migrate = cb("db migrate") },
     })
     local _ = db1.profile
     _ = db1.global
@@ -129,15 +141,15 @@ local function runScenario(F)
     })
     _ = db2.global
     db2:Destroy()
-    db1:OnSavedVariablesTooLarge(noop)
+    db1:OnSavedVariablesTooLarge(cb("db size warning"))
     s.inst.db = db1
 
     -- Events: a once handler and a bucket with a pending timer.
     local ev = F.Events:New("ScenarioAddon")
     s.onceCalls = 0
-    ev:RegisterOnce("SCENARIO_ONCE", function() s.onceCalls = s.onceCalls + 1 end)
-    ev:Register("SCENARIO_PLAIN", noop)
-    s.inst.bucket = ev:RegisterBucket({ events = "SCENARIO_BUCKET", interval = 5, handler = noop })
+    ev:RegisterOnce("SCENARIO_ONCE", cb("events once", function() s.onceCalls = s.onceCalls + 1 end))
+    ev:Register("SCENARIO_PLAIN", cb("events plain"))
+    s.inst.bucket = ev:RegisterBucket({ events = "SCENARIO_BUCKET", interval = 5, handler = cb("events bucket") })
     T.Fire(ev._frame, "SCENARIO_BUCKET")
     s.inst.events = ev
 
@@ -150,7 +162,7 @@ local function runScenario(F)
     _G.C_EventUtils = { IsEventValid = function() return true end }
     local cmd = F.Commands:New({ name = "Scenario", slashes = { "/scn" }, restrictionNotice = true })
     s.slashRan = 0
-    cmd:Register({ name = "go", handler = function() s.slashRan = s.slashRan + 1 end })
+    cmd:Register({ name = "go", handler = cb("command go", function() s.slashRan = s.slashRan + 1 end) })
     s.inst.commands = cmd
 
     -- Settings: a canvas page and a launcher; the launcher is destroyed,
@@ -158,7 +170,7 @@ local function runScenario(F)
     local panel = surfaces.installSettingsLauncher()
     s.inst.settingsCanvas = F.Settings:New({ title = "ScenarioCanvas", frame = makeCanvasFrame() })
     local function launcherConfig()
-        return { title = "ScenarioLauncher", buttonText = "Open", launch = function() s.launched = s.launched + 1 end }
+        return { title = "ScenarioLauncher", buttonText = "Open", launch = cb("settings launch", function() s.launched = s.launched + 1 end) }
     end
     local launcher = F.Settings:New(launcherConfig())
     panel.clicks[1]({}, "LeftButton", false)
@@ -169,14 +181,14 @@ local function runScenario(F)
 
     -- Tooltip: two types, and a second handler on the first.
     local processor = surfaces.installTooltipProcessor()
-    s.inst.tooltip = F.Tooltip:New({ type = 1, handler = noop })
-    F.Tooltip:New({ type = 1, handler = noop, name = "second" })
-    F.Tooltip:New({ type = 2, handler = noop })
+    s.inst.tooltip = F.Tooltip:New({ type = 1, handler = cb("tooltip first") })
+    F.Tooltip:New({ type = 1, handler = cb("tooltip second"), name = "second" })
+    F.Tooltip:New({ type = 2, handler = cb("tooltip other type") })
     s.holders[#s.holders + 1] = processor.postCalls
 
     -- Menu: an unnamed controller, installed on a dropdown and opened.
     local menuUtil = surfaces.installMenuUtil()
-    local menu = F.Menu:New({ builder = noop })
+    local menu = F.Menu:New({ builder = cb("menu builder") })
     local button = surfaces.makeDropdownButton()
     menu:SetupDropdown(button)
     menu:CreateContextMenu({})
@@ -193,7 +205,7 @@ local function runScenario(F)
     -- is reached through another module's copy of the same value.
     local list = F.List:New({
         name = "ScenarioList", parent = {}, elementType = "Button",
-        extentCalculator = function() return 20 end, initializer = function() end,
+        extentCalculator = cb("list calculator", function() return 20 end), initializer = cb("list initializer"),
     })
     s.inst.list = list
     s.holders[#s.holders + 1] = list:GetNativeHandles().view
@@ -202,10 +214,10 @@ local function runScenario(F)
     -- second hold taken and left pending.
     T.SetRegional(true)   -- a region-wide-names client whose surname lags
     local lcA = F.Lifecycle:New(nil, "ScenarioA")
-    lcA:OnAddonLoaded(noop)
-    lcA:OnLogin(noop)
-    lcA:OnLogout(noop)
-    lcA:OnUnloading(noop)
+    lcA:OnAddonLoaded(cb("lifecycle A addon loaded"))
+    lcA:OnLogin(cb("lifecycle A login"))
+    lcA:OnLogout(cb("lifecycle A logout"))
+    lcA:OnUnloading(cb("lifecycle A unloading"))
     local dispatcher = surfaces.dispatcherFrame()
     T.Fire(dispatcher, "ADDON_LOADED", "ScenarioA")
     T.Fire(dispatcher, "PLAYER_LOGIN")
@@ -214,7 +226,7 @@ local function runScenario(F)
     s.releasedBy = F.Lifecycle._identityResolvedBy
     T.identity = { name = "Unknown", realm = T.identity.realm }
     local lcB = F.Lifecycle:New(nil, "ScenarioB")
-    lcB:OnAddonLoaded(noop)
+    lcB:OnAddonLoaded(cb("lifecycle B addon loaded"))
     T.Fire(dispatcher, "ADDON_LOADED", "ScenarioB")
     s.inst.lifecycleReleased = lcA
     s.inst.lifecycle = lcB
@@ -257,6 +269,17 @@ end
 --------------------------------------------------------------------------------
 -- the scenario really ran
 --------------------------------------------------------------------------------
+
+test("no two callbacks in the scenario are the same function", function()
+    local _, s = currentScenario()
+    T.truthy(#s.callbacks >= 18, "the scenario registered its callbacks through the helper")
+    local seen = {}
+    for _, record in ipairs(s.callbacks) do
+        T.truthy(seen[record.fn] == nil,
+            record.label .. " is the same function as " .. tostring(seen[record.fn]))
+        seen[record.fn] = record.label
+    end
+end)
 
 test("the scenario uses every module and the walker sees functions from each file", function()
     local F, s, result = currentScenario()
