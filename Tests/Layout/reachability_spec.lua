@@ -75,11 +75,6 @@ local EXPECTED = {
         "postLogoutRegistered", "sizeWarningEvents", "stores",
     },
     ["Modules/Events.lua"] = { "Bucket", "Controller", "bucket", "c", "edge", "handler", "self" },
-    ["Modules/Lifecycle.lua"] = {
-        "Controller", "byAddonName", "devNoticePrinted", "dispatcher", "identityHeld", "identityStopped",
-        "identityWatching", "loginControllers", "loginFired", "ownedNames", "pollScheduled", "postLogout",
-        "surnameSettled", "unloadingControllers", "unloadingSupported",
-    },
     ["Modules/List.lua"] = { "Controller", "c", "consumerCalc", "consumerInit" },
     ["Modules/Menu.lua"] = { "Controller", "anonCounter", "c", "liveKeys" },
     ["Modules/Settings.lua"] = { "Controller", "liveKeys", "name", "registeredCategories" },
@@ -194,10 +189,11 @@ local function runScenario(F)
     F.Window:Attach(win, { handle = win, geometry = {}, default = { "CENTER", "CENTER", 0, 0 } })
     s.inst.windowFrame = win
 
-    -- List: a calculator and an initializer.
+    -- List: a calculator and an initializer, each its own function so neither
+    -- is reached through another module's copy of the same value.
     local list = F.List:New({
         name = "ScenarioList", parent = {}, elementType = "Button",
-        extentCalculator = function() return 20 end, initializer = noop,
+        extentCalculator = function() return 20 end, initializer = function() end,
     })
     s.inst.list = list
     s.holders[#s.holders + 1] = list:GetNativeHandles().view

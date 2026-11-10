@@ -27,25 +27,37 @@ Lifecycle.API_VERSION = 4
 -- Shared private dispatcher
 --------------------------------------------------------------------------------
 
-local dispatcher = nil
--- byAddonName: one-shot ADDON_LOADED demux, cleared on fire. ownedNames:
--- persists until Destroy, backs re-register refusal.
-local byAddonName = {}
-local ownedNames = {}
--- Controllers wanting login OR logout; PLAYER_LOGOUT fans out over this
--- set too.
-local loginControllers = {}
-local unloadingControllers = {}
-local unloadingSupported = false
-local loginFired = false
-local postLogout = {}
+-- All module state lives on the module table. dispatcher is set once, when it
+-- is first needed; identityHeld is replaced on every release, so
+-- it and the flags are always read through the state table.
+Lifecycle._layoutVersion = 1
+Lifecycle._source = ...
+Lifecycle._state = {
+    -- byAddonName: one-shot ADDON_LOADED demux, cleared on fire. ownedNames:
+    -- persists until Destroy, backs re-register refusal.
+    byAddonName = {},
+    ownedNames = {},
+    -- Controllers wanting login OR logout; PLAYER_LOGOUT fans out over this
+    -- set too.
+    loginControllers = {},
+    unloadingControllers = {},
+    unloadingSupported = false,
+    loginFired = false,
+    postLogout = {},
 
-local identityHeld = {}
-local identityWatching = false
-local pollScheduled = false
-local identityStopped = false
-local devNoticePrinted = false
-local surnameSettled = false
+    identityHeld = {},
+    identityWatching = false,
+    pollScheduled = false,
+    identityStopped = false,
+    devNoticePrinted = false,
+    surnameSettled = false,
+}
+Lifecycle._impl = {}
+local S, I = Lifecycle._state, Lifecycle._impl
+local byAddonName, ownedNames = S.byAddonName, S.ownedNames
+local loginControllers, unloadingControllers = S.loginControllers, S.unloadingControllers
+local postLogout = S.postLogout
+
 Lifecycle._identityResolvedBy = nil
 Lifecycle._surnameLagObserved = nil
 
@@ -53,6 +65,7 @@ Lifecycle._surnameLagObserved = nil
 local function surfaceHookError(phase, err)
     F:RaiseDevError("Lifecycle: a '" .. phase .. "' phase hook errored: " .. tostring(err))
 end
+I.surfaceHookError = surfaceHookError
 
 -- Returns (name, realm, key, legacyKey), or (nil, msg, reason) if identity
 -- has not resolved yet. On a region-wide-unique-names client, key is
@@ -88,7 +101,7 @@ function Lifecycle._PlayerIdentity()
     if type(surname) ~= "string" then surname = nil end
 
     if surname == nil then
-        if not surnameSettled then
+        if not S.surnameSettled then
             return nil, "player surname is not available yet (UnitNameUnmodified returned no surname)", "surname"
         end
         return name, realm, name, nil
@@ -102,6 +115,7 @@ local function identityResolved()
     if not name and reason == "surname" then Lifecycle._surnameLagObserved = true end
     return name ~= nil
 end
+I.identityResolved = identityResolved
 
 local schedulePoll
 local pollTick
@@ -109,36 +123,40 @@ local pollTick
 local function holdForIdentity(c)
     if c._identityHeld then return end
     c._identityHeld = true
-    identityHeld[#identityHeld + 1] = c
-    if not identityWatching then
-        dispatcher:RegisterEvent("PLAYER_ENTERING_WORLD")
-        dispatcher:RegisterUnitEvent("UNIT_NAME_UPDATE", "player")
-        dispatcher:RegisterEvent("PLAYER_REGEN_ENABLED")
-        identityWatching = true
+    S.identityHeld[#S.identityHeld + 1] = c
+    if not S.identityWatching then
+        S.dispatcher:RegisterEvent("PLAYER_ENTERING_WORLD")
+        S.dispatcher:RegisterUnitEvent("UNIT_NAME_UPDATE", "player")
+        S.dispatcher:RegisterEvent("PLAYER_REGEN_ENABLED")
+        S.identityWatching = true
     end
-    if loginFired then
+    if S.loginFired then
         schedulePoll()
     end
 end
+I.holdForIdentity = holdForIdentity
 
 -- C_Timer.After gives no cancel handle, so a pending poll tick still fires.
 local function stopWatching()
-    if not identityWatching then return end
-    dispatcher:UnregisterEvent("PLAYER_ENTERING_WORLD")
-    dispatcher:UnregisterEvent("UNIT_NAME_UPDATE")
-    dispatcher:UnregisterEvent("PLAYER_REGEN_ENABLED")
-    identityWatching = false
+    if not S.identityWatching then return end
+    S.dispatcher:UnregisterEvent("PLAYER_ENTERING_WORLD")
+    S.dispatcher:UnregisterEvent("UNIT_NAME_UPDATE")
+    S.dispatcher:UnregisterEvent("PLAYER_REGEN_ENABLED")
+    S.identityWatching = false
 end
+I.stopWatching = stopWatching
 
 -- Refuses to release while the player is in combat, since a consumer that
 -- creates secure frames at startup could trip ADDON_ACTION_BLOCKED.
 local function releaseIdentityHeld(eventName)
-    if #identityHeld == 0 or identityStopped then return false end
+    if #S.identityHeld == 0 or S.identityStopped then return false end
     if InCombatLockdown() then return false end
     if not identityResolved() then return false end
 
-    local snapshot = identityHeld
-    identityHeld = {}
+    -- The released set is walked from this snapshot; a controller held while
+    -- the hooks below run joins the fresh set.
+    local snapshot = S.identityHeld
+    S.identityHeld = {}
     stopWatching()
     Lifecycle._identityResolvedBy = eventName
 
@@ -153,7 +171,7 @@ local function releaseIdentityHeld(eventName)
     end
 
     local lgRaised, lgErr = false, nil
-    if loginFired then
+    if S.loginFired then
         for i = 1, #snapshot do
             local c = snapshot[i]
             if not c._destroyed then
@@ -165,142 +183,153 @@ local function releaseIdentityHeld(eventName)
 
     return true, alRaised, alErr, lgRaised, lgErr
 end
+I.releaseIdentityHeld = releaseIdentityHeld
 
 -- Fallback poll for clients that never fire UNIT_NAME_UPDATE; its first
 -- tick also settles a missing surname.
 pollTick = function()
-    surnameSettled = true
-    pollScheduled = false
-    if identityStopped or #identityHeld == 0 then return end
+    S.surnameSettled = true
+    S.pollScheduled = false
+    if S.identityStopped or #S.identityHeld == 0 then return end
     local _, alRaised, alErr, lgRaised, lgErr = releaseIdentityHeld("POLL")
     if alRaised then surfaceHookError("addon-loaded", alErr) end
     if lgRaised then surfaceHookError("login", lgErr) end
-    if #identityHeld > 0 then
+    if #S.identityHeld > 0 then
         schedulePoll()
     end
 end
+I.pollTick = pollTick
 
-schedulePoll = function()
-    if pollScheduled or #identityHeld == 0 or identityStopped then return end
-    pollScheduled = true
-    C_Timer.After(1, pollTick)
+-- The timer holds this rather than pollTick, so a pending tick runs the
+-- pollTick on the module table when it fires.
+local function pollRelay()
+    return Lifecycle._impl.pollTick()
 end
 
+schedulePoll = function()
+    if S.pollScheduled or #S.identityHeld == 0 or S.identityStopped then return end
+    S.pollScheduled = true
+    C_Timer.After(1, pollRelay)
+end
+I.schedulePoll = schedulePoll
+
+-- Hooks run under pcall; each loop's first error is held until every
+-- hook has run, since raising mid-loop starves the rest. In a dev build
+-- only the first held error raises.
+local function onEvent(_, event, ...)
+    if event == "ADDON_LOADED" then
+        local loadedName = ...
+        local _, relAlRaised, relAlErr, relLgRaised, relLgErr = releaseIdentityHeld("ADDON_LOADED")
+        local c = byAddonName[loadedName]
+        local raised, err
+        if c then
+            byAddonName[loadedName] = nil
+            -- Held if anything else is still held, even if this
+            -- controller's own identity check would pass, so it never
+            -- runs ahead of an already-waiting controller.
+            if #S.identityHeld == 0 and identityResolved() then
+                raised, err = c:_fireAddonLoaded()
+            else
+                holdForIdentity(c)
+            end
+        end
+        if relAlRaised then surfaceHookError("addon-loaded", relAlErr) end
+        if relLgRaised then surfaceHookError("login", relLgErr) end
+        if raised then surfaceHookError("addon-loaded", err) end
+    elseif event == "PLAYER_LOGIN" then
+        -- Released before loginFired flips, so a released controller
+        -- gets its login from the fan-out below, not from release.
+        local _, relAlRaised, relAlErr, relLgRaised, relLgErr = releaseIdentityHeld("PLAYER_LOGIN")
+        S.loginFired = true
+        -- Snapshot before the fan-out: mutating loginControllers with
+        -- pairs() mid-iteration is undefined in Lua 5.1.
+        local snapshot, n = {}, 0
+        for c in pairs(loginControllers) do n = n + 1; snapshot[n] = c end
+        local raised, firstErr = false, nil
+        for i = 1, n do
+            local c = snapshot[i]
+            if not c._identityHeld then
+                local r, e = c:_fireLogin()
+                if r and not raised then raised, firstErr = true, e end
+            end
+        end
+        if relAlRaised then surfaceHookError("addon-loaded", relAlErr) end
+        if relLgRaised then surfaceHookError("login", relLgErr) end
+        if raised then surfaceHookError("login", firstErr) end
+    elseif event == "PLAYER_ENTERING_WORLD" then
+        local _, relAlRaised, relAlErr, relLgRaised, relLgErr = releaseIdentityHeld("PLAYER_ENTERING_WORLD")
+        if #S.identityHeld > 0 then
+            schedulePoll()
+            if F.IS_DEV_BUILD and not S.devNoticePrinted then
+                S.devNoticePrinted = true
+                local names = {}
+                for i = 1, #S.identityHeld do
+                    names[#names + 1] = S.identityHeld[i]._addonName
+                end
+                print("Foundry-1.0: Lifecycle: waiting for the character's name or surname before starting "
+                    .. table.concat(names, ", "))
+            end
+        end
+        if relAlRaised then surfaceHookError("addon-loaded", relAlErr) end
+        if relLgRaised then surfaceHookError("login", relLgErr) end
+    elseif event == "UNIT_NAME_UPDATE" then
+        local _, relAlRaised, relAlErr, relLgRaised, relLgErr = releaseIdentityHeld("UNIT_NAME_UPDATE")
+        if relAlRaised then surfaceHookError("addon-loaded", relAlErr) end
+        if relLgRaised then surfaceHookError("login", relLgErr) end
+    elseif event == "PLAYER_REGEN_ENABLED" then
+        local _, relAlRaised, relAlErr, relLgRaised, relLgErr = releaseIdentityHeld("PLAYER_REGEN_ENABLED")
+        if relAlRaised then surfaceHookError("addon-loaded", relAlErr) end
+        if relLgRaised then surfaceHookError("login", relLgErr) end
+    elseif event == "ADDONS_UNLOADING" and S.unloadingSupported then
+        S.identityStopped = true
+        stopWatching()
+        local closingClient = ...
+        local snapshot, n = {}, 0
+        for i = 1, #unloadingControllers do
+            n = n + 1
+            snapshot[n] = unloadingControllers[i]
+        end
+        local raised, firstErr = false, nil
+        for i = 1, n do
+            local c = snapshot[i]
+            if not c._identityHeld then
+                local r, e = c:_fireUnloading(closingClient)
+                if r and not raised then raised, firstErr = true, e end
+            end
+        end
+        if raised then surfaceHookError("unloading", firstErr) end
+    elseif event == "PLAYER_LOGOUT" then
+        S.identityStopped = true
+        stopWatching()
+        local snapshot, n = {}, 0
+        for c in pairs(loginControllers) do n = n + 1; snapshot[n] = c end
+        local raised, firstErr = false, nil
+        for i = 1, n do
+            local c = snapshot[i]
+            if not c._identityHeld then
+                local r, e = c:_fireLogout()
+                if r and not raised then raised, firstErr = true, e end
+            end
+        end
+        -- Runs after consumer logout hooks and before error surfacing,
+        -- so the DB strip sees final writes even if a hook errored.
+        local plRaised, plFirstErr = false, nil
+        for i = 1, #postLogout do
+            local ok, e = pcall(postLogout[i])
+            if not ok and not plRaised then plRaised, plFirstErr = true, e end
+        end
+        if raised then surfaceHookError("logout", firstErr) end
+        if plRaised then surfaceHookError("post-logout", plFirstErr) end
+    end
+end
+I.onEvent = onEvent
+
 local function ensureDispatcher()
-    if dispatcher then return end
+    if S.dispatcher then return end
 
     local frame = CreateFrame("Frame")
     frame:Hide()
-
-    -- Hooks run under pcall; each loop's first error is held until every
-    -- hook has run, since raising mid-loop starves the rest. In a dev build
-    -- only the first held error raises.
-    frame:SetScript("OnEvent", function(_, event, ...)
-        if event == "ADDON_LOADED" then
-            local loadedName = ...
-            local _, relAlRaised, relAlErr, relLgRaised, relLgErr = releaseIdentityHeld("ADDON_LOADED")
-            local c = byAddonName[loadedName]
-            local raised, err
-            if c then
-                byAddonName[loadedName] = nil
-                -- Held if anything else is still held, even if this
-                -- controller's own identity check would pass, so it never
-                -- runs ahead of an already-waiting controller.
-                if #identityHeld == 0 and identityResolved() then
-                    raised, err = c:_fireAddonLoaded()
-                else
-                    holdForIdentity(c)
-                end
-            end
-            if relAlRaised then surfaceHookError("addon-loaded", relAlErr) end
-            if relLgRaised then surfaceHookError("login", relLgErr) end
-            if raised then surfaceHookError("addon-loaded", err) end
-        elseif event == "PLAYER_LOGIN" then
-            -- Released before loginFired flips, so a released controller
-            -- gets its login from the fan-out below, not from release.
-            local _, relAlRaised, relAlErr, relLgRaised, relLgErr = releaseIdentityHeld("PLAYER_LOGIN")
-            loginFired = true
-            -- Snapshot before the fan-out: mutating loginControllers with
-            -- pairs() mid-iteration is undefined in Lua 5.1.
-            local snapshot, n = {}, 0
-            for c in pairs(loginControllers) do n = n + 1; snapshot[n] = c end
-            local raised, firstErr = false, nil
-            for i = 1, n do
-                local c = snapshot[i]
-                if not c._identityHeld then
-                    local r, e = c:_fireLogin()
-                    if r and not raised then raised, firstErr = true, e end
-                end
-            end
-            if relAlRaised then surfaceHookError("addon-loaded", relAlErr) end
-            if relLgRaised then surfaceHookError("login", relLgErr) end
-            if raised then surfaceHookError("login", firstErr) end
-        elseif event == "PLAYER_ENTERING_WORLD" then
-            local _, relAlRaised, relAlErr, relLgRaised, relLgErr = releaseIdentityHeld("PLAYER_ENTERING_WORLD")
-            if #identityHeld > 0 then
-                schedulePoll()
-                if F.IS_DEV_BUILD and not devNoticePrinted then
-                    devNoticePrinted = true
-                    local names = {}
-                    for i = 1, #identityHeld do
-                        names[#names + 1] = identityHeld[i]._addonName
-                    end
-                    print("Foundry-1.0: Lifecycle: waiting for the character's name or surname before starting "
-                        .. table.concat(names, ", "))
-                end
-            end
-            if relAlRaised then surfaceHookError("addon-loaded", relAlErr) end
-            if relLgRaised then surfaceHookError("login", relLgErr) end
-        elseif event == "UNIT_NAME_UPDATE" then
-            local _, relAlRaised, relAlErr, relLgRaised, relLgErr = releaseIdentityHeld("UNIT_NAME_UPDATE")
-            if relAlRaised then surfaceHookError("addon-loaded", relAlErr) end
-            if relLgRaised then surfaceHookError("login", relLgErr) end
-        elseif event == "PLAYER_REGEN_ENABLED" then
-            local _, relAlRaised, relAlErr, relLgRaised, relLgErr = releaseIdentityHeld("PLAYER_REGEN_ENABLED")
-            if relAlRaised then surfaceHookError("addon-loaded", relAlErr) end
-            if relLgRaised then surfaceHookError("login", relLgErr) end
-        elseif event == "ADDONS_UNLOADING" and unloadingSupported then
-            identityStopped = true
-            stopWatching()
-            local closingClient = ...
-            local snapshot, n = {}, 0
-            for i = 1, #unloadingControllers do
-                n = n + 1
-                snapshot[n] = unloadingControllers[i]
-            end
-            local raised, firstErr = false, nil
-            for i = 1, n do
-                local c = snapshot[i]
-                if not c._identityHeld then
-                    local r, e = c:_fireUnloading(closingClient)
-                    if r and not raised then raised, firstErr = true, e end
-                end
-            end
-            if raised then surfaceHookError("unloading", firstErr) end
-        elseif event == "PLAYER_LOGOUT" then
-            identityStopped = true
-            stopWatching()
-            local snapshot, n = {}, 0
-            for c in pairs(loginControllers) do n = n + 1; snapshot[n] = c end
-            local raised, firstErr = false, nil
-            for i = 1, n do
-                local c = snapshot[i]
-                if not c._identityHeld then
-                    local r, e = c:_fireLogout()
-                    if r and not raised then raised, firstErr = true, e end
-                end
-            end
-            -- Runs after consumer logout hooks and before error surfacing,
-            -- so the DB strip sees final writes even if a hook errored.
-            local plRaised, plFirstErr = false, nil
-            for i = 1, #postLogout do
-                local ok, e = pcall(postLogout[i])
-                if not ok and not plRaised then plRaised, plFirstErr = true, e end
-            end
-            if raised then surfaceHookError("logout", firstErr) end
-            if plRaised then surfaceHookError("post-logout", plFirstErr) end
-        end
-    end)
+    frame:SetScript("OnEvent", I.onEvent)
 
     frame:RegisterEvent("ADDON_LOADED")
     frame:RegisterEvent("PLAYER_LOGIN")
@@ -309,17 +338,18 @@ local function ensureDispatcher()
     if eventUtils and type(eventUtils.IsEventValid) == "function"
         and eventUtils.IsEventValid("ADDONS_UNLOADING") then
         frame:RegisterEvent("ADDONS_UNLOADING")
-        unloadingSupported = true
+        S.unloadingSupported = true
     end
 
     -- Seeds loginFired from IsLoggedIn(), since a dispatcher created after
     -- PLAYER_LOGIN (all-Load-on-Demand) never sees that one-shot event.
     if type(IsLoggedIn) == "function" and IsLoggedIn() then
-        loginFired = true
+        S.loginFired = true
     end
 
-    dispatcher = frame
+    S.dispatcher = frame
 end
+I.ensureDispatcher = ensureDispatcher
 
 -- Private seam Foundry.DB uses to register its logout strip.
 function Lifecycle._RegisterPostLogout(fn)
@@ -337,6 +367,7 @@ end
 
 local Controller = {}
 Controller.__index = Controller
+I.Controller = Controller
 
 function Controller:_fireAddonLoaded()
     if self._destroyed then return false end
@@ -409,7 +440,7 @@ function Controller:OnAddonLoaded(handler)
     end
     if alreadyLoaded then
         byAddonName[self._addonName] = nil
-        if #identityHeld == 0 and identityResolved() then
+        if #S.identityHeld == 0 and identityResolved() then
             local raised, err = self:_fireAddonLoaded()
             if raised then surfaceHookError("addon-loaded", err) end
         else
@@ -440,7 +471,7 @@ function Controller:OnLogin(handler)
     self._hooks.login = handler
     loginControllers[self] = true
 
-    if loginFired and not self._identityHeld then
+    if S.loginFired and not self._identityHeld then
         local raised, err = self:_fireLogin()
         if raised then surfaceHookError("login", err) end
     end
@@ -505,7 +536,7 @@ function Controller:GetNativeHandles()
         unloading = self._hooks.unloading,
     }
     return {
-        frame = dispatcher,
+        frame = S.dispatcher,
         hooks = snapshot,
     }
 end
@@ -527,14 +558,14 @@ function Controller:Destroy()
         end
     end
     if self._identityHeld then
-        for i = #identityHeld, 1, -1 do
-            if identityHeld[i] == self then
-                table.remove(identityHeld, i)
+        for i = #S.identityHeld, 1, -1 do
+            if S.identityHeld[i] == self then
+                table.remove(S.identityHeld, i)
                 break
             end
         end
         self._identityHeld = nil
-        if #identityHeld == 0 then
+        if #S.identityHeld == 0 then
             stopWatching()
         end
     end
@@ -596,23 +627,23 @@ function Lifecycle:_TestFire(phase, addonName)
             .. "release build (it is a phase injector)")
         return
     end
-    if not dispatcher or not dispatcher:GetScript("OnEvent") then
+    if not S.dispatcher or not S.dispatcher:GetScript("OnEvent") then
         F:RaiseDevError("Lifecycle:_TestFire: no dispatcher yet; create a controller "
             .. "with :New before firing a phase")
         return
     end
 
-    local onEvent = dispatcher:GetScript("OnEvent")
+    local script = S.dispatcher:GetScript("OnEvent")
     if phase == "addon-loaded" then
         if type(addonName) ~= "string" or addonName == "" then
             F:RaiseDevError("Lifecycle:_TestFire: 'addon-loaded' requires a non-empty addonName")
             return
         end
-        onEvent(dispatcher, "ADDON_LOADED", addonName)
+        script(S.dispatcher, "ADDON_LOADED", addonName)
     elseif phase == "login" then
-        onEvent(dispatcher, "PLAYER_LOGIN")
+        script(S.dispatcher, "PLAYER_LOGIN")
     elseif phase == "logout" then
-        onEvent(dispatcher, "PLAYER_LOGOUT")
+        script(S.dispatcher, "PLAYER_LOGOUT")
     else
         F:RaiseDevError("Lifecycle:_TestFire: unknown phase '" .. tostring(phase)
             .. "'; expected 'addon-loaded', 'login', or 'logout'")
