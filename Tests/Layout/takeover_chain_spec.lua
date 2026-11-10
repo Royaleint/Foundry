@@ -998,8 +998,7 @@ test("in takeover mode the loader makes a plain load when a library already serv
 end)
 
 test("in takeover mode a suite fails when it makes no takeover and is not exempt, or is exempt and makes one", function()
-    local exempt
-    for label in pairs(T.TAKEOVER_EXEMPT) do exempt = label; break end
+    local exempt = next(T.TAKEOVER_EXEMPT)
     T.truthy(exempt ~= nil, "some suite is exempt")
     for label, reason in pairs(T.TAKEOVER_EXEMPT) do
         T.truthy(type(reason) == "string" and reason ~= "", label .. " gives a reason")
