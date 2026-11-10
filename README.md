@@ -101,6 +101,28 @@ If you embed Foundry inside your own addon package, include
 `Foundry-1.0.xml` from your `embeds.xml` rather than hand-listing Foundry's Lua
 files. The manifest carries the same runtime load order as the standalone TOC.
 
+### Which copy runs
+
+Several addons can each carry a copy of Foundry. Only the first copy to load
+serves the session; it owns `_G.Foundry_1_0`, and every later copy stands down
+quietly, with no output in release builds. A later copy is not thrown away
+entirely: for each module the serving copy does not have, the later copy
+supplies its own, so a newer copy fills in modules an older, trimmed copy
+lacks. DB joins this way only when the serving copy has the Lifecycle and
+Events support it needs; otherwise DB stays out and says why.
+
+Because the serving copy may be older than the copy you shipped, call
+`F:RequireModule("Name", minVersion)` for anything newer. If the module is
+missing, the error names the serving copy: its addon folder, version and API
+version.
+
+Type `/foundry copies` in game to see what is running. It prints the serving
+copy, any module that was filled in from a different copy, and each copy that
+stood down. Nothing prints unless you run the command, and any other
+`/foundry` text prints a one-line hint. The command comes from the serving
+copy when it is current enough to offer it, and it is skipped if another addon
+already uses `/foundry`.
+
 ## Adding new modules
 
 Foundry's module set isn't fixed at the initial eight. If there's a Blizzard API you'd like to see bridged, here's how new modules get added.

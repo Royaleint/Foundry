@@ -162,6 +162,8 @@ end
 case({
     name = "RequireModule for a module that is not present", kind = "caller",
     run = function(F) F:RequireModule("Nope") end,
+    -- The current message adds the serving copy after the release's text.
+    strip = " Serving copy:.*$",
 })
 case({
     name = "RequireModule for a newer API version than the module has", kind = "caller",
@@ -328,6 +330,11 @@ for _, c in ipairs(CASES) do
     test("error messages and locations match the 1.0.114 release: " .. c.name, function()
         local pinned = raised(c, "pinned")
         local current = raised(c, "current")
+        if c.strip then
+            local stripped, count = current:gsub(c.strip, "")
+            T.eq(count, 1, "the trailing text is present once")
+            current = stripped
+        end
         T.eq(surfaces.normalise(current), surfaces.normalise(pinned), "message and file")
         if c.kind == "caller" then
             T.truthy(current:find(THIS_FILE, 1, true), "the location names the caller: " .. current)

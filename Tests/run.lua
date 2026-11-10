@@ -725,6 +725,7 @@ local suites = {
     { label = "Foundry.Layout.layout", cases = assert(loadfile(testsDir .. "/Layout/layout_spec.lua"))(T) },
     { label = "Foundry.Layout.handover", cases = assert(loadfile(testsDir .. "/Layout/handover_spec.lua"))(T) },
     { label = "Foundry.Layout.mixed", cases = assert(loadfile(testsDir .. "/Layout/mixed_copies_spec.lua"))(T) },
+    { label = "Foundry.Layout.copies", cases = assert(loadfile(testsDir .. "/Layout/copies_record_spec.lua"))(T) },
 }
 
 if T.REHEARSE then

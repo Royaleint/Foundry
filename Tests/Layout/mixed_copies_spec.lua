@@ -174,7 +174,11 @@ local function registrations(F)
         end
     end
     local slashes = {}
-    for k in pairs(SlashCmdList) do slashes[#slashes + 1] = k end
+    -- FOUNDRY is the /foundry copies command a current serving copy adds on its own
+    -- (copies_record_spec); the pinned release has none.
+    for k in pairs(SlashCmdList) do
+        if k ~= "FOUNDRY" then slashes[#slashes + 1] = k end
+    end
     table.sort(slashes)
     local present = {}
     for _, name in ipairs(MODULES) do
@@ -659,7 +663,8 @@ end
 test("loading every file a second time against a used library changes no state, makes no frame and prints nothing", function()
     local F = stack({ { kind = "new", addonName = "OnlyHost" } }, "release")
     scenario.run(F)
-    local roots = { library = F._state }
+    -- The record of copies that stood down grows by one per copy loaded; the rest of the library state does not.
+    local roots = { library = { modules = F._state.modules } }
     for _, name in ipairs(MODULES) do roots[name] = { state = F[name]._state, impl = F[name]._impl } end
     local before = {}
     for label, root in pairs(roots) do before[label] = deepSnapshot(root) end
@@ -672,6 +677,7 @@ test("loading every file a second time against a used library changes no state, 
         T.eq(#errors, 0, "no file raised an error")
     end
 
+    T.eq(#F._state.copies, 2, "each later copy added one entry to the record")
     for label, root in pairs(roots) do
         assertSnapshotsEqual(before[label], deepSnapshot(root), label .. " state")
     end
