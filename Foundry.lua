@@ -8,6 +8,7 @@
 local ADDON_NAME = ...
 
 local BUILD = 1
+local API_VERSION = 7
 
 -- Built by concatenation: a literal token here would get rewritten by the
 -- packager too, and this file would read as a dev build after packaging.
@@ -31,12 +32,88 @@ local isDevBuild = (tocVersion == nil)
     or isStamped
     or (override ~= nil and override ~= false)
 
-local F = {}
-F.IS_DEV_BUILD = isDevBuild
-F.VERSION = isStamped and tocVersion or (isDevBuild and DEV_VERSION or tocVersion)
-F.SOURCE = ADDON_NAME
-F.API_VERSION = 7
-F._LOAD_TOKEN = {}   -- per-load identity token
+local VERSION = isStamped and tocVersion or (isDevBuild and DEV_VERSION or tocVersion)
+local LOAD_TOKEN = {}   -- per-load identity token
+
+-- An older copy already serving is taken over in place when this copy is newer
+-- and the moment is safe; otherwise it keeps serving and this copy loads
+-- nothing. The checks only read, in a fixed order, and the first to fail names
+-- the outcome; nil means this copy takes over. BUILD, API_VERSION and these
+-- locals are read here and nowhere else: no function below may capture them.
+local existing = _G.Foundry_1_0
+local outcome
+if existing then
+    -- rawget: a current copy reads none of the newer layout fields on an older
+    -- library table through a normal lookup.
+    local layout = rawget(existing, "_layoutVersion")
+    local build = rawget(existing, "_build")
+    local api = rawget(existing, "API_VERSION")
+    if layout == nil then
+        outcome = "not used"
+    elseif layout ~= 1 then
+        outcome = "layout"
+    elseif build ~= nil and (type(build) ~= "number" or build ~= math.floor(build)
+        or build < 1 or build == math.huge or BUILD <= build) then
+        outcome = "not used"
+    elseif type(api) ~= "number" or api > API_VERSION then
+        outcome = "refused: api version"
+    elseif type(IsLoggedIn) ~= "function" or IsLoggedIn() then
+        outcome = "after login"
+    elseif type(InCombatLockdown) ~= "function" or InCombatLockdown() then
+        outcome = "combat"
+    else
+        local state = rawget(existing, "_state")
+        local modules = type(state) == "table" and state.modules
+        if type(modules) ~= "table" then
+            outcome = "refused: module list"
+        else
+            for name, module in pairs(modules) do
+                if not rawequal(module, rawget(existing, name)) then
+                    outcome = "refused: module list"
+                    break
+                end
+            end
+        end
+    end
+end
+
+if outcome then
+    local state = rawget(existing, "_state")
+    if type(state) == "table" and type(state.copies) == "table" then
+        state.copies[#state.copies + 1] = {
+            source = ADDON_NAME, version = VERSION, apiVersion = API_VERSION, build = BUILD,
+            unit = "core", outcome = outcome,
+        }
+    end
+    if outcome == "not used" then
+        -- Suppression rests on the API_VERSION check only -- the load token is
+        -- always unequal across loads, so it filters nothing.
+        if isDevBuild and not existing.IS_DEV_BUILD then
+            existing:RaiseDevError("an enabled Foundry-1.0 DevBuild was suppressed; "
+                .. "the first-loaded release copy (version " .. tostring(existing.VERSION)
+                .. ") is serving and this DevBuild loaded nothing")
+        elseif existing.IS_DEV_BUILD and existing._LOAD_TOKEN ~= LOAD_TOKEN
+            and existing.API_VERSION ~= API_VERSION then
+            existing:RaiseDevError("a redundant embedded Foundry-1.0 copy was suppressed; "
+                .. "the first-loaded copy (API_VERSION " .. tostring(existing.API_VERSION)
+                .. ") is serving and this copy (API_VERSION " .. tostring(API_VERSION)
+                .. ") loaded nothing")
+        end
+    elseif outcome:sub(1, 9) == "refused: " and existing.IS_DEV_BUILD then
+        existing:RaiseDevError("a newer copy from " .. tostring(ADDON_NAME)
+            .. " did not take over (" .. outcome .. ")")
+    end
+    return
+end
+
+local takingOver = existing ~= nil
+local F = existing or {}
+if not takingOver then
+    F.IS_DEV_BUILD = isDevBuild
+    F.VERSION = VERSION
+    F.SOURCE = ADDON_NAME
+    F._LOAD_TOKEN = LOAD_TOKEN
+end
 
 -- Dev builds raise; release builds print and return, so callers must still
 -- handle the failure path themselves.
@@ -87,75 +164,62 @@ function F:RequireModule(name, minApiVersion)
     return module
 end
 
--- First-loaded wins; a later copy must not overwrite _G.Foundry_1_0, or a
--- second live instance would double-run DB's logout strip and corrupt saves.
-local existing = _G.Foundry_1_0
-if existing then
-    -- rawget: a current copy reads none of the newer layout fields on an older
-    -- library table through a normal lookup.
-    local state = rawget(existing, "_state")
-    if type(state) == "table" and type(state.copies) == "table" then
-        state.copies[#state.copies + 1] = {
-            source = ADDON_NAME, version = F.VERSION, apiVersion = F.API_VERSION,
-            unit = "core", outcome = "not used",
-        }
-    end
-    -- Suppression rests on the API_VERSION check only -- _LOAD_TOKEN is
-    -- always unequal across loads, so it filters nothing.
-    if F.IS_DEV_BUILD and not existing.IS_DEV_BUILD then
-        existing:RaiseDevError("an enabled Foundry-1.0 DevBuild was suppressed; "
-            .. "the first-loaded release copy (version " .. tostring(existing.VERSION)
-            .. ") is serving and this DevBuild loaded nothing")
-    elseif existing.IS_DEV_BUILD and existing._LOAD_TOKEN ~= F._LOAD_TOKEN
-        and existing.API_VERSION ~= F.API_VERSION then
-        existing:RaiseDevError("a redundant embedded Foundry-1.0 copy was suppressed; "
-            .. "the first-loaded copy (API_VERSION " .. tostring(existing.API_VERSION)
-            .. ") is serving and this copy (API_VERSION " .. tostring(F.API_VERSION)
-            .. ") loaded nothing")
-    end
-    return
+-- Only the serving copy carries the layout version and the shared state table.
+if not takingOver then
+    F._layoutVersion = 1
+    F._state = { modules = {}, copies = {} }
 end
 
--- Only the serving copy carries the layout version and the shared state table.
-F._layoutVersion = 1
-F._build = BUILD
+-- Written last, so a copy that fails before this point leaves the serving
+-- copy reporting what it did before.
+F.API_VERSION = API_VERSION
 F._source = ADDON_NAME
-F._state = { modules = {}, copies = {} }
+F._build = BUILD
 
--- No plain _G.Foundry; consumers bind _G.Foundry_1_0 explicitly.
-_G.Foundry_1_0 = F
+if takingOver then
+    local copies = F._state.copies
+    if type(copies) == "table" then
+        copies[#copies + 1] = {
+            source = ADDON_NAME, version = VERSION, apiVersion = API_VERSION, build = BUILD,
+            unit = "core", outcome = "took over",
+        }
+    end
+else
+    -- No plain _G.Foundry; consumers bind _G.Foundry_1_0 explicitly.
+    _G.Foundry_1_0 = F
 
--- /foundry copies. Registered by the serving copy only, straight on the
--- client tables so a trimmed copy without Commands still has it, and only when
--- both names are free.
-if SlashCmdList and SlashCmdList.FOUNDRY == nil and _G.SLASH_FOUNDRY1 == nil then
-    _G.SLASH_FOUNDRY1 = "/foundry"
-    SlashCmdList.FOUNDRY = function(message)
-        local word = tostring(message or ""):match("^%s*(%S*)"):lower()
-        if word ~= "copies" then
-            print("Foundry: type /foundry copies to list the loaded copies of the Foundry library")
-            return
-        end
-        print(("Foundry: active copy: %s, version %s, API version %s")
-            :format(tostring(F.SOURCE), tostring(F.VERSION), tostring(F.API_VERSION)))
-        local names = {}
-        for name, module in pairs(F._state.modules) do
-            if module._source ~= F.SOURCE then names[#names + 1] = name end
-        end
-        table.sort(names)
-        for _, name in ipairs(names) do
-            print(("Foundry: %s comes from %s"):format(name, F._state.modules[name]._source or "an older copy that does not name its addon"))
-        end
-        if #names == 0 then
-            print("Foundry: every module comes from the active copy")
-        end
-        local copies = F._state.copies
-        for _, copy in ipairs(copies) do
-            print(("Foundry: %s: %s, version %s, API version %s")
-                :format(tostring(copy.outcome), tostring(copy.source), tostring(copy.version), tostring(copy.apiVersion)))
-        end
-        if #copies == 0 then
-            print("Foundry: no other copies recorded (copies older than this version are not listed)")
+    -- /foundry copies. Registered by the serving copy only, straight on the
+    -- client tables so a trimmed copy without Commands still has it, and only when
+    -- both names are free.
+    if SlashCmdList and SlashCmdList.FOUNDRY == nil and _G.SLASH_FOUNDRY1 == nil then
+        _G.SLASH_FOUNDRY1 = "/foundry"
+        SlashCmdList.FOUNDRY = function(message)
+            local word = tostring(message or ""):match("^%s*(%S*)"):lower()
+            if word ~= "copies" then
+                print("Foundry: type /foundry copies to list the loaded copies of the Foundry library")
+                return
+            end
+            print(("Foundry: active copy: %s, version %s, API version %s")
+                :format(tostring(F.SOURCE), tostring(F.VERSION), tostring(F.API_VERSION)))
+            local names = {}
+            for name, module in pairs(F._state.modules) do
+                if module._source ~= F.SOURCE then names[#names + 1] = name end
+            end
+            table.sort(names)
+            for _, name in ipairs(names) do
+                print(("Foundry: %s comes from %s"):format(name, F._state.modules[name]._source or "an older copy that does not name its addon"))
+            end
+            if #names == 0 then
+                print("Foundry: every module comes from the active copy")
+            end
+            local copies = F._state.copies
+            for _, copy in ipairs(copies) do
+                print(("Foundry: %s: %s, version %s, API version %s")
+                    :format(tostring(copy.outcome), tostring(copy.source), tostring(copy.version), tostring(copy.apiVersion)))
+            end
+            if #copies == 0 then
+                print("Foundry: no other copies recorded (copies older than this version are not listed)")
+            end
         end
     end
 end

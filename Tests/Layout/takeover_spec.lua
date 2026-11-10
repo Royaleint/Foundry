@@ -44,7 +44,7 @@ local SERVING_BUILD, INCOMING_BUILD = 2, 3
 -- code. With the list empty the test is strict: no unit may serve older code.
 -- The same list holds back every case below that needs behaviour the unit does not
 -- have yet (the record's outcome words, the raise for a refused takeover).
-local STILL_OLDER = { "core", "Commands", "Events", "Lifecycle", "DB", "List", "Settings", "Tooltip", "Menu", "Window" }
+local STILL_OLDER = { "Commands", "Events", "Lifecycle", "DB", "List", "Settings", "Tooltip", "Menu", "Window" }
 
 local function pending(unit)
     for _, name in ipairs(STILL_OLDER) do
@@ -271,7 +271,9 @@ end
 -- outcome     the word the record carries when a unit declines for this reason
 -- refused     true when the outcome is a refusal, which raises in a serving
 --             development copy
--- coreRecord  "any" when the core's record entry is not pinned for this case
+-- coreOutcome the word the core's own record carries when it differs from the
+--             modules' (a core with no layout is an older copy, not a layout
+--             this copy does not recognise)
 -- kinds       the serving copies the case runs over
 local BUILD_CASES = {
     { name = "an equal build", inject = setBuild(INCOMING_BUILD) },
@@ -287,8 +289,8 @@ local BUILD_CASES = {
 for _, case in ipairs(BUILD_CASES) do case.outcome = "not used" end
 
 local OTHER_CASES = {
-    { name = "a unit with layout 2", inject = setLayout(2), outcome = "layout", coreRecord = "any" },
-    { name = "a unit with no layout", inject = setLayout(nil), outcome = "layout", coreRecord = "any" },
+    { name = "a unit with layout 2", inject = setLayout(2), outcome = "layout" },
+    { name = "a unit with no layout", inject = setLayout(nil), outcome = "layout", coreOutcome = "not used" },
     { name = "a player who is already logged in",
         inject = function() T.loggedIn = true end, outcome = "after login", layout1 = true },
     { name = "a player in combat",
@@ -317,12 +319,15 @@ local function row(case, kind, mode, unit)
 
     if unit ~= "core" then
         T.eq(#copies, appendedBefore, who .. "a module file leaves the record alone")
-    elseif case.coreRecord ~= "any" and (case.outcome == "not used" or not pending(unit)) then
+    else
         T.eq(#copies, appendedBefore + 1, who .. "the core records one entry")
         local entry = copies[appendedBefore + 1]
         T.eq(entry.unit, "core", who .. "entry unit")
         T.eq(entry.source, "IncomingHost", who .. "entry source")
-        T.eq(entry.outcome, case.outcome, who .. "entry outcome")
+        T.eq(entry.version, releaseMode(mode) and "1.0.2" or "dev", who .. "entry version is the incoming copy's")
+        T.eq(entry.apiVersion, 7, who .. "entry API version")
+        T.eq(entry.build, INCOMING_BUILD, who .. "entry build")
+        T.eq(entry.outcome, case.coreOutcome or case.outcome, who .. "entry outcome")
     end
 
     if releaseMode(mode) then
@@ -334,6 +339,8 @@ local function row(case, kind, mode, unit)
                 .. "': " .. tostring(err))
             if unit == "core" then
                 T.eq(#copies, appendedBefore + 1, who .. "the record is written before the error")
+                T.truthy(tostring(err):find("Foundry-1.0: a newer copy from IncomingHost did not take over ("
+                    .. case.outcome .. ")", 1, true), who .. "the error text: " .. tostring(err))
             end
         end
     else
@@ -406,7 +413,7 @@ end)
 -- Commands, Events and Lifecycle, which have no layout. DB cannot be taken over
 -- because its Lifecycle is not layout 1.
 test("a newer DB over a Lifecycle with no layout declines and changes nothing", function()
-    local FILES = { "Foundry.lua", "Modules/Commands.lua", "Modules/Events.lua", "Modules/Lifecycle.lua", "Modules/DB.lua" }
+    local FILES = { "Modules/Commands.lua", "Modules/Events.lua", "Modules/Lifecycle.lua", "Modules/DB.lua" }
     for _, mode in ipairs({ "release", "dev" }) do
         T.installMocks(releaseMode(mode) and "1.0.0" or "@project-version@")
         local version = releaseMode(mode) and "1.0.1" or nil
@@ -423,9 +430,9 @@ test("a newer DB over a Lifecycle with no layout declines and changes nothing", 
         local errors = loadEach({
             build = INCOMING_BUILD, addonName = "IncomingHost", version = incomingVersion(mode), files = FILES,
         })
-        local changes = SN.diff(before, SN.take(F), { copies = 1 })
+        local changes = SN.diff(before, SN.take(F))
         T.eq(#changes, 0, mode .. ": nothing changes, but: " .. table.concat(changes, "; "))
-        T.eq(#F._state.copies, appended + 1, mode .. ": only the core records")
+        T.eq(#F._state.copies, appended, mode .. ": a module file records nothing")
         for _, rel in ipairs(FILES) do
             if rel == "Modules/DB.lua" and not releaseMode(mode) and not pending("DB") then
                 T.truthy(errors[rel] and errors[rel]:find("refused: lifecycle layout", 1, true),
@@ -456,19 +463,237 @@ test("a whole newer copy loading while the player is logged in or in combat chan
 end)
 
 --------------------------------------------------------------------------------
+-- The core
+--------------------------------------------------------------------------------
+
+local API_LINE = "local API_VERSION = 7"
+
+-- A replace map giving the loaded copy another API version.
+local function apiVersion(n) return { [API_LINE] = "local API_VERSION = " .. n } end
+
+local function merge(a, b)
+    local out = {}
+    for k, v in pairs(a or {}) do out[k] = v end
+    for k, v in pairs(b or {}) do out[k] = v end
+    return out
+end
+
+-- Loads the incoming copy's core file alone.
+local function loadCore(spec)
+    return T.loadBuild({
+        build = spec.build or INCOMING_BUILD, addonName = spec.addonName or "IncomingHost",
+        version = spec.version, files = { "Foundry.lua" }, replace = spec.replace,
+    })
+end
+
+local METHODS = { "RaiseDevError", "RegisterModule", "HasModule", "RequireModule" }
+
+local function buildOf(fn)
+    return debug.getinfo(fn, "S").source:gsub("\\", "/"):match("/build%-(%d+)/")
+end
+
+test("a newer copy takes over the library core: the four methods are new, the library keeps its identity, version, source, dev flag and load token, and the API version reads the newer value", function()
+    for _, kind in ipairs({ "current", "layout1" }) do
+        for _, mode in ipairs({ "release", "dev" }) do
+            local who = kind .. ", " .. mode .. ": "
+            local F = serve(kind, mode)
+            local kept = {
+                VERSION = F.VERSION, SOURCE = F.SOURCE, IS_DEV_BUILD = F.IS_DEV_BUILD, token = F._LOAD_TOKEN,
+                modules = F._state.modules, state = F._state, impl = F.Commands._impl,
+            }
+            local older = {}
+            for _, name in ipairs(METHODS) do older[name] = F[name] end
+            local copies = #F._state.copies
+            local result = loadCore({ version = incomingVersion(mode), replace = apiVersion(8) })
+            T.truthy(rawequal(result, F), who .. "the library table is the same table")
+            T.truthy(rawequal(_G.Foundry_1_0, F), who .. "the global is unchanged")
+            for _, name in ipairs(METHODS) do
+                T.truthy(F[name] ~= older[name], who .. name .. " is redefined")
+                T.eq(buildOf(F[name]), tostring(INCOMING_BUILD), who .. name .. " is the incoming copy's code")
+            end
+            T.eq(F.VERSION, kept.VERSION, who .. "version is kept")
+            T.eq(F.SOURCE, kept.SOURCE, who .. "source is kept")
+            T.eq(F.IS_DEV_BUILD, kept.IS_DEV_BUILD, who .. "dev flag is kept")
+            T.truthy(rawequal(F._LOAD_TOKEN, kept.token), who .. "load token is kept")
+            T.truthy(rawequal(F._state, kept.state), who .. "state table is kept")
+            T.truthy(rawequal(F._state.modules, kept.modules), who .. "module list is kept")
+            T.truthy(rawequal(F.Commands._impl, kept.impl), who .. "modules are untouched")
+            T.eq(F.API_VERSION, 8, who .. "API version reads the newer value")
+            T.eq(F._build, INCOMING_BUILD, who .. "build is the newer number")
+            T.eq(F._source, "IncomingHost", who .. "the newer copy's addon is named")
+            T.eq(F._layoutVersion, 1, who .. "layout version")
+            T.eq(#F._state.copies, copies + 1, who .. "one entry is recorded")
+            T.eq(F._state.copies[copies + 1].outcome, "took over", who .. "outcome")
+            T.eq(#T.output, 0, who .. "nothing is printed")
+            local probe = {}
+            T.truthy(rawequal(F:RegisterModule("TakeoverProbe", probe), probe), who .. "the new RegisterModule works")
+            T.truthy(rawequal(F.TakeoverProbe, probe) and F:HasModule("TakeoverProbe"), who .. "HasModule sees it")
+            T.truthy(rawequal(F:RequireModule("TakeoverProbe"), probe), who .. "RequireModule returns it")
+        end
+    end
+end)
+
+test("a newer copy declines a library whose module list does not match its fields, records it, and raises only in a development serving copy", function()
+    local cases = {
+        { name = "a registered name whose field is another table",
+            inject = function(F) F._state.modules.Probe = {}; rawset(F, "Probe", {}) end },
+        { name = "a registered name with no field on the library",
+            inject = function(F) F._state.modules.Probe = {} end },
+        { name = "a module list that is not a table",
+            inject = function(F) F._state.modules = "not a table" end },
+    }
+    for _, case in ipairs(cases) do
+        runCase({
+            name = "a serving core with " .. case.name, inject = case.inject,
+            outcome = "refused: module list", refused = true, units = { "core" },
+        }, "current")
+    end
+end)
+
+test("the core records one entry per loading copy with its build, and a took over entry carries the incoming copy's own version and source", function()
+    T.installMocks("1.0.0")
+    local F = T.loadBuild({ build = SERVING_BUILD, addonName = "HostA", version = "1.0.1" })
+    local steps = {
+        { build = 3, name = "HostB", version = "1.0.2", outcome = "took over" },
+        { build = 3, name = "HostC", version = "1.0.3", outcome = "not used" },
+        { build = 2, name = "HostD", version = "1.0.4", outcome = "not used" },
+        { build = 4, name = "HostE", version = "1.0.5", outcome = "took over" },
+    }
+    for _, step in ipairs(steps) do
+        loadCore({ build = step.build, addonName = step.name, version = step.version })
+    end
+    local copies = F._state.copies
+    T.eq(#copies, #steps, "one entry per loading copy")
+    for i, step in ipairs(steps) do
+        local entry = copies[i]
+        local keys = {}
+        for k in pairs(entry) do keys[#keys + 1] = k end
+        table.sort(keys)
+        T.eq(table.concat(keys, ","), "apiVersion,build,outcome,source,unit,version", "entry " .. i .. " fields")
+        T.eq(entry.source, step.name, "entry " .. i .. " source")
+        T.eq(entry.version, step.version, "entry " .. i .. " version")
+        T.eq(entry.build, step.build, "entry " .. i .. " build")
+        T.eq(entry.apiVersion, 7, "entry " .. i .. " API version")
+        T.eq(entry.unit, "core", "entry " .. i .. " unit")
+        T.eq(entry.outcome, step.outcome, "entry " .. i .. " outcome")
+    end
+    T.eq(F.SOURCE, "HostA", "the first copy's name is kept")
+    T.eq(F.VERSION, "1.0.1", "the first copy's version is kept")
+    T.eq(F._source, "HostE", "the last copy to take over is named")
+    T.eq(F._build, 4, "and its build is the library's")
+end)
+
+test("a newer copy over a layout-1 core takes it over and records it, and over a 1.0.114 core records nothing", function()
+    local F = serve("layout1", "release")
+    T.eq(#F._state.copies, 0, "no entries yet")
+    loadCore({ version = "1.0.2" })
+    T.eq(#F._state.copies, 1, "the layout-1 core keeps a record")
+    T.eq(F._state.copies[1].outcome, "took over", "outcome")
+    T.installMocks("1.0.0")
+    local old = T.loadOldCopy("v1.0.114", "ServingHost", "1.0.114")
+    loadCore({ version = "1.0.2" })
+    T.eq(rawget(old, "_state"), nil, "a core with no state gets none")
+    T.eq(rawget(old, "_build"), nil, "and no build")
+    T.eq(#T.output, 0, "nothing is printed")
+end)
+
+test("the two suppression messages fire for a 1.0.114 core and for an equal build, and stay silent when the core takes over", function()
+    local DEV = "@project-version@"
+    -- a 1.0.114 release core, then a development copy
+    T.installMocks("1.0.0")
+    T.loadOldCopy("v1.0.114", "ServingHost", "1.0.114")
+    loadCore({ version = DEV })
+    T.outputContains("Foundry-1.0: an enabled Foundry-1.0 DevBuild was suppressed; the first-loaded release copy (version 1.0.114) is serving and this DevBuild loaded nothing",
+        "the DevBuild message")
+    -- a 1.0.114 development core, then a copy with another API version
+    T.installMocks(DEV)
+    T.loadOldCopy("v1.0.114", "ServingHost")
+    local ok, err = pcall(loadCore, { replace = apiVersion(8) })
+    T.falsy(ok, "a development 1.0.114 core raises")
+    T.truthy(tostring(err):find("Foundry-1.0: a redundant embedded Foundry-1.0 copy was suppressed; the first-loaded copy (API_VERSION 7) is serving and this copy (API_VERSION 8) loaded nothing", 1, true),
+        "the redundant copy message: " .. tostring(err))
+    -- an equal build
+    T.installMocks(DEV)
+    T.loadBuild({ build = INCOMING_BUILD, addonName = "ServingHost", files = { "Foundry.lua" }, replace = apiVersion(6) })
+    ok, err = pcall(loadCore, {})
+    T.falsy(ok, "an equal build raises in a development serving copy")
+    T.truthy(tostring(err):find("(API_VERSION 6) is serving and this copy (API_VERSION 7) loaded nothing", 1, true),
+        "equal build message: " .. tostring(err))
+    T.installMocks("1.0.0")
+    T.loadBuild({ build = INCOMING_BUILD, addonName = "ServingHost", version = "1.0.1", files = { "Foundry.lua" } })
+    loadCore({ version = DEV })
+    T.outputContains("an enabled Foundry-1.0 DevBuild was suppressed", "equal build, release serving")
+    -- a takeover is silent, development over development and development over release
+    T.installMocks(DEV)
+    T.loadBuild({ build = SERVING_BUILD, addonName = "ServingHost", files = { "Foundry.lua" } })
+    ok, err = pcall(loadCore, { replace = apiVersion(8) })
+    T.truthy(ok, "a takeover raises nothing: " .. tostring(err))
+    T.eq(#T.output, 0, "and prints nothing")
+    T.installMocks("1.0.0")
+    T.loadBuild({ build = SERVING_BUILD, addonName = "ServingHost", version = "1.0.1", files = { "Foundry.lua" } })
+    ok, err = pcall(loadCore, { version = DEV, replace = apiVersion(8) })
+    T.truthy(ok, "a development takeover of a release core raises nothing: " .. tostring(err))
+    T.eq(#T.output, 0, "and prints nothing")
+end)
+
+test("a taken-over core leaves the /foundry command with the first copy, which lists the took over entry", function()
+    local F = serve("current", "dev")
+    local command = _G.SlashCmdList.FOUNDRY
+    T.eq(type(command), "function", "the first copy registered the command")
+    loadCore({ replace = apiVersion(8) })
+    T.truthy(rawequal(_G.SlashCmdList.FOUNDRY, command), "the command is the first copy's")
+    T.eq(_G.SLASH_FOUNDRY1, "/foundry", "the slash name is unchanged")
+    T.output = {}
+    command("copies")
+    T.outputContains("Foundry: active copy: ServingHost, version dev, API version 8", "the first copy stays the active copy")
+    T.outputContains("Foundry: every module comes from the active copy", "no module has moved yet")
+    T.outputContains("Foundry: took over: IncomingHost, version dev, API version 8", "the record lists the takeover")
+    T.truthy(rawequal(_G.Foundry_1_0, F), "the library table is the same")
+end)
+
+test("a copy that fails partway through taking over leaves the version, build and source of the active copy unchanged", function()
+    local lines = { "function F:RaiseDevError(message)", "F.API_VERSION = API_VERSION" }
+    for _, kind in ipairs({ "current", "layout1" }) do
+        for _, mode in ipairs({ "release", "dev" }) do
+            for _, line in ipairs(lines) do
+                local who = kind .. ", " .. mode .. ", failing before '" .. line .. "': "
+                local F = serve(kind, mode)
+                local before = {
+                    api = F.API_VERSION, build = rawget(F, "_build"), source = rawget(F, "_source"),
+                    version = F.VERSION, serving = F.SOURCE,
+                }
+                local copies = #F._state.copies
+                local ok, err = pcall(loadCore, {
+                    version = incomingVersion(mode), replace = merge(apiVersion(8), T.plantError(line, "planted failure")),
+                })
+                T.falsy(ok, who .. "the copy fails")
+                T.truthy(tostring(err):find("planted failure", 1, true), who .. "at the planted line: " .. tostring(err))
+                T.eq(F.API_VERSION, before.api, who .. "API version")
+                T.eq(rawget(F, "_build"), before.build, who .. "build")
+                T.eq(rawget(F, "_source"), before.source, who .. "source")
+                T.eq(F.VERSION, before.version, who .. "version")
+                T.eq(F.SOURCE, before.serving, who .. "serving source")
+                T.eq(#F._state.copies, copies, who .. "no entry claims a takeover")
+            end
+        end
+    end
+end)
+
+--------------------------------------------------------------------------------
 -- The shape of each file after its decision block
 --------------------------------------------------------------------------------
 
 -- The files whose shape is not scanned yet. A file joins the scan when its
 -- decision block lands and its unit leaves the ledger.
 local SHAPE_PENDING = {
-    "Foundry.lua", "Modules/Commands.lua", "Modules/Events.lua", "Modules/Lifecycle.lua", "Modules/DB.lua",
+    "Modules/Commands.lua", "Modules/Events.lua", "Modules/Lifecycle.lua", "Modules/DB.lua",
     "Modules/List.lua", "Modules/Settings.lua", "Modules/Tooltip.lua", "Modules/Menu.lua", "Modules/Window.lua",
 }
 
 -- The last line of the decision block; every top-level statement after it is
 -- scanned.
 local DECISION_END = "^local takingOver = served ~= nil$"
+local DECISION_END_CORE = "^local takingOver = existing ~= nil$"
 
 local KEYWORDS = {
     ["and"] = true, ["or"] = true, ["not"] = true, ["if"] = true, ["then"] = true, ["function"] = true,
@@ -589,11 +814,12 @@ local function scanShape(rel, text)
     local found = {}
     local start
     local lineNo = 0
+    local marker = rel == FILE.core and DECISION_END_CORE or DECISION_END
     for raw in (text .. "\n"):gmatch("([^\n]*)\n") do
         lineNo = lineNo + 1
-        if raw:gsub("\r$", ""):match(DECISION_END) then start = lineNo; break end
+        if raw:gsub("\r$", ""):match(marker) then start = lineNo; break end
     end
-    if not start then return { rel .. ": no decision block ends with '" .. DECISION_END .. "'" } end
+    if not start then return { rel .. ": no decision block ends with '" .. marker .. "'" } end
     local roots = allowedRoots(rel)
     for _, st in ipairs(statements(text, start + 1)) do
         if not st.exempt then
