@@ -12,18 +12,26 @@ local ADDON_NAME = ...
 local VERSION_TOKEN = "@" .. "project-version" .. "@"
 local DEV_VERSION = "dev"
 
+-- Foundry's own folders. An embedded copy reads the host addon's TOC, so only
+-- these names may treat a "dev-" version as Foundry's own stamp.
+local OWN_FOLDERS = { ["Foundry-1.0"] = true, ["Foundry-1.0_DevBuild"] = true }
+
 local tocVersion = C_AddOns and C_AddOns.GetAddOnMetadata(ADDON_NAME, "Version")
 
 -- _G.FOUNDRY_DEV_BUILD_OVERRIDE (set before this file loads) forces dev
 -- builds on for local testing.
 local override = _G.FOUNDRY_DEV_BUILD_OVERRIDE
+local isStamped = OWN_FOLDERS[ADDON_NAME] == true
+    and type(tocVersion) == "string"
+    and tocVersion:sub(1, 4) == "dev-"
 local isDevBuild = (tocVersion == nil)
     or (tocVersion == VERSION_TOKEN)
+    or isStamped
     or (override ~= nil and override ~= false)
 
 local F = {}
 F.IS_DEV_BUILD = isDevBuild
-F.VERSION = isDevBuild and DEV_VERSION or tocVersion
+F.VERSION = isStamped and tocVersion or (isDevBuild and DEV_VERSION or tocVersion)
 F.SOURCE = ADDON_NAME
 F.API_VERSION = 7
 F._LOAD_TOKEN = {}   -- per-load identity token

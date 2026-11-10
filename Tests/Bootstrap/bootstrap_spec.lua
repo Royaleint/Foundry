@@ -120,6 +120,61 @@ test("suppression: release winner reports when it suppresses an enabled DevBuild
     T.truthy(ok, "diagnostic names the release winner and the suppressed DevBuild (missing: " .. tostring(missing) .. ")")
 end)
 
+-- A dev- stamped version in Foundry's own folder is a dev build and shows the stamp.
+-- Only the standalone folders count; an embedded copy reads the host's TOC.
+local function loadAs(addonName, tocVersion)
+    T.installMocks(tocVersion)
+    assert(loadfile(T.foundryRoot .. "/Foundry.lua"))(addonName)
+    return _G.Foundry_1_0
+end
+
+test("stamp: dev- version in the standalone folder is a dev build and VERSION shows the stamp", function()
+    for _, folder in ipairs({ "Foundry-1.0", "Foundry-1.0_DevBuild" }) do
+        local F = loadAs(folder, "dev-abc1234")
+        T.eq(F.IS_DEV_BUILD, true, folder .. " dev-stamp is a dev build")
+        T.eq(F.VERSION, "dev-abc1234", folder .. " VERSION carries the stamp")
+    end
+end)
+
+test("stamp: dev- host version on an embedded copy stays a release", function()
+    local F = loadAs("Homestead", "dev-abc1234")
+    T.eq(F.IS_DEV_BUILD, false, "embedded copy ignores the host's dev- stamp")
+    T.eq(F.VERSION, "dev-abc1234", "VERSION is the host version, as for any release")
+end)
+
+test("stamp: embedded copy keeps the nil and packager-token dev cases", function()
+    T.eq(loadAs("Homestead", nil).IS_DEV_BUILD, true, "nil version is still dev")
+    T.eq(loadAs("Homestead", "@project-version@").IS_DEV_BUILD, true, "token is still dev")
+end)
+
+test("stamp: a packaged version string still reads as release", function()
+    local F = loadAs("Foundry-1.0", "1.0.114")
+    T.eq(F.IS_DEV_BUILD, false, "1.0.114 is a release")
+    T.eq(F.VERSION, "1.0.114", "VERSION is the packaged version")
+end)
+
+test("stamp: stamped dev standalone loading after an embedded release is suppressed with the DevBuild diagnostic", function()
+    local current = currentApiVersion()
+    T.installMocks("dev-abc1234")
+    local fake = injectExisting({ IS_DEV_BUILD = false, API_VERSION = current, VERSION = "1.0.104" })
+    assert(loadfile(T.foundryRoot .. "/Foundry.lua"))("Foundry-1.0_DevBuild")
+    T.eq(_G.Foundry_1_0, fake, "the release winner stays installed")
+    T.eq(#fake.captured, 1, "one DevBuild diagnostic fires")
+    local ok, missing = containsAll(fake.captured, "DevBuild", "1.0.104", "loaded nothing")
+    T.truthy(ok, "diagnostic matches the unstamped case (missing: " .. tostring(missing) .. ")")
+end)
+
+test("stamp: embedded release loading after a stamped dev standalone is suppressed silently", function()
+    local current = currentApiVersion()
+    local dev = loadAs("Foundry-1.0_DevBuild", "dev-abc1234")
+    local captured = {}
+    dev.RaiseDevError = function(_, m) captured[#captured + 1] = m end
+    T.eq(dev.IS_DEV_BUILD, true, "setup: stamped dev standalone won")
+    assert(loadfile(T.foundryRoot .. "/Foundry.lua"))("Homestead")
+    T.eq(_G.Foundry_1_0, dev, "the stamped dev copy stays installed")
+    T.eq(#captured, 0, "same-API embed is silent, as with an unstamped dev winner")
+end)
+
 -- Red-without-change: case (ii) is the discriminator for the version-aware change,
 -- NOT case (i). Case (i) fires with or without the third condition (current-1 ~=
 -- current is true either way), so it cannot prove the change. Case (ii) can: with
