@@ -72,7 +72,7 @@ test("Lifecycle carries the layout header, its state and its implementation", fu
     local L = F.Lifecycle
     T.eq(L._layoutVersion, 1, "layout version")
     T.eq(L._source, "Foundry-1.0", "source addon name")
-    T.eq(L._build, nil, "no build stamp yet")
+    T.eq(L._build, T.libraryBuild(), "build number")
     T.eq(type(L._state), "table", "state table")
     T.eq(type(L._impl), "table", "implementation table")
     for _, name in ipairs(LIFECYCLE_STATE_TABLES) do
@@ -279,7 +279,7 @@ test("DB carries the layout header, its state and its implementation", function(
     local D = F.DB
     T.eq(D._layoutVersion, 1, "layout version")
     T.eq(D._source, "Foundry-1.0", "source addon name")
-    T.eq(D._build, nil, "no build stamp yet")
+    T.eq(D._build, T.libraryBuild(), "build number")
     T.eq(type(D._state), "table", "state table")
     T.eq(type(D._impl), "table", "implementation table")
     for _, name in ipairs(DB_STATE_TABLES) do
@@ -441,7 +441,7 @@ test("Events carries the layout header, its state and its implementation", funct
     local E = F.Events
     T.eq(E._layoutVersion, 1, "layout version")
     T.eq(E._source, "Foundry-1.0", "source addon name")
-    T.eq(E._build, nil, "no build stamp yet")
+    T.eq(E._build, T.libraryBuild(), "build number")
     T.eq(type(E._state), "table", "state table")
     T.eq(type(E._impl), "table", "implementation table")
     for _, name in ipairs({ "Controller", "Bucket" }) do
@@ -461,7 +461,7 @@ test("Commands carries the layout header, its state and its implementation", fun
     local C = F.Commands
     T.eq(C._layoutVersion, 1, "layout version")
     T.eq(C._source, "Foundry-1.0", "source addon name")
-    T.eq(C._build, nil, "no build stamp yet")
+    T.eq(C._build, T.libraryBuild(), "build number")
     T.eq(type(C._state), "table", "state table")
     T.eq(type(C._impl), "table", "implementation table")
     T.eq(type(C._impl.Controller), "table", "implementation Controller")
@@ -702,7 +702,7 @@ end
 local function checkHeader(M, label, impl)
     T.eq(M._layoutVersion, 1, label .. " layout version")
     T.eq(M._source, "Foundry-1.0", label .. " source addon name")
-    T.eq(M._build, nil, label .. " no build stamp yet")
+    T.eq(M._build, T.libraryBuild(), label .. " build number")
     T.eq(type(M._state), "table", label .. " state table")
     T.eq(type(M._impl), "table", label .. " implementation table")
     for name, kind in pairs(impl) do

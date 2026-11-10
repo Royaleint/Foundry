@@ -567,6 +567,18 @@ T.FOUNDRY_FILES = {
     "Modules/Window.lua",
 }
 
+-- The one line every library file carries to state its build number. The
+-- build spec reads it with this pattern.
+T.BUILD_LINE = "^local BUILD = (%d+)$"
+
+-- The build number Foundry.lua carries.
+function T.libraryBuild()
+    for line in io.lines(foundryRoot .. "/Foundry.lua") do
+        local value = line:gsub("\r$", ""):match(T.BUILD_LINE)
+        if value then return tonumber(value) end
+    end
+end
+
 -- Rehearsal mode (--rehearse): every T.loadFoundry also installs a second
 -- copy of the library over the first, so the whole suite runs against code
 -- swapped in over a running copy.
@@ -726,6 +738,7 @@ local suites = {
     { label = "Foundry.Layout.handover", cases = assert(loadfile(testsDir .. "/Layout/handover_spec.lua"))(T) },
     { label = "Foundry.Layout.mixed", cases = assert(loadfile(testsDir .. "/Layout/mixed_copies_spec.lua"))(T) },
     { label = "Foundry.Layout.copies", cases = assert(loadfile(testsDir .. "/Layout/copies_record_spec.lua"))(T) },
+    { label = "Foundry.Layout.build", cases = assert(loadfile(testsDir .. "/Layout/build_spec.lua"))(T) },
 }
 
 if T.REHEARSE then

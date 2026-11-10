@@ -12,12 +12,15 @@ end
 -- Already registered by another embedded copy: load nothing.
 if F:HasModule("List") then return end
 
+local BUILD = 1
+
 local List = {}
 List.API_VERSION = 1
 
 -- All module state lives on the module table.
 List._layoutVersion = 1
 List._source = ...
+List._build = BUILD
 List._state = {
     -- Live controllers, held weakly so a dropped controller can be collected.
     instances = setmetatable({}, { __mode = "k" }),

@@ -14,6 +14,8 @@ end
 -- redundant embedded copy; load nothing.
 if F:HasModule("Commands") then return end
 
+local BUILD = 1
+
 local Commands = {}
 Commands.API_VERSION = 2
 Commands.Guards = {}
@@ -21,6 +23,7 @@ Commands.Guards = {}
 -- All module state lives on the module table.
 Commands._layoutVersion = 1
 Commands._source = ...
+Commands._build = BUILD
 Commands._state = {
     -- Live controllers, held weakly so a dropped controller can be collected.
     instances = setmetatable({}, { __mode = "k" }),

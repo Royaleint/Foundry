@@ -13,12 +13,15 @@ end
 -- Another copy of the library already registered this module: load nothing.
 if F:HasModule("Tooltip") then return end
 
+local BUILD = 1
+
 local Tooltip = {}
 Tooltip.API_VERSION = 1
 
 -- All module state lives on the module table.
 Tooltip._layoutVersion = 1
 Tooltip._source = ...
+Tooltip._build = BUILD
 Tooltip._state = {
     liveKeys = {},
     dispatchers = {},   -- tooltipType -> { head = controller, tail = controller }

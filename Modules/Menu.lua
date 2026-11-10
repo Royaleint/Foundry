@@ -13,12 +13,15 @@ end
 -- Another copy of the library already registered this module: load nothing.
 if F:HasModule("Menu") then return end
 
+local BUILD = 1
+
 local Menu = {}
 Menu.API_VERSION = 1
 
 -- All module state lives on the module table.
 Menu._layoutVersion = 1
 Menu._source = ...
+Menu._build = BUILD
 Menu._state = {
     -- Live controllers, held weakly so a dropped controller can be collected.
     instances = setmetatable({}, { __mode = "k" }),

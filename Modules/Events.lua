@@ -11,12 +11,15 @@ end
 -- Already registered by another embedded copy: load nothing.
 if F:HasModule("Events") then return end
 
+local BUILD = 1
+
 local Events = {}
 Events.API_VERSION = 2
 
 -- All module state lives on the module table.
 Events._layoutVersion = 1
 Events._source = ...
+Events._build = BUILD
 Events._state = {
     -- Live controllers, held weakly so a dropped controller can be collected.
     instances = setmetatable({}, { __mode = "k" }),

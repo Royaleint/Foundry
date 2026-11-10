@@ -15,12 +15,15 @@ end
 -- Another copy of the library already registered this module: load nothing.
 if F:HasModule("Window") then return end
 
+local BUILD = 1
+
 local Window = {}
 Window.API_VERSION = 1
 
 -- All module state lives on the module table.
 Window._layoutVersion = 1
 Window._source = ...
+Window._build = BUILD
 Window._state = {
     -- Attached frame -> record.
     attached = {},

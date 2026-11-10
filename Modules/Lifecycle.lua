@@ -20,6 +20,8 @@ end
 -- Redundant embedded copy of an already-registered module; load nothing.
 if F:HasModule("Lifecycle") then return end
 
+local BUILD = 1
+
 local Lifecycle = {}
 Lifecycle.API_VERSION = 4
 
@@ -32,6 +34,7 @@ Lifecycle.API_VERSION = 4
 -- it and the flags are always read through the state table.
 Lifecycle._layoutVersion = 1
 Lifecycle._source = ...
+Lifecycle._build = BUILD
 Lifecycle._state = {
     -- byAddonName: one-shot ADDON_LOADED demux, cleared on fire. ownedNames:
     -- persists until Destroy, backs re-register refusal.

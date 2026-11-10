@@ -41,6 +41,8 @@ if type(F.Events) ~= "table" or type(F.Events.New) ~= "function" then
     return
 end
 
+local BUILD = 1
+
 local DB = {}
 DB.API_VERSION = 2
 
@@ -53,6 +55,7 @@ DB.API_VERSION = 2
 -- state table.
 DB._layoutVersion = 1
 DB._source = ...
+DB._build = BUILD
 DB._state = {
     liveControllers = {},
     liveControllersByAddon = {},

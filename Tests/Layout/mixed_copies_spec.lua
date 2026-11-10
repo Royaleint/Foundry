@@ -18,8 +18,8 @@ local tests = {}
 local function test(name, fn) tests[#tests + 1] = { name = name, fn = fn } end
 
 local MODULES = { "Commands", "Events", "Lifecycle", "DB", "List", "Settings", "Tooltip", "Menu", "Window" }
-local LIBRARY_ADDITIONS = { "_layoutVersion", "_state" }
-local MODULE_ADDITIONS = { "_impl", "_layoutVersion", "_source", "_state" }
+local LIBRARY_ADDITIONS = { "_build", "_layoutVersion", "_source", "_state" }
+local MODULE_ADDITIONS = { "_build", "_impl", "_layoutVersion", "_source", "_state" }
 
 local DEV_STAMP = "dev-1a2b3c4"
 local OWN_DEV_NAME = "Foundry-1.0_DevBuild"
@@ -468,7 +468,7 @@ for _, mode in ipairs({ "release", "dev" }) do
     end
 end
 
-test("a current copy adds exactly two keys to the library table and four to each module, and removes none", function()
+test("a current copy adds exactly four keys to the library table and five to each module, and removes none", function()
     T.installMocks("@project-version@")
     loadKind({ kind = "base", addonName = "OnlyHost", version = "1.0.200" })
     local baseline = snapshot(_G.Foundry_1_0)
@@ -484,9 +484,9 @@ test("a current copy adds exactly two keys to the library table and four to each
         end
         return table.concat(out, ",")
     end
-    T.eq(added(baseline.libraryKeys, current.libraryKeys), "_layoutVersion,_state", "keys added to the library table")
+    T.eq(added(baseline.libraryKeys, current.libraryKeys), "_build,_layoutVersion,_source,_state", "keys added to the library table")
     for _, name in ipairs(MODULES) do
-        T.eq(added(baseline.moduleKeys[name], current.moduleKeys[name]), "_impl,_layoutVersion,_source,_state", "keys added to " .. name)
+        T.eq(added(baseline.moduleKeys[name], current.moduleKeys[name]), "_build,_impl,_layoutVersion,_source,_state", "keys added to " .. name)
     end
 end)
 

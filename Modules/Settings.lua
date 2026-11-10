@@ -15,12 +15,15 @@ end
 -- Another copy of the library already registered this module: load nothing.
 if F:HasModule("Settings") then return end
 
+local BUILD = 1
+
 local Settings = {}
 Settings.API_VERSION = 2
 
 -- All module state lives on the module table.
 Settings._layoutVersion = 1
 Settings._source = ...
+Settings._build = BUILD
 Settings._state = {
     liveKeys = {},
     -- Registered-category cache: Blizzard can't unregister a category, so a

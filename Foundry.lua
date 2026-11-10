@@ -7,6 +7,8 @@
 
 local ADDON_NAME = ...
 
+local BUILD = 1
+
 -- Built by concatenation: a literal token here would get rewritten by the
 -- packager too, and this file would read as a dev build after packaging.
 local VERSION_TOKEN = "@" .. "project-version" .. "@"
@@ -116,6 +118,8 @@ end
 
 -- Only the serving copy carries the layout version and the shared state table.
 F._layoutVersion = 1
+F._build = BUILD
+F._source = ADDON_NAME
 F._state = { modules = {}, copies = {} }
 
 -- No plain _G.Foundry; consumers bind _G.Foundry_1_0 explicitly.
