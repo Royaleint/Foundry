@@ -49,28 +49,26 @@ end
 
 -- Modules register as they load. Reach one directly (F.Commands), or
 -- defensively via :HasModule / :RequireModule.
-local modules = {}
-
 function F:RegisterModule(name, module)
     if type(name) ~= "string" or name == "" then
         self:RaiseDevError("RegisterModule: name must be a non-empty string")
         return
     end
-    if modules[name] then
+    if F._state.modules[name] then
         self:RaiseDevError("RegisterModule: module '" .. name .. "' is already registered")
         return
     end
-    modules[name] = module
+    F._state.modules[name] = module
     self[name] = module
     return module
 end
 
 function F:HasModule(name)
-    return modules[name] ~= nil
+    return F._state.modules[name] ~= nil
 end
 
 function F:RequireModule(name, minApiVersion)
-    local module = modules[name]
+    local module = F._state.modules[name]
     if not module then
         error("Foundry-1.0: required module '" .. tostring(name)
             .. "' is not present in this build.", 2)
@@ -104,6 +102,10 @@ if existing then
     end
     return
 end
+
+-- Only the serving copy carries the layout version and the shared state table.
+F._layoutVersion = 1
+F._state = { modules = {} }
 
 -- No plain _G.Foundry; consumers bind _G.Foundry_1_0 explicitly.
 _G.Foundry_1_0 = F

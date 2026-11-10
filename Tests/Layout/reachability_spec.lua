@@ -69,7 +69,6 @@ local SKIP_KEYS = { calls = true, _seq = true }
 -- Upvalues that are out of reach today, by file. Delete a module's entries in
 -- the change that moves its state; the comparison is exact in both directions.
 local EXPECTED = {
-    ["Foundry.lua"] = { "modules" },
     ["Modules/Commands.lua"] = { "Controller", "c" },
     ["Modules/DB.lua"] = {
         "Controller", "controllerMeta", "controllerStore", "liveControllers", "liveControllersByAddon",
@@ -87,6 +86,9 @@ local EXPECTED = {
     ["Modules/Tooltip.lua"] = { "Controller", "dispatchers", "list", "liveKeys" },
     ["Modules/Window.lua"] = { "attached", "geometry", "win" },
 }
+
+-- Shared with the layout checks, which start applying to a file once its entries are gone.
+T.expectedTrapped = EXPECTED
 
 -- The module name a file belongs to.
 local function moduleOf(file)
