@@ -17,13 +17,73 @@ if not F then
     error("Foundry-1.0: Lifecycle.lua requires the Foundry-1.0 bootstrap (Foundry.lua) "
         .. "to have loaded first; _G.Foundry_1_0 is missing.", 0)
 end
--- Redundant embedded copy of an already-registered module; load nothing.
-if F:HasModule("Lifecycle") then return end
 
 local BUILD = 1
+local API_VERSION = 4
 
-local Lifecycle = {}
-Lifecycle.API_VERSION = 4
+-- An older Lifecycle already serving is taken over in place when this copy is
+-- newer and the moment is safe; otherwise it keeps serving and this file loads
+-- nothing. The checks only read, in a fixed order, and the first to fail names
+-- the outcome; nil means this copy takes over. BUILD, API_VERSION, served and
+-- takingOver are read at file scope only: no function below may capture them.
+local served = F:HasModule("Lifecycle") and F.Lifecycle or nil
+if served ~= nil then
+    -- rawget: a current copy reads none of the newer layout fields on an older
+    -- library table through a normal lookup.
+    if rawget(F, "_layoutVersion") ~= 1 then return end
+    local outcome
+    local build = rawget(served, "_build")
+    local api = rawget(served, "API_VERSION")
+    if rawget(served, "_layoutVersion") ~= 1 then
+        outcome = "layout"
+    elseif build ~= nil and (type(build) ~= "number" or build ~= math.floor(build)
+        or build < 1 or build == math.huge or BUILD <= build) then
+        outcome = "not used"
+    elseif type(api) ~= "number" or api > API_VERSION then
+        outcome = "refused: api version"
+    elseif type(IsLoggedIn) ~= "function" or IsLoggedIn() then
+        outcome = "after login"
+    elseif type(InCombatLockdown) ~= "function" or InCombatLockdown() then
+        outcome = "combat"
+    else
+        -- Every key of the fresh state below, by type; the dispatcher is set
+        -- later, so it may still be absent.
+        local state, impl = rawget(served, "_state"), rawget(served, "_impl")
+        if type(state) ~= "table" or type(impl) ~= "table" or type(impl.Controller) ~= "table" then
+            outcome = "refused: shape"
+        elseif type(state.postLogout) ~= "table" then
+            outcome = "refused: logout list"
+        else
+            for _, key in ipairs({ "byAddonName", "ownedNames", "loginControllers", "unloadingControllers",
+                "identityHeld" }) do
+                if type(state[key]) ~= "table" then outcome = "refused: shape" end
+            end
+            for _, key in ipairs({ "unloadingSupported", "loginFired", "identityWatching", "pollScheduled",
+                "identityStopped", "devNoticePrinted", "surnameSettled" }) do
+                if type(state[key]) ~= "boolean" then outcome = "refused: shape" end
+            end
+            if state.dispatcher ~= nil and type(state.dispatcher) ~= "table" then
+                outcome = "refused: shape"
+            elseif not outcome and state.loginFired then
+                -- Login hooks have run and polls may be pending; the serving
+                -- copy keeps the session.
+                outcome = "after login"
+            end
+        end
+    end
+    if outcome then
+        if outcome:sub(1, 9) == "refused: " and F.IS_DEV_BUILD then
+            F:RaiseDevError("Lifecycle: a newer copy from " .. tostring((...))
+                .. " did not take over (" .. outcome .. ")")
+        end
+        return
+    end
+end
+local takingOver = served ~= nil
+
+-- On a takeover every definition below lands in the serving tables, so the
+-- older copy's frame, timers and controllers reach the newer code.
+local Lifecycle = served or {}
 
 --------------------------------------------------------------------------------
 -- Shared private dispatcher
@@ -32,37 +92,34 @@ Lifecycle.API_VERSION = 4
 -- All module state lives on the module table. dispatcher is set once, when it
 -- is first needed; identityHeld is replaced on every release, so
 -- it and the flags are always read through the state table.
-Lifecycle._layoutVersion = 1
-Lifecycle._source = ...
-Lifecycle._build = BUILD
-Lifecycle._state = {
-    -- byAddonName: one-shot ADDON_LOADED demux, cleared on fire. ownedNames:
-    -- persists until Destroy, backs re-register refusal.
-    byAddonName = {},
-    ownedNames = {},
-    -- Controllers wanting login OR logout; PLAYER_LOGOUT fans out over this
-    -- set too.
-    loginControllers = {},
-    unloadingControllers = {},
-    unloadingSupported = false,
-    loginFired = false,
-    postLogout = {},
+if not takingOver then
+    Lifecycle._layoutVersion = 1
+    Lifecycle._state = {
+        -- byAddonName: one-shot ADDON_LOADED demux, cleared on fire. ownedNames:
+        -- persists until Destroy, backs re-register refusal.
+        byAddonName = {},
+        ownedNames = {},
+        -- Controllers wanting login OR logout; PLAYER_LOGOUT fans out over this
+        -- set too.
+        loginControllers = {},
+        unloadingControllers = {},
+        unloadingSupported = false,
+        loginFired = false,
+        postLogout = {},
 
-    identityHeld = {},
-    identityWatching = false,
-    pollScheduled = false,
-    identityStopped = false,
-    devNoticePrinted = false,
-    surnameSettled = false,
-}
-Lifecycle._impl = {}
+        identityHeld = {},
+        identityWatching = false,
+        pollScheduled = false,
+        identityStopped = false,
+        devNoticePrinted = false,
+        surnameSettled = false,
+    }
+    Lifecycle._impl = {}
+end
 local S, I = Lifecycle._state, Lifecycle._impl
 local byAddonName, ownedNames = S.byAddonName, S.ownedNames
 local loginControllers, unloadingControllers = S.loginControllers, S.unloadingControllers
 local postLogout = S.postLogout
-
-Lifecycle._identityResolvedBy = nil
-Lifecycle._surnameLagObserved = nil
 
 -- Gate callers on the raised flag, not the error value -- it may be falsy.
 local function surfaceHookError(phase, err)
@@ -374,7 +431,7 @@ end
 -- Controller
 --------------------------------------------------------------------------------
 
-local Controller = {}
+local Controller = I.Controller or {}
 Controller.__index = Controller
 I.Controller = Controller
 
@@ -659,4 +716,12 @@ function Lifecycle:_TestFire(phase, addonName)
     end
 end
 
-F:RegisterModule("Lifecycle", Lifecycle)
+-- Written last, so a copy that fails before this point leaves the serving
+-- Lifecycle reporting what it did before.
+Lifecycle.API_VERSION = API_VERSION
+Lifecycle._source = ...
+Lifecycle._build = BUILD
+
+if not takingOver then
+    F:RegisterModule("Lifecycle", Lifecycle)
+end

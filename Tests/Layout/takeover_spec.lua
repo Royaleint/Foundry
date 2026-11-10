@@ -44,7 +44,7 @@ local SERVING_BUILD, INCOMING_BUILD = 2, 3
 -- code. With the list empty the test is strict: no unit may serve older code.
 -- The same list holds back every case below that needs behaviour the unit does not
 -- have yet (the record's outcome words, the raise for a refused takeover).
-local STILL_OLDER = { "Commands", "Events", "Lifecycle", "DB", "List", "Settings", "Tooltip", "Menu", "Window" }
+local STILL_OLDER = { "Commands", "Events", "DB", "List", "Settings", "Tooltip", "Menu", "Window" }
 
 local function pending(unit)
     for _, name in ipairs(STILL_OLDER) do
@@ -340,6 +340,9 @@ local function row(case, kind, mode, unit)
             if unit == "core" then
                 T.eq(#copies, appendedBefore + 1, who .. "the record is written before the error")
                 T.truthy(tostring(err):find("Foundry-1.0: a newer copy from IncomingHost did not take over ("
+                    .. case.outcome .. ")", 1, true), who .. "the error text: " .. tostring(err))
+            else
+                T.truthy(tostring(err):find("Foundry-1.0: " .. unit .. ": a newer copy from IncomingHost did not take over ("
                     .. case.outcome .. ")", 1, true), who .. "the error text: " .. tostring(err))
             end
         end
@@ -680,13 +683,265 @@ test("a copy that fails partway through taking over leaves the version, build an
 end)
 
 --------------------------------------------------------------------------------
+-- Lifecycle
+--------------------------------------------------------------------------------
+
+local LIFECYCLE_API_LINE = "local API_VERSION = 4"
+
+-- Loads the incoming copy's Lifecycle file alone.
+local function loadLifecycle(spec)
+    spec = spec or {}
+    return T.loadBuild({
+        build = spec.build or INCOMING_BUILD, addonName = spec.addonName or "IncomingHost",
+        version = spec.version, files = { FILE.Lifecycle }, replace = spec.replace,
+    })
+end
+
+local function setScriptCount()
+    local n = 0
+    for _, frame in ipairs(T.frames) do n = n + #frame.calls.SetScript end
+    return n
+end
+
+local function framesRegistering(event)
+    local n = 0
+    for _, frame in ipairs(T.frames) do
+        for _, call in ipairs(frame.calls.RegisterEvent) do
+            if call[1] == event then n = n + 1; break end
+        end
+    end
+    return n
+end
+
+-- The functions an older copy's relays call by name, as unit and path. A relay
+-- made by an older copy reaches the newer code only through these names, so
+-- neither copy may rename them.
+local FROZEN_TARGETS = {
+    { "Lifecycle", "_impl.pollTick" },
+    { "Lifecycle", "_impl.onEvent" },
+}
+
+local function resolve(F, unit, path)
+    local value = unitTable(F, unit)
+    for key in path:gmatch("[^%.]+") do
+        if type(value) ~= "table" then return nil end
+        value = value[key]
+    end
+    return value
+end
+
+test("every function an older copy's relays call by name exists under that name in the layout-1 copy and in the current code", function()
+    local copies = {
+        { "the layout-1 copy", function() return T.loadOldCopy("layout1", "ServingHost") end },
+        { "the current code", function() return T.loadBuild({ build = INCOMING_BUILD }) end },
+    }
+    for _, copy in ipairs(copies) do
+        T.installMocks("@project-version@")
+        local F = copy[2]()
+        for _, target in ipairs(FROZEN_TARGETS) do
+            T.eq(type(resolve(F, target[1], target[2])), "function", copy[1] .. ": " .. target[1] .. "." .. target[2])
+        end
+    end
+end)
+
+test("a newer Lifecycle takes over with the same dispatcher frame and no SetScript, and the older relay runs the newer event handler once", function()
+    for _, kind in ipairs({ "layout1", "current" }) do
+        for _, mode in ipairs({ "release", "dev" }) do
+            local who = kind .. ", " .. mode .. ": "
+            local F = serve(kind, mode)
+            local inst = buildInstances(F)
+            local L = F.Lifecycle
+            local S, I = L._state, L._impl
+            -- one controller held for identity, and one logout hook, both made
+            -- by the serving copy
+            local released, loggedOut = 0, 0
+            inst.lifecycle:OnLogout(function() loggedOut = loggedOut + 1 end)
+            T.identity.name = nil
+            T.loadedAddons["TakeoverHeld"] = true
+            local held = L:New(nil, "TakeoverHeld")
+            held:OnAddonLoaded(function() released = released + 1 end)
+            T.eq(#S.identityHeld, 1, who .. "a controller is held for identity")
+            local dispatcher, script = S.dispatcher, S.dispatcher._scripts.OnEvent
+            local postLogout, entries = S.postLogout, #S.postLogout
+            local setScripts = setScriptCount()
+
+            local errors = loadEach({ build = INCOMING_BUILD, addonName = "IncomingHost", version = incomingVersion(mode) })
+            T.eq(next(errors), nil, who .. "the incoming copy raised nothing: " .. firstError(errors))
+            T.truthy(rawequal(F.Lifecycle, L), who .. "the module table is the same")
+            T.truthy(rawequal(L._state, S) and rawequal(L._impl, I), who .. "state and implementation tables are kept")
+            T.truthy(rawequal(S.dispatcher, dispatcher), who .. "the dispatcher frame is the same")
+            T.eq(setScriptCount(), setScripts, who .. "no frame logs a SetScript")
+            T.eq(framesRegistering("PLAYER_LOGOUT"), 1, who .. "one frame registers the logout event")
+            T.truthy(rawequal(dispatcher._scripts.OnEvent, script), who .. "the dispatcher keeps its script")
+            if kind == "layout1" then
+                T.truthy(isOlderFunction(script), who .. "the script is the older copy's relay")
+            end
+            T.truthy(rawequal(S.postLogout, postLogout) and #postLogout == entries, who .. "the logout list is kept")
+            T.eq(#S.identityHeld, 1, who .. "the held controller is still held")
+            T.eq(L.API_VERSION, 4, who .. "API version")
+            T.eq(L._build, INCOMING_BUILD, who .. "build is the newer number")
+            T.eq(L._source, "IncomingHost", who .. "the newer copy's addon is named")
+            T.eq(L._layoutVersion, 1, who .. "layout version")
+
+            local newer = I.onEvent
+            T.eq(buildOf(newer), tostring(INCOMING_BUILD), who .. "the event handler is the newer copy's")
+            local calls = 0
+            I.onEvent = function(...) calls = calls + 1; return newer(...) end
+            T.identity.name = "Tester"
+            T.Fire(dispatcher, "UNIT_NAME_UPDATE", "player")
+            I.onEvent = newer
+            T.eq(calls, 1, who .. "the newer event handler runs once")
+            T.eq(released, 1, who .. "the held controller is released by the newer code")
+            T.eq(L._identityResolvedBy, "UNIT_NAME_UPDATE", who .. "released on the name update")
+            T.Fire(dispatcher, "PLAYER_LOGOUT")
+            T.eq(loggedOut, 1, who .. "a logout hook registered before the takeover runs once")
+            T.eq(#T.output, 0, who .. "nothing is printed")
+        end
+    end
+end)
+
+test("a Lifecycle taken over keeps how the player's identity was resolved and whether a surname lagged", function()
+    for _, kind in ipairs({ "layout1", "current" }) do
+        local F = serve(kind, "dev")
+        F.Lifecycle._identityResolvedBy = "POLL"
+        F.Lifecycle._surnameLagObserved = true
+        loadLifecycle()
+        T.eq(F.Lifecycle._build, INCOMING_BUILD, kind .. ": the newer copy took over")
+        T.eq(F.Lifecycle._identityResolvedBy, "POLL", kind .. ": how identity was resolved")
+        T.eq(F.Lifecycle._surnameLagObserved, true, kind .. ": a surname lag")
+    end
+end)
+
+test("a newer Lifecycle taking over before any dispatcher exists makes no SetScript, and the next New creates exactly one frame", function()
+    for _, kind in ipairs({ "layout1", "current" }) do
+        for _, mode in ipairs({ "release", "dev" }) do
+            local who = kind .. ", " .. mode .. ": "
+            local F = serve(kind, mode)
+            local S = F.Lifecycle._state
+            T.eq(S.dispatcher, nil, who .. "no dispatcher yet")
+            local frames, setScripts = #T.frames, setScriptCount()
+            loadLifecycle({ version = incomingVersion(mode) })
+            T.eq(F.Lifecycle._build, INCOMING_BUILD, who .. "the newer copy took over")
+            T.eq(#T.frames, frames, who .. "no frame is made")
+            T.eq(setScriptCount(), setScripts, who .. "no SetScript")
+            T.eq(S.dispatcher, nil, who .. "still no dispatcher")
+            F.Lifecycle:New(nil, "AfterTakeover")
+            T.eq(#T.frames, frames + 1, who .. "the next New creates one frame")
+            T.truthy(S.dispatcher ~= nil, who .. "the dispatcher exists")
+            T.eq(framesRegistering("PLAYER_LOGOUT"), 1, who .. "one frame registers the logout event")
+            T.eq(buildOf(S.dispatcher._scripts.OnEvent), tostring(INCOMING_BUILD), who .. "its script is the newer copy's")
+        end
+    end
+end)
+
+local function setState(key, value)
+    return function(_, unitTbl) unitTbl._state[key] = value end
+end
+
+local LIFECYCLE_PROOFS = {
+    { name = "a logout list that is not a table", inject = setState("postLogout", false),
+        outcome = "refused: logout list", refused = true },
+    { name = "a Lifecycle whose login already fired", inject = setState("loginFired", true), outcome = "after login" },
+    { name = "a dispatcher that is not a table", inject = setState("dispatcher", "frame"),
+        outcome = "refused: shape", refused = true },
+    { name = "a Lifecycle with no state table", inject = function(_, unitTbl) unitTbl._state = nil end,
+        outcome = "refused: shape", refused = true },
+    { name = "a Lifecycle with no implementation table", inject = function(_, unitTbl) unitTbl._impl = nil end,
+        outcome = "refused: shape", refused = true },
+    { name = "a Lifecycle with no controller implementation",
+        inject = function(_, unitTbl) unitTbl._impl.Controller = nil end, outcome = "refused: shape", refused = true },
+}
+for _, key in ipairs({ "byAddonName", "ownedNames", "loginControllers", "unloadingControllers", "identityHeld" }) do
+    LIFECYCLE_PROOFS[#LIFECYCLE_PROOFS + 1] = {
+        name = "a state table " .. key .. " that is not a table", inject = setState(key, true),
+        outcome = "refused: shape", refused = true,
+    }
+end
+for _, key in ipairs({ "unloadingSupported", "loginFired", "identityWatching", "pollScheduled", "identityStopped",
+    "devNoticePrinted", "surnameSettled" }) do
+    LIFECYCLE_PROOFS[#LIFECYCLE_PROOFS + 1] = {
+        name = "a state flag " .. key .. " that is not a boolean", inject = setState(key, {}),
+        outcome = "refused: shape", refused = true,
+    }
+end
+
+test("a newer Lifecycle declines a serving Lifecycle whose state it cannot adopt, changes nothing, and raises only in a development serving copy for a refusal", function()
+    for _, case in ipairs(LIFECYCLE_PROOFS) do
+        for _, kind in ipairs({ "current", "layout1" }) do
+            runCase({
+                name = "a serving copy with " .. case.name, inject = case.inject, outcome = case.outcome,
+                refused = case.refused, units = { "Lifecycle" },
+            }, kind)
+        end
+    end
+end)
+
+test("a Lifecycle that fails partway through taking over leaves the version, build and source of the active copy unchanged", function()
+    local lines = { "local Lifecycle = served or {}", "local function ensureDispatcher()", "Lifecycle.API_VERSION = API_VERSION" }
+    for _, kind in ipairs({ "current", "layout1" }) do
+        for _, mode in ipairs({ "release", "dev" }) do
+            for _, line in ipairs(lines) do
+                local who = kind .. ", " .. mode .. ", failing before '" .. line .. "': "
+                local F = serve(kind, mode)
+                local L = F.Lifecycle
+                local before = { api = rawget(L, "API_VERSION"), build = rawget(L, "_build"), source = rawget(L, "_source") }
+                local ok, err = pcall(loadLifecycle, {
+                    version = incomingVersion(mode),
+                    replace = merge({ [LIFECYCLE_API_LINE] = "local API_VERSION = 5" }, T.plantError(line, "planted failure")),
+                })
+                T.falsy(ok, who .. "the copy fails")
+                T.truthy(tostring(err):find("planted failure", 1, true), who .. "at the planted line: " .. tostring(err))
+                T.truthy(rawequal(F.Lifecycle, L), who .. "the module is the same table")
+                T.eq(rawget(L, "API_VERSION"), before.api, who .. "API version")
+                T.eq(rawget(L, "_build"), before.build, who .. "build")
+                T.eq(rawget(L, "_source"), before.source, who .. "source")
+            end
+        end
+    end
+end)
+
+local function pack(...) return { n = select("#", ...), ... } end
+
+test("the older and newer copies return the same player identity in every mocked identity state", function()
+    local STATES = {
+        { name = "a plain realm", identity = { name = "Tester", realm = "Test Realm" } },
+        { name = "region-unique names with a surname", regional = true,
+            identity = { name = "Tester", realm = "Test Realm", surname = "Smith" } },
+        { name = "region-unique names with the surname unsettled", regional = true,
+            identity = { name = "Tester", realm = "Test Realm" } },
+        { name = "region-unique names with the surname settled absent", regional = true, settled = true,
+            identity = { name = "Tester", realm = "Test Realm" } },
+        { name = "a missing name", identity = { realm = "Test Realm" } },
+        { name = "a missing realm", identity = { name = "Tester" } },
+    }
+    T.installMocks("@project-version@")
+    local F = T.loadOldCopy("layout1", "ServingHost")
+    local older = F.Lifecycle._PlayerIdentity
+    loadLifecycle()
+    local newer = F.Lifecycle._PlayerIdentity
+    T.truthy(isOlderFunction(older), "the first is the older copy's")
+    T.eq(buildOf(newer), tostring(INCOMING_BUILD), "the second is the newer copy's")
+    local S = F.Lifecycle._state
+    for _, state in ipairs(STATES) do
+        T.identity = state.identity
+        T.SetRegional(state.regional)
+        S.surnameSettled = state.settled == true
+        local a, b = pack(older()), pack(newer())
+        T.eq(b.n, a.n, state.name .. ": number of returns")
+        for i = 1, a.n do
+            T.eq(b[i], a[i], state.name .. ": return " .. i)
+        end
+    end
+end)
+
+--------------------------------------------------------------------------------
 -- The shape of each file after its decision block
 --------------------------------------------------------------------------------
 
 -- The files whose shape is not scanned yet. A file joins the scan when its
 -- decision block lands and its unit leaves the ledger.
 local SHAPE_PENDING = {
-    "Modules/Commands.lua", "Modules/Events.lua", "Modules/Lifecycle.lua", "Modules/DB.lua",
+    "Modules/Commands.lua", "Modules/Events.lua", "Modules/DB.lua",
     "Modules/List.lua", "Modules/Settings.lua", "Modules/Tooltip.lua", "Modules/Menu.lua", "Modules/Window.lua",
 }
 
@@ -1010,6 +1265,29 @@ test("every library file that has a decision block keeps to the allowed shapes a
     for _, rel in ipairs(SHAPE_PENDING) do
         T.truthy(FILE[rel:match("^Modules/(%w+)%.lua$") or "core"] == rel, "'" .. rel .. "' is a library file")
     end
+end)
+
+-- A module file reads the library's layout only through rawget and never reads
+-- the library's shared state: on an older library table a plain lookup may be
+-- answered by something the module did not mean to read.
+test("a module file with a decision block reads neither the library's state nor its layout through a plain lookup", function()
+    local scanned = 0
+    for _, rel in ipairs(T.FOUNDRY_FILES) do
+        if rel ~= FILE.core and not isPendingFile(rel) then
+            scanned = scanned + 1
+            local n = 0
+            for raw in (readFile(rel) .. "\n"):gmatch("([^\n]*)\n") do
+                n = n + 1
+                local where = rel .. ":" .. n .. ": " .. raw
+                local code = clean(raw)
+                T.falsy(code:find("F%s*%.%s*_state") or code:find("F%s*%.%s*_layoutVersion"), where)
+                for key in raw:gmatch('rawget%(%s*F%s*,%s*"([^"]*)"') do
+                    T.eq(key, "_layoutVersion", where)
+                end
+            end
+        end
+    end
+    T.truthy(scanned > 0, "at least one module file is scanned")
 end)
 
 --------------------------------------------------------------------------------
