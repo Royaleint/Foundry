@@ -559,31 +559,68 @@ function T.loadFixture(path)
     return env
 end
 
--- Load the bootstrap + the Commands and Events modules fresh; returns the
--- Foundry table. Loading Events is additive: Commands tests reference only
--- F.Commands and are unaffected by the extra module being present.
+-- The library's files, in load order.
+T.FOUNDRY_FILES = {
+    "Foundry.lua", "Modules/Commands.lua", "Modules/Events.lua",
+    "Modules/Lifecycle.lua", "Modules/DB.lua", "Modules/List.lua",
+    "Modules/Settings.lua", "Modules/Tooltip.lua", "Modules/Menu.lua",
+    "Modules/Window.lua",
+}
+
+-- Rehearsal mode (--rehearse): every T.loadFoundry also installs a second
+-- copy of the library over the first, so the whole suite runs against code
+-- swapped in over a running copy.
+T.REHEARSE = false
+for i = 1, (arg and #arg or 0) do
+    if arg[i] == "--rehearse" then T.REHEARSE = true end
+end
+
+-- Load a second copy of the library without disturbing the one serving: each
+-- file runs in an environment that reads through to _G but hides
+-- Foundry_1_0, and whose _G is the environment itself, so the copy builds
+-- its own library table instead of standing down. files are relative to the
+-- repo root. Returns the second library table and the environment.
+function T.shadowLoad(files, addonName)
+    local env = {}
+    setmetatable(env, {
+        __index = function(_, key)
+            if key == "Foundry_1_0" then return nil end
+            return _G[key]
+        end,
+    })
+    env._G = env
+    for _, rel in ipairs(files) do
+        local chunk = assert(loadfile(foundryRoot .. "/" .. rel))
+        setfenv(chunk, env)
+        chunk(addonName)
+    end
+    return rawget(env, "Foundry_1_0"), env
+end
+
+local installer
+function T.installer()
+    installer = installer or assert(loadfile(testsDir .. "/Layout/installer.lua"))(T)
+    return installer
+end
+
+-- Shadow-load the library's files and install them over the serving copy F.
+-- Returns the second library table and its environment.
+function T.installSecondCopy(F)
+    local F2, env = T.shadowLoad(T.FOUNDRY_FILES, "Foundry-1.0")
+    T.installer().install({ F = F, F2 = F2, env = env })
+    T.lastSecondCopy = F2
+    return F2, env
+end
+
+-- Load the bootstrap and every module fresh; returns the Foundry table. In
+-- rehearsal mode a second copy is then installed over it.
 function T.loadFoundry()
-    local boot = assert(loadfile(foundryRoot .. "/Foundry.lua"))
-    boot("Foundry-1.0")
-    local cmds = assert(loadfile(foundryRoot .. "/Modules/Commands.lua"))
-    cmds("Foundry-1.0")
-    local events = assert(loadfile(foundryRoot .. "/Modules/Events.lua"))
-    events("Foundry-1.0")
-    local lifecycle = assert(loadfile(foundryRoot .. "/Modules/Lifecycle.lua"))
-    lifecycle("Foundry-1.0")
-    local db = assert(loadfile(foundryRoot .. "/Modules/DB.lua"))
-    db("Foundry-1.0")
-    local list = assert(loadfile(foundryRoot .. "/Modules/List.lua"))
-    list("Foundry-1.0")
-    local settings = assert(loadfile(foundryRoot .. "/Modules/Settings.lua"))
-    settings("Foundry-1.0")
-    local tooltip = assert(loadfile(foundryRoot .. "/Modules/Tooltip.lua"))
-    tooltip("Foundry-1.0")
-    local menu = assert(loadfile(foundryRoot .. "/Modules/Menu.lua"))
-    menu("Foundry-1.0")
-    local window = assert(loadfile(foundryRoot .. "/Modules/Window.lua"))
-    window("Foundry-1.0")
-    return _G.Foundry_1_0
+    for _, rel in ipairs(T.FOUNDRY_FILES) do
+        assert(loadfile(foundryRoot .. "/" .. rel))("Foundry-1.0")
+    end
+    local F = _G.Foundry_1_0
+    if T.REHEARSE then T.installSecondCopy(F) end
+    return F
 end
 
 -- Load a set of Foundry files from any root, in order, under one addon name,
@@ -686,7 +723,12 @@ local suites = {
     { label = "Foundry.Layout.errors", cases = assert(loadfile(testsDir .. "/Layout/error_levels_spec.lua"))(T) },
     { label = "Foundry.Layout.reachability", cases = assert(loadfile(testsDir .. "/Layout/reachability_spec.lua"))(T) },
     { label = "Foundry.Layout.layout", cases = assert(loadfile(testsDir .. "/Layout/layout_spec.lua"))(T) },
+    { label = "Foundry.Layout.handover", cases = assert(loadfile(testsDir .. "/Layout/handover_spec.lua"))(T) },
 }
+
+if T.REHEARSE then
+    realPrint("Rehearsal: a second copy is installed over every library the suite loads")
+end
 
 local anyFailed = false
 for _, suite in ipairs(suites) do

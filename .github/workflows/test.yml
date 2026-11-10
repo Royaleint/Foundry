@@ -26,3 +26,6 @@ jobs:
 
       - name: Run test suite
         run: lua Tests/run.lua
+
+      - name: Run test suite with a second copy installed
+        run: lua Tests/run.lua --rehearse

@@ -169,6 +169,37 @@ function W.walk(opts)
     }
 end
 
+-- What the library is allowed to keep in a local. Shared by the reachability
+-- spec and the test installer, so the two can never disagree.
+
+-- Values that are never written after the file loads, by file and name.
+W.CONSTANTS = {
+    ["Modules/Commands.lua"] = { restrictionTypes = true },
+    ["Modules/DB.lua"] = {
+        SECTION_GLOBAL = true, SECTION_PROFILE = true, SECTION_CHAR = true,
+        DENY_LIST = true, RESERVED = true, REFERENCE_TAIL = true,
+    },
+    ["Modules/Settings.lua"] = { LAUNCHER_ADD_SEARCH_TAGS = true },
+    ["Modules/Window.lua"] = { VALID_ANCHOR_POINTS = true, NOT_UIPARENT_RELATIVE = true },
+}
+
+-- The client's timer and clock functions, captured fresh by each bucket.
+W.FUNCTIONS = {
+    ["Modules/Events.lua"] = { newTimer = true, getTime = true },
+}
+
+function W.isConstant(file, name)
+    return W.CONSTANTS[file] ~= nil and W.CONSTANTS[file][name] == true
+end
+
+function W.isAllowedFunction(file, name)
+    return W.FUNCTIONS[file] ~= nil and W.FUNCTIONS[file][name] == true
+end
+
+-- The mock frames and views log every call under these keys; the logs hold
+-- copies of functions that are not otherwise reachable.
+W.SKIP_KEYS = { calls = true, _seq = true }
+
 -- { [file] = { name, ... } } with sorted names, from a walk result.
 function W.trappedByFile(result)
     local byFile = {}
