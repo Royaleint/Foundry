@@ -18,6 +18,19 @@ if F:HasModule("Settings") then return end
 local Settings = {}
 Settings.API_VERSION = 2
 
+-- All module state lives on the module table.
+Settings._layoutVersion = 1
+Settings._source = ...
+Settings._state = {
+    liveKeys = {},
+    -- Registered-category cache: Blizzard can't unregister a category, so a
+    -- name's first registration is permanent. A later :New reuses it if the
+    -- inputs match, and refuses if they don't.
+    registeredCategories = {},
+}
+Settings._impl = {}
+local S, I = Settings._state, Settings._impl
+
 -- true lets the Settings search find a launcher entry by its title and button text.
 local LAUNCHER_ADD_SEARCH_TAGS = true
 
@@ -25,12 +38,8 @@ local LAUNCHER_ADD_SEARCH_TAGS = true
 -- Module-level live-key registry
 --------------------------------------------------------------------------------
 
-local liveKeys = {}
-
--- Registered-category cache: Blizzard can't unregister a category, so a
--- name's first registration is permanent. A later :New reuses it if the
--- inputs match, and refuses if they don't.
-local registeredCategories = {}
+local liveKeys = S.liveKeys
+local registeredCategories = S.registeredCategories
 
 --------------------------------------------------------------------------------
 -- API detection (feature detection, not version checks or pcall)
@@ -51,20 +60,21 @@ local function hasLauncherSettings()
 end
 
 -- Blizzard keeps a button's click function for the session, so the button
--- calls this wrapper, which dispatches to whichever controller currently owns
--- the name. Its arguments (button, mouse button, down) are not passed on.
-local function makeLauncherClick(name)
-    return function()
-        local c = liveKeys[name]
-        if c then
-            c._launch()
-        elseif F.IS_DEV_BUILD then
-            F:RaiseDevError("Settings: the launcher button for '" .. name
-                .. "' was clicked after its controller was destroyed; call :New again "
-                .. "with the same title and buttonText to restore it")
-        end
+-- calls a relay to this function, which dispatches to whichever controller
+-- currently owns the registered name. The click's arguments (button, mouse
+-- button, down) are not passed on.
+local function launcherClick(record)
+    local name = record.name
+    local c = liveKeys[name]
+    if c then
+        c._launch()
+    elseif F.IS_DEV_BUILD then
+        F:RaiseDevError("Settings: the launcher button for '" .. name
+            .. "' was clicked after its controller was destroyed; call :New again "
+            .. "with the same title and buttonText to restore it")
     end
 end
+I.launcherClick = launcherClick
 
 --------------------------------------------------------------------------------
 -- Controller
@@ -72,6 +82,7 @@ end
 
 local Controller = {}
 Controller.__index = Controller
+I.Controller = Controller
 
 local function refuseIfDestroyed(self, method)
     if self._destroyed then
@@ -231,6 +242,9 @@ function Settings:New(config)
     -- Every check runs before any Register* call: a registered category can
     -- never be removed.
     local cached = registeredCategories[name]
+    -- Built before any Register* call so the launcher button's click can hold
+    -- it; it is cached only once registration has succeeded.
+    local record = cached or { name = name }
     if cached then
         local mismatch
         if cached.kind ~= kind then
@@ -263,8 +277,11 @@ function Settings:New(config)
         end
         -- RegisterAddOnCategory must come last.
         category, layout = _G.Settings.RegisterVerticalLayoutCategory(title)
+        local function click()
+            return Settings._impl.launcherClick(record)
+        end
         initializer = _G.CreateSettingsButtonInitializer(
-            title, buttonText, makeLauncherClick(name), nil, LAUNCHER_ADD_SEARCH_TAGS)
+            title, buttonText, click, nil, LAUNCHER_ADD_SEARCH_TAGS)
         _G.Settings.RegisterInitializer(category, initializer)
         _G.Settings.RegisterAddOnCategory(category)
         mode = "settings"
@@ -289,17 +306,18 @@ function Settings:New(config)
         return
     end
 
-    registeredCategories[name] = {
-        kind           = kind,
-        category       = category,
-        layout         = layout,
-        initializer    = initializer,
-        frame          = frame,
-        title          = title,
-        buttonText     = buttonText,
-        mode           = mode,
-        parentCategory = parent and parent._category or nil,
-    }
+    if not cached then
+        record.kind           = kind
+        record.category       = category
+        record.layout         = layout
+        record.initializer    = initializer
+        record.frame          = frame
+        record.title          = title
+        record.buttonText     = buttonText
+        record.mode           = mode
+        record.parentCategory = parent and parent._category or nil
+        registeredCategories[name] = record
+    end
 
     local c = setmetatable({}, Controller)
     c._kind                = kind

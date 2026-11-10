@@ -18,6 +18,16 @@ if F:HasModule("Window") then return end
 local Window = {}
 Window.API_VERSION = 1
 
+-- All module state lives on the module table.
+Window._layoutVersion = 1
+Window._source = ...
+Window._state = {
+    -- Attached frame -> record.
+    attached = {},
+}
+Window._impl = {}
+local S, I = Window._state, Window._impl
+
 --------------------------------------------------------------------------------
 -- Anchor whitelist and geometry validation
 --------------------------------------------------------------------------------
@@ -57,7 +67,7 @@ end
 -- Module-local registry (frame -> record)
 --------------------------------------------------------------------------------
 
-local attached = {}
+local attached = S.attached
 
 --------------------------------------------------------------------------------
 -- Save (OnDragStop)
@@ -81,6 +91,23 @@ local function saveGeometry(win, geometry)
     end
     geometry.point, geometry.relPoint, geometry.x, geometry.y = point, relPoint, x, y
 end
+I.saveGeometry = saveGeometry
+
+-- Builds the OnDragStart and OnDragStop scripts for one attached window,
+-- reading the window and its geometry table from the record.
+local function makeDragScripts(record)
+    local function onDragStart()
+        record.win:StartMoving()
+    end
+    local function onDragStop()
+        record.win:StopMovingOrSizing()
+        -- Again after every drag, so the game's layout cache does not take over the position.
+        record.win:SetUserPlaced(false)
+        saveGeometry(record.win, record.geometry)
+    end
+    return onDragStart, onDragStop
+end
+I.makeDragScripts = makeDragScripts
 
 --------------------------------------------------------------------------------
 -- Attach
@@ -172,22 +199,15 @@ function Window:Attach(win, config)
 
     handle:EnableMouse(true)
     handle:RegisterForDrag("LeftButton")
-    handle:SetScript("OnDragStart", function()
-        win:StartMoving()
-    end)
-    handle:SetScript("OnDragStop", function()
-        win:StopMovingOrSizing()
-        -- Again after every drag, so the game's layout cache does not take over the position.
-        win:SetUserPlaced(false)
-        saveGeometry(win, geometry)
-    end)
-
     local record = {
         win = win,
         handle = handle,
         geometry = geometry,
         default = { default[1], default[2], default[3], default[4] },
     }
+    local onDragStart, onDragStop = makeDragScripts(record)
+    handle:SetScript("OnDragStart", onDragStart)
+    handle:SetScript("OnDragStop", onDragStop)
     attached[win] = record
 
     if isValidGeometry(geometry) then

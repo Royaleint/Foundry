@@ -16,6 +16,16 @@ if F:HasModule("Tooltip") then return end
 local Tooltip = {}
 Tooltip.API_VERSION = 1
 
+-- All module state lives on the module table.
+Tooltip._layoutVersion = 1
+Tooltip._source = ...
+Tooltip._state = {
+    liveKeys = {},
+    dispatchers = {},   -- tooltipType -> { head = controller, tail = controller }
+}
+Tooltip._impl = {}
+local S, I = Tooltip._state, Tooltip._impl
+
 --------------------------------------------------------------------------------
 -- Feature detection (checked at :New, never at file scope)
 --------------------------------------------------------------------------------
@@ -29,7 +39,7 @@ end
 -- Module-level live-key registry
 --------------------------------------------------------------------------------
 
-local liveKeys = {}
+local liveKeys = S.liveKeys
 
 --------------------------------------------------------------------------------
 -- Per-type dispatchers
@@ -54,7 +64,7 @@ local liveKeys = {}
 --      A destroyed tail is unlinked by a later sweep, once something follows it.
 --------------------------------------------------------------------------------
 
-local dispatchers = {}   -- tooltipType -> { head = controller, tail = controller }
+local dispatchers = S.dispatchers
 
 -- Unlinks destroyed controllers, except the tail (rule 2 above). Runs from
 -- New and after each dispatch; the rules above make it safe while a walk is
@@ -72,6 +82,22 @@ local function sweep(list)
     end
 end
 
+I.sweep = sweep
+
+-- Runs every live controller of one tooltip type whose filter matches.
+local function dispatch(list, tooltip, data)
+    local c = list.head
+    while c do
+        if not c._destroyed and (not c._filter or c._filter[tooltip]) then
+            c._handler(tooltip, data)
+        end
+        -- Read after the handler: it may have appended to the tail.
+        c = c._next
+    end
+    sweep(list)
+end
+I.dispatch = dispatch
+
 local function ensureDispatcher(tooltipType)
     local list = dispatchers[tooltipType]
     if list then return list end
@@ -79,19 +105,12 @@ local function ensureDispatcher(tooltipType)
     -- Register before recording: if AddTooltipPostCall throws, no dispatcher
     -- entry is left behind for this type.
     _G.TooltipDataProcessor.AddTooltipPostCall(tooltipType, function(tooltip, data)
-        local c = list.head
-        while c do
-            if not c._destroyed and (not c._filter or c._filter[tooltip]) then
-                c._handler(tooltip, data)
-            end
-            -- Read after the handler: it may have appended to the tail.
-            c = c._next
-        end
-        sweep(list)
+        return Tooltip._impl.dispatch(list, tooltip, data)
     end)
     dispatchers[tooltipType] = list
     return list
 end
+I.ensureDispatcher = ensureDispatcher
 
 --------------------------------------------------------------------------------
 -- Line emitters (module-level helpers)
@@ -113,6 +132,7 @@ end
 
 local Controller = {}
 Controller.__index = Controller
+I.Controller = Controller
 
 local function refuseIfDestroyed(self, method)
     if self._destroyed then

@@ -67,11 +67,6 @@ local SKIP_KEYS = { calls = true, _seq = true }
 -- Upvalues that are out of reach today, by file. Delete a module's entries in
 -- the change that moves its state; the comparison is exact in both directions.
 local EXPECTED = {
-    ["Modules/List.lua"] = { "Controller", "c", "consumerCalc", "consumerInit" },
-    ["Modules/Menu.lua"] = { "Controller", "anonCounter", "c", "liveKeys" },
-    ["Modules/Settings.lua"] = { "Controller", "liveKeys", "name", "registeredCategories" },
-    ["Modules/Tooltip.lua"] = { "Controller", "dispatchers", "list", "liveKeys" },
-    ["Modules/Window.lua"] = { "attached", "geometry", "win" },
 }
 
 -- Shared with the layout checks, which start applying to a file once its entries are gone.

@@ -15,6 +15,16 @@ if F:HasModule("List") then return end
 local List = {}
 List.API_VERSION = 1
 
+-- All module state lives on the module table.
+List._layoutVersion = 1
+List._source = ...
+List._state = {
+    -- Live controllers, held weakly so a dropped controller can be collected.
+    instances = setmetatable({}, { __mode = "k" }),
+}
+List._impl = {}
+local S, I = List._state, List._impl
+
 --------------------------------------------------------------------------------
 -- ScrollBox-system capability gate (flavor support)
 --------------------------------------------------------------------------------
@@ -32,6 +42,7 @@ end
 
 local Controller = {}
 Controller.__index = Controller
+I.Controller = Controller
 
 local function refuseIfDestroyed(self, method)
     if self._destroyed then
@@ -90,6 +101,7 @@ end
 -- the controller destroyed.
 function Controller:Destroy()
     if refuseIfDestroyed(self, "Destroy") then return end
+    S.instances[self] = nil
     self._scrollBox:RemoveDataProvider()
     self._scrollBox:Hide()
     self._scrollBar:Hide()
@@ -103,6 +115,33 @@ end
 --------------------------------------------------------------------------------
 -- Factory
 --------------------------------------------------------------------------------
+
+-- Wraps the consumer's extent calculator: anything but a finite number > 0
+-- crashes deep in Blizzard's extent math; dev raises, release prints and
+-- returns 1.
+local function extent(c, index, elementData)
+    local result = c._extentFn(index, elementData)
+    if type(result) ~= "number" or not (result > 0 and result < math.huge) then
+        F:RaiseDevError("List: extentCalculator must return a finite number > 0 (got "
+            .. tostring(result) .. ")")
+        return 1
+    end
+    return result
+end
+I.extent = extent
+
+-- Wraps the consumer's row initializer so SetData-from-inside-it can be
+-- refused; the pcall guarantees the flag clears even when the initializer
+-- errors.
+local function initRow(c, frame, elementData)
+    c._inInitializer = true
+    local ok, err = pcall(c._initFn, frame, elementData)
+    c._inInitializer = false
+    if not ok then
+        error(err, 0)
+    end
+end
+I.initRow = initRow
 
 -- Creates a list controller scoped to one consumer surface.
 function List:New(config)
@@ -184,6 +223,8 @@ function List:New(config)
     c._destroyed = false
     c._name = config.name
     c._inInitializer = false
+    c._initFn = config.initializer
+    c._extentFn = config.extentCalculator
 
     local parent = config.parent
     -- Every check runs before CreateFrame; a refusal after it would leak the frames.
@@ -201,32 +242,14 @@ function List:New(config)
     if hasExtent then
         view:SetElementExtent(config.extent)
     elseif hasCalc then
-        -- Guards the calculator's return: anything but a finite number > 0 crashes
-        -- deep in Blizzard's extent math; dev raises, release prints and
-        -- returns 1.
-        local consumerCalc = config.extentCalculator
         view:SetElementExtentCalculator(function(index, elementData)
-            local extent = consumerCalc(index, elementData)
-            if type(extent) ~= "number" or not (extent > 0 and extent < math.huge) then
-                F:RaiseDevError("List: extentCalculator must return a finite number > 0 (got "
-                    .. tostring(extent) .. ")")
-                return 1
-            end
-            return extent
+            return List._impl.extent(c, index, elementData)
         end)
     end
 
-    -- Wraps the initializer so SetData-from-inside-it can be refused; the
-    -- pcall guarantees the flag clears even when the initializer errors.
-    local consumerInit = config.initializer
     local elementId = config.template or config.elementType
     view:SetElementInitializer(elementId, function(frame, elementData)
-        c._inInitializer = true
-        local ok, err = pcall(consumerInit, frame, elementData)
-        c._inInitializer = false
-        if not ok then
-            error(err, 0)
-        end
+        return List._impl.initRow(c, frame, elementData)
     end)
 
     if config.resetter then
@@ -247,6 +270,7 @@ function List:New(config)
     c._scrollBar = scrollBar
     c._view = view
 
+    S.instances[c] = true
     return c
 end
 

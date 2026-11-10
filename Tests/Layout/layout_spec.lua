@@ -681,6 +681,299 @@ test("the slash command closure dispatches to its controller and returns nothing
 end)
 
 --------------------------------------------------------------------------------
+-- List, Menu, Tooltip, Settings and Window
+--------------------------------------------------------------------------------
+
+local surfaces = assert(loadfile(T.testsDir .. "/Layout/surfaces.lua"))(T)
+
+local function newList(F, name)
+    return F.List:New({
+        name = name or "LayoutList", parent = {}, elementType = "Button",
+        extentCalculator = function() return 20 end, initializer = function() end,
+    })
+end
+
+local function checkHeader(M, label, impl)
+    T.eq(M._layoutVersion, 1, label .. " layout version")
+    T.eq(M._source, "Foundry-1.0", label .. " source addon name")
+    T.eq(M._build, nil, label .. " no build stamp yet")
+    T.eq(type(M._state), "table", label .. " state table")
+    T.eq(type(M._impl), "table", label .. " implementation table")
+    for name, kind in pairs(impl) do
+        T.eq(type(M._impl[name]), kind, label .. " implementation " .. name)
+    end
+end
+
+test("List, Menu, Tooltip, Settings and Window carry the layout header, their state and their implementation", function()
+    local F = T.fresh()
+    checkHeader(F.List, "List", { Controller = "table", initRow = "function", extent = "function" })
+    T.eq(type(F.List._state.instances), "table", "List registry")
+    checkHeader(F.Menu, "Menu", { Controller = "table", generate = "function" })
+    T.eq(type(F.Menu._state.instances), "table", "Menu registry")
+    T.eq(type(F.Menu._state.liveKeys), "table", "Menu live keys")
+    T.eq(F.Menu._state.anonCounter, 0, "Menu counter starts at zero")
+    checkHeader(F.Tooltip, "Tooltip", { Controller = "table", dispatch = "function", sweep = "function", ensureDispatcher = "function" })
+    T.eq(type(F.Tooltip._state.liveKeys), "table", "Tooltip live keys")
+    T.eq(type(F.Tooltip._state.dispatchers), "table", "Tooltip dispatchers")
+    checkHeader(F.Settings, "Settings", { Controller = "table", launcherClick = "function" })
+    T.eq(type(F.Settings._state.liveKeys), "table", "Settings live keys")
+    T.eq(type(F.Settings._state.registeredCategories), "table", "Settings registered categories")
+    checkHeader(F.Window, "Window", { saveGeometry = "function", makeDragScripts = "function" })
+    T.eq(type(F.Window._state.attached), "table", "Window attached frames")
+end)
+
+test("a second copy of List, Menu, Tooltip, Settings or Window stands down and leaves the first one's tables alone", function()
+    local F = T.fresh()
+    for _, name in ipairs({ "List", "Menu", "Tooltip", "Settings", "Window" }) do
+        local M = F[name]
+        local state, impl = M._state, M._impl
+        T.loadModule("Modules/" .. name .. ".lua")
+        T.eq(F[name], M, name .. " keeps serving")
+        T.eq(M._state, state, name .. " state table unchanged")
+        T.eq(M._impl, impl, name .. " implementation table unchanged")
+    end
+end)
+
+test("the List registry holds a live controller and drops it on Destroy", function()
+    local F = T.fresh()
+    local reg = F.List._state.instances
+    T.eq(getmetatable(reg).__mode, "k", "weak keys")
+    T.eq(countKeys(reg), 0, "empty before any controller")
+    local a, b = newList(F, "LayoutListA"), newList(F, "LayoutListB")
+    T.eq(reg[a], true, "first listed")
+    T.eq(reg[b], true, "second listed")
+    a:Destroy()
+    T.eq(reg[a], nil, "destroyed controller dropped")
+    T.eq(reg[b], true, "the other stays")
+    T.eq(countKeys(reg), 1, "one left")
+end)
+
+test("the Menu registry holds a live controller and drops it on Destroy", function()
+    local F = T.fresh()
+    surfaces.installMenuUtil()
+    local reg = F.Menu._state.instances
+    T.eq(getmetatable(reg).__mode, "k", "weak keys")
+    T.eq(countKeys(reg), 0, "empty before any controller")
+    local a = F.Menu:New({ builder = function() end })
+    local b = F.Menu:New({ builder = function() end })
+    T.eq(reg[a], true, "first listed")
+    T.eq(reg[b], true, "second listed")
+    a:Destroy()
+    T.eq(reg[a], nil, "destroyed controller dropped")
+    a:Destroy()
+    T.eq(reg[b], true, "the other stays")
+    T.eq(countKeys(reg), 1, "one left after a repeated destroy")
+    T.eq(F.Menu._state.anonCounter, 2, "the counter lives on the state table")
+end)
+
+test("a refused List or Menu construction lists nothing", function()
+    local F = T.fresh("1.0.114")
+    F.List:New({})
+    F.Menu:New({})
+    T.eq(countKeys(F.List._state.instances), 0, "List registry empty")
+    T.eq(countKeys(F.Menu._state.instances), 0, "Menu registry empty")
+end)
+
+test("List and Menu controllers nobody references any more are not kept alive by the registries", function()
+    local F = T.fresh()
+    surfaces.installMenuUtil()
+    do
+        local l = newList(F, "LayoutGcList")
+        local m = F.Menu:New({ builder = function() end })
+        T.eq(countKeys(F.List._state.instances), 1, "list listed")
+        T.eq(countKeys(F.Menu._state.instances), 1, "menu listed")
+        T.truthy(l and m, "held")
+    end
+    T.frames = {}
+    T.views = {}
+    collectgarbage()
+    collectgarbage()
+    T.eq(countKeys(F.List._state.instances), 0, "List registry empty after collection")
+    T.eq(countKeys(F.Menu._state.instances), 0, "Menu registry empty after collection")
+end)
+
+-- Replaces module._impl[name] with a counting stand-in, runs fn, restores it.
+-- Returns the number of calls the stand-in saw.
+local function withSpy(module, name, fn)
+    local original = module._impl[name]
+    local calls = 0
+    module._impl[name] = function() calls = calls + 1 end
+    local ok, err = pcall(fn)
+    module._impl[name] = original
+    if not ok then error(err, 0) end
+    T.eq(module._impl[name], original, name .. " restored")
+    return calls
+end
+
+test("the tooltip post-call reaches whatever dispatch the module table holds", function()
+    local F = T.fresh()
+    local processor = surfaces.installTooltipProcessor()
+    local ran = 0
+    F.Tooltip:New({ type = 1, handler = function() ran = ran + 1 end })
+    local postCall = processor.postCalls[1].fn
+    T.eq(withSpy(F.Tooltip, "dispatch", function() postCall(surfaces.makeTooltip(), {}) end), 1, "spy counted once")
+    T.eq(ran, 0, "the original dispatch did not run")
+    postCall(surfaces.makeTooltip(), {})
+    T.eq(ran, 1, "the original dispatch runs once restored")
+end)
+
+test("the settings launcher click reaches whatever click function the module table holds", function()
+    local F = T.fresh()
+    local panel = surfaces.installSettingsLauncher()
+    local launched = 0
+    F.Settings:New({ title = "LayoutLauncher", buttonText = "Open", launch = function() launched = launched + 1 end })
+    local click = panel.clicks[1]
+    T.eq(withSpy(F.Settings, "launcherClick", function() click({}, "LeftButton", false) end), 1, "spy counted once")
+    T.eq(launched, 0, "the original click did not run")
+    click({}, "LeftButton", false)
+    T.eq(launched, 1, "the original click runs once restored")
+end)
+
+test("the menu generator reaches whatever generate function the module table holds", function()
+    local F = T.fresh()
+    surfaces.installMenuUtil()
+    local built = 0
+    local c = F.Menu:New({ builder = function() built = built + 1 end })
+    local wrapper = c._generatorWrapper
+    T.eq(withSpy(F.Menu, "generate", function() wrapper({}, surfaces.makeRootDescription()) end), 1, "spy counted once")
+    T.eq(built, 0, "the original generate did not run")
+    wrapper({}, surfaces.makeRootDescription())
+    T.eq(built, 1, "the original generate runs once restored")
+end)
+
+test("the list row initializer and extent reach whatever functions the module table holds", function()
+    local F = T.fresh()
+    local inits, extents = 0, 0
+    local c = F.List:New({
+        name = "LayoutRelayList", parent = {}, elementType = "Button",
+        extentCalculator = function() extents = extents + 1; return 20 end,
+        initializer = function() inits = inits + 1 end,
+    })
+    local view = c:GetNativeHandles().view
+    local init, calc = view._initializer, view._calc
+    T.eq(withSpy(F.List, "initRow", function() init({}, {}) end), 1, "initializer spy counted once")
+    T.eq(inits, 0, "the original row initializer did not run")
+    T.eq(withSpy(F.List, "extent", function() calc(1, {}) end), 1, "extent spy counted once")
+    T.eq(extents, 0, "the original extent did not run")
+    init({}, {})
+    T.eq(inits, 1, "the original row initializer runs once restored")
+    T.eq(calc(1, {}), 20, "the original extent runs once restored")
+    T.eq(extents, 1, "and called the consumer's calculator")
+end)
+
+test("a list with a fixed extent registers no extent calculator", function()
+    local F = T.fresh()
+    local c = F.List:New({
+        name = "LayoutFixedList", parent = {}, template = "SomeTemplate", extent = 18, initializer = function() end,
+    })
+    local view = c:GetNativeHandles().view
+    T.eq(view._extent, 18, "fixed extent set")
+    T.eq(#view.calls.SetElementExtentCalculator, 0, "no calculator registered")
+    T.eq(c._extentFn, nil, "no calculator kept")
+end)
+
+local function registeredRecord(F, name)
+    return F.Settings._state.registeredCategories[name]
+end
+
+-- First New throws inside the Register calls; the same inputs are then tried again.
+local function cleanRetrySteps(F, state)
+    local panel = surfaces.installSettingsLauncher()
+    local category = { GetID = function() return 35 end }
+    local fail = true
+    _G.Settings.RegisterInitializer = function()
+        if fail then error("register failed", 0) end
+    end
+    _G.Settings.RegisterVerticalLayoutCategory = function() state.categories = (state.categories or 0) + 1; return category, {} end
+    local launched = 0
+    local config = { title = "RetryLauncher", buttonText = "Open", launch = function() launched = launched + 1 end }
+    local ok1, err1 = pcall(function() return F.Settings:New(config) end)
+    state.firstOk, state.firstErr = ok1, tostring(err1)
+    fail = false
+    local ok2, second = pcall(function() return F.Settings:New(config) end)
+    state.secondOk = ok2 and type(second) == "table"
+    panel.clicks[#panel.clicks]({}, "LeftButton", false)
+    return table.concat({
+        tostring(ok1), tostring(err1), tostring(state.secondOk), tostring(state.categories),
+        tostring(#panel.clicks), tostring(launched),
+    }, "|")
+end
+
+test("a launcher whose first registration throws leaves nothing cached and registers cleanly on a retry, as in the 1.0.114 release", function()
+    local F = T.fresh("1.0.114")
+    local state = {}
+    local current = cleanRetrySteps(F, state)
+    T.eq(state.firstOk, false, "first New threw")
+    T.eq(state.secondOk, true, "the retry registered")
+    T.eq(current, "false|register failed|true|2|2|1", "observable steps")
+    local record = registeredRecord(F, "RetryLauncher")
+    T.eq(record.name, "RetryLauncher", "the retry cached its record")
+
+    -- Nothing is cached between the failed attempt and the retry.
+    local F2 = T.fresh("1.0.114")
+    local panel = surfaces.installSettingsLauncher()
+    _G.Settings.RegisterInitializer = function() error("register failed", 0) end
+    pcall(function() F2.Settings:New({ title = "NoCache", buttonText = "Open", launch = function() end }) end)
+    T.eq(registeredRecord(F2, "NoCache"), nil, "no cached record after a throw")
+    T.eq(#panel.clicks, 1, "the button was created before the throw, as in the release")
+
+    T.installMocks("@project-version@")
+    local old = T.loadOldCopy("v1.0.114", "OldHost", "1.0.114")
+    local released = cleanRetrySteps(old, {})
+    T.eq(current, released, "observable steps differ from the release")
+end)
+
+test("a launcher created again over its cached registration reuses the cached record", function()
+    local F = T.fresh()
+    local panel = surfaces.installSettingsLauncher()
+    local launched = 0
+    local function config()
+        return { title = "CachedLauncher", buttonText = "Open", launch = function() launched = launched + 1 end }
+    end
+    local first = F.Settings:New(config())
+    local record = registeredRecord(F, "CachedLauncher")
+    T.eq(record.name, "CachedLauncher", "record carries its name")
+    first:Destroy()
+    local second = F.Settings:New(config())
+    T.eq(registeredRecord(F, "CachedLauncher"), record, "same record table")
+    T.eq(#panel.clicks, 1, "no second button")
+    panel.clicks[1]({}, "LeftButton", false)
+    T.eq(launched, 1, "the first button reaches the new controller")
+    second:Destroy()
+    local canvasFrame = { GetObjectType = function() return "Frame" end }
+    F.Settings:New({ title = "CachedCanvas", frame = canvasFrame }):Destroy()
+    local canvasRecord = registeredRecord(F, "CachedCanvas")
+    T.eq(canvasRecord.name, "CachedCanvas", "canvas record carries its name")
+    F.Settings:New({ title = "CachedCanvas", frame = canvasFrame })
+    T.eq(registeredRecord(F, "CachedCanvas"), canvasRecord, "same canvas record table")
+end)
+
+test("the window drag scripts read the window and geometry from the record", function()
+    local F = T.fresh()
+    local win = _G.CreateFrame("Frame", nil, _G.UIParent)
+    local geometry = {}
+    F.Window:Attach(win, { handle = win, geometry = geometry, default = { "CENTER", "CENTER", 0, 0 } })
+    local record = F.Window._state.attached[win]
+    T.eq(record.win, win, "record holds the window")
+    T.eq(record.geometry, geometry, "record holds the geometry table")
+    local onStart, onStop = win:GetScript("OnDragStart"), win:GetScript("OnDragStop")
+    T.eq(type(onStart), "function", "start script set")
+    T.eq(type(onStop), "function", "stop script set")
+
+    local other = {}
+    record.geometry = other
+    onStop()
+    T.eq(geometry.point, nil, "the original geometry table is not written")
+    T.truthy(other.point ~= nil, "the record's geometry table is written")
+
+    local started = 0
+    local fake = { StartMoving = function() started = started + 1 end }
+    record.win = fake
+    onStart()
+    T.eq(started, 1, "the record's window is moved")
+end)
+
+--------------------------------------------------------------------------------
 -- state never declared as a file-level local
 --------------------------------------------------------------------------------
 
@@ -689,6 +982,7 @@ end)
 local FORBIDDEN = {
     ["Modules/Lifecycle.lua"] = { "identityHeld", "dispatcher" },
     ["Modules/DB.lua"] = { "sizeWarningEvents" },
+    ["Modules/Menu.lua"] = { "anonCounter" },
 }
 
 local function readSource(file)

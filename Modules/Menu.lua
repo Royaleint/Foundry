@@ -16,6 +16,18 @@ if F:HasModule("Menu") then return end
 local Menu = {}
 Menu.API_VERSION = 1
 
+-- All module state lives on the module table.
+Menu._layoutVersion = 1
+Menu._source = ...
+Menu._state = {
+    -- Live controllers, held weakly so a dropped controller can be collected.
+    instances = setmetatable({}, { __mode = "k" }),
+    liveKeys = {},
+    anonCounter = 0,
+}
+Menu._impl = {}
+local S, I = Menu._state, Menu._impl
+
 --------------------------------------------------------------------------------
 -- Feature detection (checked at :New, never at file scope)
 --------------------------------------------------------------------------------
@@ -29,13 +41,7 @@ end
 -- Module-level live-key registry
 --------------------------------------------------------------------------------
 
-local liveKeys = {}
-
---------------------------------------------------------------------------------
--- Anonymous-name counter
---------------------------------------------------------------------------------
-
-local anonCounter = 0
+local liveKeys = S.liveKeys
 
 --------------------------------------------------------------------------------
 -- Controller
@@ -43,6 +49,7 @@ local anonCounter = 0
 
 local Controller = {}
 Controller.__index = Controller
+I.Controller = Controller
 
 local function refuseIfDestroyed(self, method)
     if self._destroyed then
@@ -70,6 +77,7 @@ end
 -- attached but builds nothing after Destroy.
 function Controller:Destroy()
     if self._destroyed then return end
+    S.instances[self] = nil
     liveKeys[self._name] = nil
     self._destroyed = true
     self._builder          = nil
@@ -101,6 +109,14 @@ end
 -- Factory
 --------------------------------------------------------------------------------
 
+-- Builds the menu for a controller: nothing once it is destroyed, otherwise
+-- the consumer's builder.
+local function generate(c, owner, rootDescription, ...)
+    if c._destroyed then return end
+    c._builder(owner, rootDescription, ...)
+end
+I.generate = generate
+
 -- Creates a menu controller.
 -- Config fields:
 --   builder (required) -- function(owner, rootDescription, ...), called each
@@ -126,8 +142,8 @@ function Menu:New(config)
             return
         end
     else
-        anonCounter = anonCounter + 1
-        name = "F.Menu.anon." .. anonCounter
+        S.anonCounter = S.anonCounter + 1
+        name = "F.Menu.anon." .. S.anonCounter
     end
 
     if liveKeys[name] then
@@ -150,14 +166,13 @@ function Menu:New(config)
     c._builder   = builder
     c._destroyed = false
 
-    local function generatorWrapper(owner, rootDescription, ...)
-        if c._destroyed then return end
-        c._builder(owner, rootDescription, ...)
+    c._generatorWrapper = function(owner, rootDescription, ...)
+        return Menu._impl.generate(c, owner, rootDescription, ...)
     end
-    c._generatorWrapper = generatorWrapper
 
     liveKeys[name] = true
 
+    S.instances[c] = true
     return c
 end
 
