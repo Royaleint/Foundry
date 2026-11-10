@@ -164,15 +164,59 @@ test("stamp: stamped dev standalone loading after an embedded release is suppres
     T.truthy(ok, "diagnostic matches the unstamped case (missing: " .. tostring(missing) .. ")")
 end)
 
-test("stamp: embedded release loading after a stamped dev standalone is suppressed silently", function()
-    local current = currentApiVersion()
-    local dev = loadAs("Foundry-1.0_DevBuild", "dev-abc1234")
+-- Loads Foundry.lua as a second copy while keeping the first copy's winner in
+-- place; the mocked TOC version is swapped to what the second copy's addon reads.
+local function loadSecond(addonName, tocVersion)
+    _G.C_AddOns.GetAddOnMetadata = function(_, key)
+        if key == "Version" then return tocVersion end
+        return nil
+    end
+    assert(loadfile(T.foundryRoot .. "/Foundry.lua"))(addonName)
+end
+
+local function captureOn(winner)
     local captured = {}
-    dev.RaiseDevError = function(_, m) captured[#captured + 1] = m end
+    winner.RaiseDevError = function(_, m) captured[#captured + 1] = m end
+    return captured
+end
+
+test("stamp: embedded release loading after a stamped dev standalone is silent on the same API version", function()
+    local dev = loadAs("Foundry-1.0_DevBuild", "dev-abc1234")
+    local captured = captureOn(dev)
     T.eq(dev.IS_DEV_BUILD, true, "setup: stamped dev standalone won")
-    assert(loadfile(T.foundryRoot .. "/Foundry.lua"))("Homestead")
+    loadSecond("Homestead", "1.0.114")
     T.eq(_G.Foundry_1_0, dev, "the stamped dev copy stays installed")
     T.eq(#captured, 0, "same-API embed is silent, as with an unstamped dev winner")
+end)
+
+test("stamp: embedded release loading after a stamped dev standalone reports an API version skew", function()
+    local dev = loadAs("Foundry-1.0_DevBuild", "dev-abc1234")
+    local captured = captureOn(dev)
+    dev.API_VERSION = dev.API_VERSION - 1
+    loadSecond("Homestead", "1.0.114")
+    T.eq(_G.Foundry_1_0, dev, "the stamped dev copy stays installed")
+    T.eq(#captured, 1, "exactly one diagnostic fired")
+    local ok, missing = containsAll(captured, "redundant embedded", tostring(dev.API_VERSION),
+        tostring(dev.API_VERSION + 1))
+    T.truthy(ok, "diagnostic names both API versions (missing: " .. tostring(missing) .. ")")
+end)
+
+test("stamp: an embedded winner with a dev- host version is a release winner against a stamped standalone", function()
+    local embedded = loadAs("Homestead", "dev-abc1234")
+    local captured = captureOn(embedded)
+    loadSecond("Foundry-1.0_DevBuild", "dev-def5678")
+    T.eq(_G.Foundry_1_0, embedded, "the embedded winner stays installed")
+    T.eq(#captured, 1, "the suppressed DevBuild is reported once")
+    local ok, missing = containsAll(captured, "DevBuild", "loaded nothing")
+    T.truthy(ok, "diagnostic is the release-winner DevBuild message (missing: " .. tostring(missing) .. ")")
+end)
+
+test("stamp: versions that merely resemble the dev- prefix stay releases in an own folder", function()
+    for _, v in ipairs({ "1.0.114-dev", "devbuild", "Dev-abc1234", "xdev-abc1234" }) do
+        local F = loadAs("Foundry-1.0", v)
+        T.eq(F.IS_DEV_BUILD, false, v .. " is a release")
+        T.eq(F.VERSION, v, v .. " VERSION is the TOC string")
+    end
 end)
 
 -- Red-without-change: case (ii) is the discriminator for the version-aware change,
