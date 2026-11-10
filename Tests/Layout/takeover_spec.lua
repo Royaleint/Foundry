@@ -45,7 +45,7 @@ local SERVING_BUILD, INCOMING_BUILD = 2, 3
 -- code. With the list empty the test is strict: no unit may serve older code.
 -- The same list holds back every case below that needs behaviour the unit does not
 -- have yet (the record's outcome words, the raise for a refused takeover).
-local STILL_OLDER = { "Commands", "Events", "List", "Settings", "Tooltip", "Menu", "Window" }
+local STILL_OLDER = { "List", "Settings", "Tooltip", "Menu", "Window" }
 
 local function pending(unit)
     for _, name in ipairs(STILL_OLDER) do
@@ -736,6 +736,7 @@ local FROZEN_TARGETS = {
     { "Lifecycle", "_impl.pollTick" },
     { "Lifecycle", "_impl.onEvent" },
     { "DB", "_impl.onLogout" },
+    { "Commands", "_impl.Controller.Dispatch" },
 }
 
 local function resolve(F, unit, path)
@@ -1346,26 +1347,39 @@ test("the older and newer copies give the same saved file after applying and str
     end
 end)
 
-test("a handler the newer copy writes into an older events controller is called with the event name first", function()
+test("a handler the newer copy writes into an events controller is called with the event name first, whether Events stays older or is taken over too", function()
+    local withoutEvents = {}
+    for _, rel in ipairs(T.FOUNDRY_FILES) do
+        if rel ~= FILE.Events then withoutEvents[#withoutEvents + 1] = rel end
+    end
     for _, kind in ipairs({ "layout1", "current" }) do
-        local who = kind .. ": "
-        local F = serve(kind, "release")
-        local inst = buildInstances(F)
-        local calls = {}
-        inst.db:OnSavedVariablesTooLarge(function(...) calls[#calls + 1] = { ... } end)
-        local olderNew = F.Events.New
-        local errors = loadEach({ build = INCOMING_BUILD, addonName = "IncomingHost", version = "1.0.2" })
-        T.eq(next(errors), nil, who .. "the incoming copy raised nothing: " .. firstError(errors))
-        T.eq(F.DB._build, INCOMING_BUILD, who .. "DB took over")
-        T.truthy(rawequal(F.Events.New, olderNew), who .. "Events stays the older copy's")
-        local warn = F.DB._state.sizeWarningEvents
-        T.eq(buildOf(warn._handlers.SAVED_VARIABLES_TOO_LARGE), tostring(INCOMING_BUILD), who .. "the slot holds the newer handler")
-        T.Fire(warn._frame, "SAVED_VARIABLES_TOO_LARGE", "TakeoverAddon")
-        T.eq(#calls, 1, who .. "the db's size-warning handler runs once")
-        T.truthy(rawequal(calls[1][1], inst.db), who .. "with the db")
-        T.eq(calls[1][2], "TakeoverAddon", who .. "the addon name")
-        T.eq(calls[1][3], "TestDB", who .. "and the saved-variable name")
-        T.outputContains("DB: addon 'TakeoverAddon' SavedVariables globals 'TestDB' were too large", who .. "the warning is printed")
+        for _, events in ipairs({ "older", "newer" }) do
+            local who = kind .. ", Events " .. events .. ": "
+            local F = serve(kind, "release")
+            local inst = buildInstances(F)
+            local calls = {}
+            inst.db:OnSavedVariablesTooLarge(function(...) calls[#calls + 1] = { ... } end)
+            local olderNew = F.Events.New
+            local errors = loadEach({
+                build = INCOMING_BUILD, addonName = "IncomingHost", version = "1.0.2",
+                files = events == "older" and withoutEvents or nil,
+            })
+            T.eq(next(errors), nil, who .. "the incoming copy raised nothing: " .. firstError(errors))
+            T.eq(F.DB._build, INCOMING_BUILD, who .. "DB took over")
+            if events == "older" then
+                T.truthy(rawequal(F.Events.New, olderNew), who .. "Events stays the older copy's")
+            else
+                T.truthy(F.Events.New ~= olderNew, who .. "Events is the newer copy's")
+            end
+            local warn = F.DB._state.sizeWarningEvents
+            T.eq(buildOf(warn._handlers.SAVED_VARIABLES_TOO_LARGE), tostring(INCOMING_BUILD), who .. "the slot holds the newer handler")
+            T.Fire(warn._frame, "SAVED_VARIABLES_TOO_LARGE", "TakeoverAddon")
+            T.eq(#calls, 1, who .. "the db's size-warning handler runs once")
+            T.truthy(rawequal(calls[1][1], inst.db), who .. "with the db")
+            T.eq(calls[1][2], "TakeoverAddon", who .. "the addon name")
+            T.eq(calls[1][3], "TestDB", who .. "and the saved-variable name")
+            T.outputContains("DB: addon 'TakeoverAddon' SavedVariables globals 'TestDB' were too large", who .. "the warning is printed")
+        end
     end
 end)
 
@@ -1394,13 +1408,451 @@ test("a DB that fails partway through taking over leaves the version, build and 
 end)
 
 --------------------------------------------------------------------------------
+-- Events and Commands
+--------------------------------------------------------------------------------
+
+local MODULE_API_LINE = "local API_VERSION = 2"
+
+-- Loads the incoming copy's file for one module alone.
+local function loadModule(unit, spec)
+    spec = spec or {}
+    return T.loadBuild({
+        build = INCOMING_BUILD, addonName = "IncomingHost", version = spec.version,
+        files = { FILE[unit] }, replace = spec.replace,
+    })
+end
+
+local CLIENT_CALLS = { "RegisterEvent", "UnregisterEvent", "RegisterUnitEvent", "UnregisterAllEvents", "SetScript" }
+
+-- Per frame the library made, how many of each client call it has logged.
+local function clientCalls()
+    local log = {}
+    for i, frame in ipairs(T.frames) do
+        local counts = {}
+        for _, method in ipairs(CLIENT_CALLS) do counts[method] = #(frame.calls[method] or {}) end
+        log[i] = counts
+    end
+    return log
+end
+
+local function firstCallDifference(before, after)
+    if #before ~= #after then return "frames: " .. #before .. " before, " .. #after .. " after" end
+    for i = 1, #before do
+        for _, method in ipairs(CLIENT_CALLS) do
+            if before[i][method] ~= after[i][method] then
+                return "frame " .. i .. " " .. method .. ": " .. before[i][method] .. " before, " .. after[i][method] .. " after"
+            end
+        end
+    end
+    return nil
+end
+
+local function withInstances(change)
+    return function(F, unitTbl) change(F, unitTbl, buildInstances(F)) end
+end
+
+test("a newer Events takes over with the same controllers and frames, rebuilds the once closures and the bucket fire functions, and makes no client call", function()
+    for _, kind in ipairs({ "layout1", "current" }) do
+        for _, mode in ipairs({ "release", "dev" }) do
+            local who = kind .. ", " .. mode .. ": "
+            local F = serve(kind, mode)
+            local inst = buildInstances(F)
+            local E = F.Events
+            local S, I = E._state, E._impl
+            local c = inst.events
+            local frame, handlers = c._frame, c._handlers
+            local plain, onceRuns, bucketRuns = {}, 0, 0
+            c:Register("TAKEOVER_PLAIN", function(...) plain[#plain + 1] = { ... } end)
+            c:RegisterOnce("TAKEOVER_ONCE_TWO", function() onceRuns = onceRuns + 1 end)
+            local bucket = c:RegisterBucket({
+                events = { "TAKEOVER_BUCKET_TWO", "TAKEOVER_BUCKET_THREE" }, interval = 5,
+                handler = function() bucketRuns = bucketRuns + 1 end,
+            })
+            T.Fire(frame, "TAKEOVER_BUCKET_TWO")
+            local window = bucket._timer
+            T.truthy(window ~= nil, who .. "a window is open before the takeover")
+            local script = frame._scripts.OnEvent
+            local oldOnce, oldBucket = handlers.TAKEOVER_ONCE_TWO, handlers.TAKEOVER_BUCKET_TWO
+            local oldFirstOnce, oldFirstBucket = handlers.TAKEOVER_ONCE, handlers.TAKEOVER_BUCKET
+            local consumerOnce = c._onceHandlers.TAKEOVER_ONCE_TWO
+            local impl = { Controller = I.Controller, Bucket = I.Bucket }
+            local before, timers = clientCalls(), #T.timers
+
+            local ok, err = pcall(loadModule, "Events", { version = incomingVersion(mode) })
+            T.truthy(ok, who .. "the incoming Events raised nothing: " .. tostring(err))
+            T.eq(E._build, INCOMING_BUILD, who .. "Events took over")
+            T.eq(E._source, "IncomingHost", who .. "the newer copy's addon is named")
+            T.eq(E.API_VERSION, 2, who .. "API version")
+            T.truthy(rawequal(F.Events, E) and rawequal(E._state, S) and rawequal(E._impl, I),
+                who .. "the module, state and implementation tables are kept")
+            T.truthy(rawequal(I.Controller, impl.Controller) and rawequal(I.Bucket, impl.Bucket),
+                who .. "the controller and bucket tables are kept")
+            T.truthy(rawequal(getmetatable(c), I.Controller) and rawequal(getmetatable(bucket), I.Bucket),
+                who .. "controllers and buckets made before keep serving through the same tables")
+            T.eq(buildOf(I.Controller.Register), tostring(INCOMING_BUILD), who .. "Register is the newer copy's")
+            T.eq(buildOf(I.Bucket.Cancel), tostring(INCOMING_BUILD), who .. "Cancel is the newer copy's")
+            T.truthy(S.instances[c], who .. "the controller is still listed")
+
+            T.eq(firstCallDifference(before, clientCalls()), nil, who .. "no client call is made")
+            T.eq(#T.timers, timers, who .. "no timer is made")
+            T.truthy(rawequal(c._handlers, handlers), who .. "the handler table is kept")
+            T.truthy(rawequal(frame._scripts.OnEvent, script), who .. "the frame keeps its script")
+            if kind == "layout1" then
+                T.truthy(isOlderFunction(script), who .. "which is the older copy's closure")
+            end
+            T.truthy(handlers.TAKEOVER_ONCE_TWO ~= oldOnce and handlers.TAKEOVER_ONCE ~= oldFirstOnce,
+                who .. "each once closure is replaced")
+            T.eq(buildOf(handlers.TAKEOVER_ONCE_TWO), tostring(INCOMING_BUILD), who .. "the once closure is the newer copy's")
+            T.eq(buildOf(handlers.TAKEOVER_ONCE), tostring(INCOMING_BUILD), who .. "and so is the first one")
+            T.truthy(rawequal(c._onceHandlers.TAKEOVER_ONCE_TWO, consumerOnce), who .. "the consumer handler is kept")
+            T.truthy(handlers.TAKEOVER_BUCKET_TWO ~= oldBucket and handlers.TAKEOVER_BUCKET ~= oldFirstBucket,
+                who .. "each bucket fire function is replaced")
+            T.eq(buildOf(handlers.TAKEOVER_BUCKET_TWO), tostring(INCOMING_BUILD), who .. "the fire function is the newer copy's")
+            T.truthy(rawequal(handlers.TAKEOVER_BUCKET_TWO, handlers.TAKEOVER_BUCKET_THREE),
+                who .. "a bucket's events share one fire function")
+            T.truthy(rawequal(bucket._timer, window), who .. "the open window keeps its timer")
+
+            -- the older closure on the frame now dispatches to the newer handlers
+            T.Fire(frame, "TAKEOVER_PLAIN", "a", "b")
+            T.eq(#plain, 1, who .. "a plain handler runs once")
+            T.eq(plain[1][1], "TAKEOVER_PLAIN", who .. "with the event name first")
+            T.eq(plain[1][3], "b", who .. "and the arguments after it")
+
+            local unregisters = callCount(frame, "UnregisterEvent")
+            T.Fire(frame, "TAKEOVER_ONCE_TWO", "x")
+            T.eq(onceRuns, 1, who .. "the once handler runs")
+            T.eq(callCount(frame, "UnregisterEvent"), unregisters + 1, who .. "and unregisters its event")
+            T.falsy(c:IsRegistered("TAKEOVER_ONCE_TWO"), who .. "the event is no longer registered")
+            T.eq(c._onceHandlers.TAKEOVER_ONCE_TWO, nil, who .. "its once entry is gone")
+            T.Fire(frame, "TAKEOVER_ONCE_TWO", "x")
+            T.eq(onceRuns, 1, who .. "it does not run again")
+
+            -- the window opened by the older fire function ends in one handler call
+            T.Fire(frame, "TAKEOVER_BUCKET_THREE")
+            T.eq(#T.timers, timers, who .. "the newer fire function opens no second window")
+            T.FireTimer(window)
+            T.eq(bucketRuns, 1, who .. "the handler runs once for that window")
+            T.falsy(bucket:IsPending(), who .. "and nothing is pending")
+            T.Fire(frame, "TAKEOVER_BUCKET_TWO")
+            T.eq(#T.timers, timers + 1, who .. "the next event opens a new window")
+            T.FireTimer(bucket._timer)
+            T.eq(bucketRuns, 2, who .. "which ends in one more call")
+
+            c:Register("TAKEOVER_AFTER", function() end)
+            T.truthy(c:IsRegistered("TAKEOVER_AFTER"), who .. "a registration after the takeover works")
+            T.eq(#T.output, 0, who .. "nothing is printed")
+        end
+    end
+end)
+
+test("a trailing bucket open at the takeover calls its handler exactly once, after its quiet window", function()
+    for _, kind in ipairs({ "layout1", "current" }) do
+        local who = kind .. ": "
+        local F = serve(kind, "release")
+        local c = F.Events:New("TakeoverTrailing")
+        local runs = 0
+        local bucket = c:RegisterBucket({
+            events = "TAKEOVER_TRAILING", interval = 5, edge = "trailing", handler = function() runs = runs + 1 end,
+        })
+        T.Fire(c._frame, "TAKEOVER_TRAILING")
+        T.now = 2
+        T.Fire(c._frame, "TAKEOVER_TRAILING")
+        local first, timers = bucket._timer, #T.timers
+        T.eq(timers, 1, who .. "one timer opened for the window")
+        loadModule("Events", { version = "1.0.2" })
+        T.eq(F.Events._build, INCOMING_BUILD, who .. "Events took over")
+        T.now = 3
+        T.Fire(c._frame, "TAKEOVER_TRAILING")
+        T.eq(#T.timers, timers, who .. "the newer fire function adds no timer")
+        T.now = 5
+        T.FireTimer(first)
+        T.eq(runs, 0, who .. "the window is extended by the later event")
+        T.truthy(bucket:IsPending(), who .. "and a timer waits for the new end")
+        T.eq(#T.timers, timers + 1, who .. "one timer re-armed")
+        T.now = 8
+        T.FireTimer(bucket._timer)
+        T.eq(runs, 1, who .. "the handler runs once")
+        T.falsy(bucket:IsPending(), who .. "nothing is pending")
+        T.eq(#T.output, 0, who .. "nothing is printed")
+    end
+end)
+
+test("a newer Events takes over when nothing needs a timer, even without one, and over no controllers at all", function()
+    for _, kind in ipairs({ "layout1", "current" }) do
+        local F = serve(kind, "release")
+        _G.C_Timer = nil
+        _G.GetTime = nil
+        loadModule("Events", { version = "1.0.2" })
+        T.eq(F.Events._build, INCOMING_BUILD, kind .. ": with no controller")
+        local c = F.Events:New("TakeoverPlain")
+        c:RegisterOnce("TAKEOVER_ONCE", function() end)
+        T.falsy(pcall(c.RegisterBucket, c, { events = "TAKEOVER_BUCKET", interval = 5, handler = function() end }),
+            kind .. ": a bucket needs the timer")
+        local E = F.Events
+        E._build = SERVING_BUILD
+        loadModule("Events", { version = "1.0.2" })
+        T.eq(E._build, INCOMING_BUILD, kind .. ": with a controller that holds a once handler and no bucket")
+    end
+end)
+
+local EVENTS_PROOFS = {
+    { name = "a controller whose handler table is not a table", outcome = "refused: shape",
+        inject = withInstances(function(_, _, inst) inst.events._handlers = "handlers" end) },
+    { name = "a controller with nothing registered whose handler table is not a table", outcome = "refused: shape",
+        inject = function(F) F.Events:New("TakeoverBare")._handlers = "handlers" end },
+    { name = "a controller whose bucket list is not a table", outcome = "refused: shape",
+        inject = withInstances(function(_, _, inst) inst.events._buckets = "buckets" end) },
+    { name = "a controller whose bucket-event table is not a table", outcome = "refused: shape",
+        inject = withInstances(function(_, _, inst) inst.events._bucketEvents = "events" end) },
+    { name = "a controller whose once table is not a table", outcome = "refused: shape",
+        inject = withInstances(function(_, _, inst) inst.events._onceHandlers = "once" end) },
+    { name = "a once entry with no handler in the handler table", outcome = "refused: shape",
+        inject = withInstances(function(_, _, inst) inst.events._handlers.TAKEOVER_ONCE = nil end) },
+    { name = "a once entry whose handler is not a function", outcome = "refused: shape",
+        inject = withInstances(function(_, _, inst) inst.events._onceHandlers.TAKEOVER_ONCE = "handler" end) },
+    { name = "a once entry whose stored closure is not a function", outcome = "refused: shape",
+        inject = withInstances(function(_, _, inst) inst.events._handlers.TAKEOVER_ONCE = "closure" end) },
+    { name = "a bucket whose event list is not a table", outcome = "refused: shape",
+        inject = withInstances(function(_, _, inst) inst.bucket._events = "events" end) },
+    { name = "a bucket event that is not a string", outcome = "refused: shape",
+        inject = withInstances(function(_, _, inst) inst.bucket._events[1] = 5 end) },
+    { name = "a bucket event that is not a string but has a handler", outcome = "refused: shape",
+        inject = withInstances(function(_, _, inst)
+            inst.bucket._events[1] = 5
+            inst.events._handlers[5] = function() end
+        end) },
+    { name = "a bucket event with no handler in the handler table", outcome = "refused: shape",
+        inject = withInstances(function(_, _, inst) inst.events._handlers.TAKEOVER_BUCKET = nil end) },
+    { name = "a bucket list holding something other than a bucket", outcome = "refused: shape",
+        inject = withInstances(function(_, _, inst) inst.events._buckets[#inst.events._buckets + 1] = "bucket" end) },
+    { name = "a list of live controllers that is not a table", outcome = "refused: shape",
+        inject = function(_, unitTbl) unitTbl._state.instances = "controllers" end },
+    { name = "a live controller that is not a table", outcome = "refused: shape",
+        inject = function(_, unitTbl) unitTbl._state.instances["controller"] = true end },
+    { name = "no state table", outcome = "refused: shape",
+        inject = function(_, unitTbl) unitTbl._state = nil end },
+    { name = "no implementation table", outcome = "refused: shape",
+        inject = function(_, unitTbl) unitTbl._impl = nil end },
+    { name = "no controller implementation", outcome = "refused: shape",
+        inject = function(_, unitTbl) unitTbl._impl.Controller = nil end },
+    { name = "no bucket implementation", outcome = "refused: shape",
+        inject = function(_, unitTbl) unitTbl._impl.Bucket = nil end },
+    { name = "a bucket and no timer table", outcome = "refused: timer",
+        inject = withInstances(function() _G.C_Timer = nil end) },
+    { name = "a bucket and a timer table without NewTimer", outcome = "refused: timer",
+        inject = withInstances(function() _G.C_Timer.NewTimer = nil end) },
+    { name = "a bucket and no clock", outcome = "refused: timer",
+        inject = withInstances(function() _G.GetTime = nil end) },
+}
+
+test("a newer Events declines a serving Events whose controllers it cannot adopt, changes nothing, and raises only in a development serving copy", function()
+    for _, case in ipairs(EVENTS_PROOFS) do
+        for _, kind in ipairs({ "current", "layout1" }) do
+            runCase({
+                name = "a serving copy with " .. case.name, inject = case.inject, outcome = case.outcome,
+                refused = true, units = { "Events" },
+            }, kind)
+        end
+    end
+end)
+
+test("an Events that fails partway through taking over leaves the version, build and source of the active copy unchanged", function()
+    local lines = { "local Events = served or {}", "local function makeOnEvent(c)", "function Events:New(owner)",
+        "if takingOver then", "Events.API_VERSION = API_VERSION" }
+    for _, kind in ipairs({ "current", "layout1" }) do
+        for _, mode in ipairs({ "release", "dev" }) do
+            for _, line in ipairs(lines) do
+                local who = kind .. ", " .. mode .. ", failing before '" .. line .. "': "
+                local F = serve(kind, mode)
+                buildInstances(F)
+                local E = F.Events
+                local before = { api = rawget(E, "API_VERSION"), build = rawget(E, "_build"), source = rawget(E, "_source") }
+                local ok, err = pcall(loadModule, "Events", {
+                    version = incomingVersion(mode),
+                    replace = merge({ [MODULE_API_LINE] = "local API_VERSION = 3" }, T.plantError(line, "planted failure")),
+                })
+                T.falsy(ok, who .. "the copy fails")
+                T.truthy(tostring(err):find("planted failure", 1, true), who .. "at the planted line: " .. tostring(err))
+                T.truthy(rawequal(F.Events, E), who .. "the module is the same table")
+                T.eq(rawget(E, "API_VERSION"), before.api, who .. "API version")
+                T.eq(rawget(E, "_build"), before.build, who .. "build")
+                T.eq(rawget(E, "_source"), before.source, who .. "source")
+            end
+        end
+    end
+end)
+
+test("a newer Commands takes over, re-pointing the built-in guard and the restriction handler and leaving a consumer's guard alone, with no client call", function()
+    for _, kind in ipairs({ "layout1", "current" }) do
+        for _, mode in ipairs({ "release", "dev" }) do
+            local who = kind .. ", " .. mode .. ": "
+            local F = serve(kind, mode)
+            local inst = buildInstances(F)
+            local C = F.Commands
+            local S, I = C._state, C._impl
+            local ownGuard = function() return true end
+            local own = C:New({ name = "TakeoverOwn", slashes = { "/tko3" }, guard = ownGuard })
+            local guards, olderGuard = C.Guards, C.Guards.NotRestricted
+            local restriction = inst.commands._restrictionEvents
+            local handlers, olderSlot = restriction._handlers, restriction._handlers.ADDON_RESTRICTION_STATE_CHANGED
+            local slot, guardedSlot = _G.SlashCmdList.TAKEOVER, _G.SlashCmdList.TAKEOVERGUARDED
+            local impl = { Controller = I.Controller }
+            T.truthy(rawequal(inst.guarded._guard, olderGuard), who .. "the guarded controller holds the built-in guard")
+            local before = clientCalls()
+
+            local ok, err = pcall(loadModule, "Commands", { version = incomingVersion(mode) })
+            T.truthy(ok, who .. "the incoming Commands raised nothing: " .. tostring(err))
+            T.eq(C._build, INCOMING_BUILD, who .. "Commands took over")
+            T.eq(C._source, "IncomingHost", who .. "the newer copy's addon is named")
+            T.eq(C.API_VERSION, 2, who .. "API version")
+            T.truthy(rawequal(F.Commands, C) and rawequal(C._state, S) and rawequal(C._impl, I),
+                who .. "the module, state and implementation tables are kept")
+            T.truthy(rawequal(I.Controller, impl.Controller) and rawequal(getmetatable(inst.commands), I.Controller),
+                who .. "the controller table is kept and serves the controllers made before")
+            T.truthy(rawequal(C.Guards, guards), who .. "the guard table is kept")
+            T.eq(firstCallDifference(before, clientCalls()), nil, who .. "no client call is made")
+
+            T.truthy(C.Guards.NotRestricted ~= olderGuard, who .. "the built-in guard is redefined")
+            T.eq(buildOf(C.Guards.NotRestricted), tostring(INCOMING_BUILD), who .. "as the newer copy's")
+            T.truthy(rawequal(inst.guarded._guard, C.Guards.NotRestricted), who .. "the controller that held it holds the new one")
+            T.truthy(rawequal(own._guard, ownGuard), who .. "a consumer's own guard is untouched")
+            T.eq(inst.commands._guard, nil, who .. "a controller with no guard still has none")
+
+            T.truthy(rawequal(restriction._handlers, handlers), who .. "the restriction controller keeps its handler table")
+            T.truthy(handlers.ADDON_RESTRICTION_STATE_CHANGED ~= olderSlot, who .. "the restriction handler is replaced")
+            T.eq(buildOf(handlers.ADDON_RESTRICTION_STATE_CHANGED), tostring(INCOMING_BUILD),
+                who .. "with the newer copy's")
+            T.Fire(restriction._frame, "ADDON_RESTRICTION_STATE_CHANGED", 0, 1)
+            local notices = 0
+            for _, line in ipairs(T.output) do
+                if line == "Commands are about to be paused while combat restrictions activate." then notices = notices + 1 end
+            end
+            T.eq(notices, 1, who .. "the notice is printed once")
+
+            T.truthy(rawequal(_G.SlashCmdList.TAKEOVER, slot) and rawequal(_G.SlashCmdList.TAKEOVERGUARDED, guardedSlot),
+                who .. "the slash entries are kept")
+            _G.C_RestrictedActions.IsAddOnRestrictionActive = function() return true end
+            T.output = {}
+            guardedSlot("")
+            T.eq(T.output[1], "Commands are unavailable while combat restrictions are active.", who .. "the guard refuses")
+            T.eq(#T.output, 1, who .. "and nothing else is printed")
+        end
+    end
+end)
+
+test("an older slash entry calls the newer Dispatch once, by name", function()
+    for _, kind in ipairs({ "layout1", "current" }) do
+        for _, mode in ipairs({ "release", "dev" }) do
+            local who = kind .. ", " .. mode .. ": "
+            local F = serve(kind, mode)
+            local inst = buildInstances(F)
+            inst.commands:Register({ name = "ping", handler = function() end })
+            local slot = _G.SlashCmdList.TAKEOVER
+            if kind == "layout1" then
+                T.truthy(isOlderFunction(slot), who .. "the slash entry is the older copy's relay")
+            end
+            loadModule("Commands", { version = incomingVersion(mode) })
+            local C = F.Commands
+            T.eq(C._build, INCOMING_BUILD, who .. "Commands took over")
+            T.truthy(rawequal(_G.SlashCmdList.TAKEOVER, slot), who .. "the entry is kept")
+            T.eq(buildOf(C._impl.Controller.Dispatch), tostring(INCOMING_BUILD), who .. "Dispatch is the newer copy's")
+            T.output = {}
+            local runs = slots.countCalls(C._impl.Controller, "Dispatch", function() slot("") end)
+            T.eq(runs, 1, who .. "the entry runs the newer Dispatch once")
+            T.truthy(#T.output > 0, who .. "which prints the help")
+        end
+    end
+end)
+
+local COMMANDS_PROOFS = {
+    { name = "a list of live controllers that is not a table", outcome = "refused: shape",
+        inject = function(_, unitTbl) unitTbl._state.instances = "controllers" end },
+    { name = "a live controller that is not a table", outcome = "refused: shape",
+        inject = function(_, unitTbl) unitTbl._state.instances["controller"] = true end },
+    { name = "no state table", outcome = "refused: shape",
+        inject = function(_, unitTbl) unitTbl._state = nil end },
+    { name = "no implementation table", outcome = "refused: shape",
+        inject = function(_, unitTbl) unitTbl._impl = nil end },
+    { name = "no controller implementation", outcome = "refused: shape",
+        inject = function(_, unitTbl) unitTbl._impl.Controller = nil end },
+    { name = "no guard table", outcome = "refused: shape",
+        inject = function(_, unitTbl) unitTbl.Guards = nil end },
+    { name = "a built-in guard that is not a function", outcome = "refused: shape",
+        inject = function(_, unitTbl) unitTbl.Guards.NotRestricted = "guard" end },
+    { name = "a restriction controller that is not a table", outcome = "refused: shape",
+        inject = withInstances(function(_, _, inst) inst.commands._restrictionEvents = true end) },
+    { name = "a restriction controller with no handler table", outcome = "refused: shape",
+        inject = withInstances(function(_, _, inst) inst.commands._restrictionEvents._handlers = nil end) },
+    { name = "a restriction controller whose handler table is not a table", outcome = "refused: shape",
+        inject = withInstances(function(_, _, inst) inst.commands._restrictionEvents._handlers = "handlers" end) },
+    { name = "a restriction controller with no restriction handler", outcome = "refused: shape",
+        inject = withInstances(function(_, _, inst)
+            inst.commands._restrictionEvents._handlers.ADDON_RESTRICTION_STATE_CHANGED = nil
+        end) },
+    { name = "a restriction handler that is not a function", outcome = "refused: shape",
+        inject = withInstances(function(_, _, inst)
+            inst.commands._restrictionEvents._handlers.ADDON_RESTRICTION_STATE_CHANGED = "handler"
+        end) },
+    { name = "a restriction controller and an Events with layout 2", outcome = "refused: events layout",
+        inject = withInstances(function(F) rawset(F.Events, "_layoutVersion", 2) end) },
+    { name = "a restriction controller and an Events with no layout", outcome = "refused: events layout",
+        inject = withInstances(function(F) rawset(F.Events, "_layoutVersion", nil) end) },
+}
+
+test("a newer Commands declines a serving Commands whose controllers it cannot adopt, changes nothing, and raises only in a development serving copy", function()
+    for _, case in ipairs(COMMANDS_PROOFS) do
+        for _, kind in ipairs({ "current", "layout1" }) do
+            runCase({
+                name = "a serving copy with " .. case.name, inject = case.inject, outcome = case.outcome,
+                refused = true, units = { "Commands" },
+            }, kind)
+        end
+    end
+end)
+
+test("a newer Commands takes over an Events of another layout when no controller holds a restriction handler", function()
+    for _, kind in ipairs({ "layout1", "current" }) do
+        local F = serve(kind, "release")
+        F.Commands:New({ name = "TakeoverPlain", slashes = { "/tkp" } })
+        rawset(F.Events, "_layoutVersion", 2)
+        loadModule("Commands", { version = "1.0.2" })
+        T.eq(F.Commands._build, INCOMING_BUILD, kind .. ": Commands took over")
+    end
+end)
+
+test("a Commands that fails partway through taking over leaves the version, build and source of the active copy unchanged", function()
+    local lines = { "local Commands = served or {}", "local function makeRestrictionHandler(c)",
+        "function Commands:New(config)", "if takingOver then", "Commands.API_VERSION = API_VERSION" }
+    for _, kind in ipairs({ "current", "layout1" }) do
+        for _, mode in ipairs({ "release", "dev" }) do
+            for _, line in ipairs(lines) do
+                local who = kind .. ", " .. mode .. ", failing before '" .. line .. "': "
+                local F = serve(kind, mode)
+                buildInstances(F)
+                local C = F.Commands
+                local before = { api = rawget(C, "API_VERSION"), build = rawget(C, "_build"), source = rawget(C, "_source") }
+                local ok, err = pcall(loadModule, "Commands", {
+                    version = incomingVersion(mode),
+                    replace = merge({ [MODULE_API_LINE] = "local API_VERSION = 3" }, T.plantError(line, "planted failure")),
+                })
+                T.falsy(ok, who .. "the copy fails")
+                T.truthy(tostring(err):find("planted failure", 1, true), who .. "at the planted line: " .. tostring(err))
+                T.truthy(rawequal(F.Commands, C), who .. "the module is the same table")
+                T.eq(rawget(C, "API_VERSION"), before.api, who .. "API version")
+                T.eq(rawget(C, "_build"), before.build, who .. "build")
+                T.eq(rawget(C, "_source"), before.source, who .. "source")
+            end
+        end
+    end
+end)
+
+--------------------------------------------------------------------------------
 -- The shape of each file after its decision block
 --------------------------------------------------------------------------------
 
 -- The files whose shape is not scanned yet. A file joins the scan when its
 -- decision block lands and its unit leaves the ledger.
 local SHAPE_PENDING = {
-    "Modules/Commands.lua", "Modules/Events.lua",
     "Modules/List.lua", "Modules/Settings.lua", "Modules/Tooltip.lua", "Modules/Menu.lua", "Modules/Window.lua",
 }
 

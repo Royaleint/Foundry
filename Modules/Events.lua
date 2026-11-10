@@ -8,30 +8,110 @@ if not F then
     error("Foundry-1.0: Events.lua requires the Foundry-1.0 bootstrap (Foundry.lua) "
         .. "to have loaded first; _G.Foundry_1_0 is missing.", 0)
 end
--- Already registered by another embedded copy: load nothing.
-if F:HasModule("Events") then return end
 
 local BUILD = 1
+local API_VERSION = 2
 
-local Events = {}
-Events.API_VERSION = 2
+-- An older Events already serving is taken over in place when this copy is
+-- newer and the moment is safe; otherwise it keeps serving and this file loads
+-- nothing. The checks only read, in a fixed order, and the first to fail names
+-- the outcome; nil means this copy takes over. BUILD, API_VERSION, served and
+-- takingOver are read at file scope only: no function below may capture them.
+local served = F:HasModule("Events") and F.Events or nil
+if served == nil and F:HasModule("Events") then return end
+if served ~= nil then
+    -- rawget: a current copy reads none of the newer layout fields on an older
+    -- library table through a normal lookup.
+    if rawget(F, "_layoutVersion") ~= 1 then return end
+    local outcome
+    local build = rawget(served, "_build")
+    local api = rawget(served, "API_VERSION")
+    if rawget(served, "_layoutVersion") ~= 1 then
+        outcome = "layout"
+    elseif build ~= nil and (type(build) ~= "number" or build ~= math.floor(build)
+        or build < 1 or build == math.huge or BUILD <= build) then
+        outcome = "not used"
+    elseif type(api) ~= "number" or api > API_VERSION then
+        outcome = "refused: api version"
+    elseif type(IsLoggedIn) ~= "function" or IsLoggedIn() then
+        outcome = "after login"
+    elseif type(InCombatLockdown) ~= "function" or InCombatLockdown() then
+        outcome = "combat"
+    else
+        -- Every controller by the fields the takeover below reads and writes;
+        -- buckets are the only thing that needs the client's timer and clock.
+        local state, impl = rawget(served, "_state"), rawget(served, "_impl")
+        local anyBucket = false
+        if type(state) ~= "table" or type(state.instances) ~= "table" or type(impl) ~= "table"
+            or type(impl.Controller) ~= "table" or type(impl.Bucket) ~= "table" then
+            outcome = "refused: shape"
+        else
+            for c in pairs(state.instances) do
+                local handlers, once, buckets, bucketEvents
+                if type(c) == "table" then
+                    handlers, once = rawget(c, "_handlers"), rawget(c, "_onceHandlers")
+                    buckets, bucketEvents = rawget(c, "_buckets"), rawget(c, "_bucketEvents")
+                end
+                if type(handlers) ~= "table" or type(buckets) ~= "table" or type(bucketEvents) ~= "table"
+                    or (once ~= nil and type(once) ~= "table") then
+                    outcome = "refused: shape"
+                else
+                    for event, handler in pairs(once or {}) do
+                        if type(handler) ~= "function" or type(handlers[event]) ~= "function" then
+                            outcome = "refused: shape"
+                        end
+                    end
+                    for _, bucket in ipairs(buckets) do
+                        anyBucket = true
+                        local events = type(bucket) == "table" and rawget(bucket, "_events") or nil
+                        if type(events) ~= "table" then
+                            outcome = "refused: shape"
+                        else
+                            for _, event in ipairs(events) do
+                                if type(event) ~= "string" or type(handlers[event]) ~= "function" then
+                                    outcome = "refused: shape"
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+            if not outcome and anyBucket and (type(_G.C_Timer) ~= "table"
+                or type(_G.C_Timer.NewTimer) ~= "function" or type(_G.GetTime) ~= "function") then
+                outcome = "refused: timer"
+            end
+        end
+    end
+    if outcome then
+        if outcome:sub(1, 9) == "refused: " and F.IS_DEV_BUILD then
+            F:RaiseDevError("Events: a newer copy from " .. tostring((...))
+                .. " did not take over (" .. outcome .. ")")
+        end
+        return
+    end
+end
+local takingOver = served ~= nil
+
+-- On a takeover every definition below lands in the serving tables, so the
+-- older copy's controllers, buckets and frames reach the newer code.
+local Events = served or {}
 
 -- All module state lives on the module table.
-Events._layoutVersion = 1
-Events._source = ...
-Events._build = BUILD
-Events._state = {
-    -- Live controllers, held weakly so a dropped controller can be collected.
-    instances = setmetatable({}, { __mode = "k" }),
-}
-Events._impl = {}
+if not takingOver then
+    Events._layoutVersion = 1
+    Events._state = {
+        -- Live controllers, held weakly so a dropped controller can be collected.
+        instances = setmetatable({}, { __mode = "k" }),
+    }
+    Events._impl = {}
+end
 local S, I = Events._state, Events._impl
 
 --------------------------------------------------------------------------------
 -- Controller
 --------------------------------------------------------------------------------
 
-local Controller = {}
+local Controller = I.Controller or {}
 Controller.__index = Controller
 I.Controller = Controller
 
@@ -166,7 +246,7 @@ end
 --------------------------------------------------------------------------------
 
 -- A bucket coalesces a burst of events into one delayed handler call.
-local Bucket = {}
+local Bucket = I.Bucket or {}
 Bucket.__index = Bucket
 I.Bucket = Bucket
 
@@ -513,4 +593,30 @@ function Events:New(owner)
     return c
 end
 
-F:RegisterModule("Events", Events)
+-- The older copy's frames keep their scripts, which look the handler up in the
+-- controller's handler table at fire time. Only the closures stored in that
+-- table are rebuilt, so the table and the handler(event, ...) call shape stay
+-- as they are for the other modules that write handlers into it.
+if takingOver then
+    for c in pairs(S.instances) do
+        for event, handler in pairs(c._onceHandlers or {}) do
+            c._handlers[event] = makeOnce(c, handler)
+        end
+        for _, bucket in ipairs(c._buckets) do
+            local _, onFire = makeBucketFns(bucket)
+            for _, event in ipairs(bucket._events) do
+                c._handlers[event] = onFire
+            end
+        end
+    end
+end
+
+-- Written last, so a copy that fails before this point leaves the serving
+-- Events reporting what it did before.
+Events.API_VERSION = API_VERSION
+Events._source = ...
+Events._build = BUILD
+
+if not takingOver then
+    F:RegisterModule("Events", Events)
+end
