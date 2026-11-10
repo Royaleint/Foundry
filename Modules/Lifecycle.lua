@@ -27,6 +27,7 @@ local API_VERSION = 4
 -- the outcome; nil means this copy takes over. BUILD, API_VERSION, served and
 -- takingOver are read at file scope only: no function below may capture them.
 local served = F:HasModule("Lifecycle") and F.Lifecycle or nil
+if served == nil and F:HasModule("Lifecycle") then return end
 if served ~= nil then
     -- rawget: a current copy reads none of the newer layout fields on an older
     -- library table through a normal lookup.

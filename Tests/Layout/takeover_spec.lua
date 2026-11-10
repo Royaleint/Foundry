@@ -20,6 +20,7 @@ local T = ...
 
 local SN = assert(loadfile(T.testsDir .. "/Layout/snapshot.lua"))(T)
 local surfaces = assert(loadfile(T.testsDir .. "/Layout/surfaces.lua"))(T)
+local slots = assert(loadfile(T.testsDir .. "/Layout/slots.lua"))(T)
 
 local tests = {}
 local function test(name, fn) tests[#tests + 1] = { name = name, fn = fn } end
@@ -44,7 +45,7 @@ local SERVING_BUILD, INCOMING_BUILD = 2, 3
 -- code. With the list empty the test is strict: no unit may serve older code.
 -- The same list holds back every case below that needs behaviour the unit does not
 -- have yet (the record's outcome words, the raise for a refused takeover).
-local STILL_OLDER = { "Commands", "Events", "DB", "List", "Settings", "Tooltip", "Menu", "Window" }
+local STILL_OLDER = { "Commands", "Events", "List", "Settings", "Tooltip", "Menu", "Window" }
 
 local function pending(unit)
     for _, name in ipairs(STILL_OLDER) do
@@ -388,6 +389,21 @@ local PREREQUISITES = {
         inject = function(F) F.Events.New = nil end },
 }
 
+-- The library lists the module, but its field on the library table is gone:
+-- the newer file takes nothing and writes nothing, as when it stood down.
+test("a newer module file facing a module the library lists but no longer holds changes nothing and raises nothing", function()
+    local modules = {}
+    for _, unit in ipairs(UNITS) do
+        if unit ~= "core" then modules[#modules + 1] = unit end
+    end
+    for _, kind in ipairs({ "current", "layout1" }) do
+        runCase({
+            name = "a module listed with no field", outcome = "not used", units = modules,
+            inject = function(F, _, unit) rawset(F, unit, nil) end,
+        }, kind)
+    end
+end)
+
 test("a newer DB declines a serving copy that lacks what DB needs, prints nothing and changes nothing", function()
     for _, case in ipairs(PREREQUISITES) do
         runCase({
@@ -719,6 +735,7 @@ end
 local FROZEN_TARGETS = {
     { "Lifecycle", "_impl.pollTick" },
     { "Lifecycle", "_impl.onEvent" },
+    { "DB", "_impl.onLogout" },
 }
 
 local function resolve(F, unit, path)
@@ -935,13 +952,455 @@ test("the older and newer copies return the same player identity in every mocked
 end)
 
 --------------------------------------------------------------------------------
+-- DB
+--------------------------------------------------------------------------------
+
+local DB_API_LINE = "local API_VERSION = 2"
+
+local LIFECYCLE_AND_BEFORE = { "Foundry.lua", "Modules/Commands.lua", "Modules/Events.lua", "Modules/Lifecycle.lua" }
+local AFTER_DB = { "Modules/List.lua", "Modules/Settings.lua", "Modules/Tooltip.lua", "Modules/Menu.lua", "Modules/Window.lua" }
+
+local function deepCopy(value)
+    if type(value) ~= "table" then return value end
+    local out = {}
+    for k, v in pairs(value) do out[k] = deepCopy(v) end
+    return out
+end
+
+-- The first path at which two values differ, or nil.
+local function firstDifference(a, b, path)
+    path = path or "root"
+    if type(a) ~= "table" or type(b) ~= "table" then
+        if a ~= b then return path .. ": " .. tostring(a) .. " vs " .. tostring(b) end
+        return nil
+    end
+    for k, v in pairs(a) do
+        local found = firstDifference(v, b[k], path .. "." .. tostring(k))
+        if found then return found end
+    end
+    for k, v in pairs(b) do
+        if a[k] == nil then return path .. "." .. tostring(k) .. ": nil vs " .. tostring(v) end
+    end
+    return nil
+end
+
+local function timesListed(list, value)
+    local n = 0
+    for i = 1, #list do
+        if rawequal(list[i], value) then n = n + 1 end
+    end
+    return n
+end
+
+local function callCount(frame, method)
+    return #(frame.calls[method] or {})
+end
+
+local function fireLogout(F)
+    T.Fire(F.Lifecycle._state.dispatcher, "PLAYER_LOGOUT")
+end
+
+-- Loads the incoming copy's DB file alone.
+local function loadDB(spec)
+    spec = spec or {}
+    return T.loadBuild({
+        build = INCOMING_BUILD, addonName = "IncomingHost", version = spec.version,
+        files = { FILE.DB }, replace = spec.replace,
+    })
+end
+
+-- Loads the whole incoming copy, counting the calls DB makes to Lifecycle's
+-- post-logout seam while its own file loads. Returns that count and the errors.
+local function loadOverWatchingLogoutSeam(F, mode)
+    local version = incomingVersion(mode)
+    local errors = loadEach({ build = INCOMING_BUILD, addonName = "IncomingHost", version = version,
+        files = LIFECYCLE_AND_BEFORE })
+    local seamCalls = slots.countCalls(F.Lifecycle, "_RegisterPostLogout", function()
+        local ok, err = pcall(loadDB, { version = version })
+        if not ok then errors[FILE.DB] = tostring(err) end
+    end)
+    for rel, err in pairs(loadEach({ build = INCOMING_BUILD, addonName = "IncomingHost", version = version,
+        files = AFTER_DB })) do
+        errors[rel] = err
+    end
+    return seamCalls, errors
+end
+
+test("a newer DB takes over with the same logout entry, stores, saved data and size-warning controller, swapping only the handlers they hold", function()
+    for _, kind in ipairs({ "layout1", "current" }) do
+        for _, mode in ipairs({ "release", "dev" }) do
+            local who = kind .. ", " .. mode .. ": "
+            local F = serve(kind, mode)
+            local inst = buildInstances(F)
+            local D = F.DB
+            local S, I = D._state, D._impl
+            local plain = D:New({ name = "TakeoverAddon", sv = "TestPlainDB", defaultProfile = true })
+            inst.db.profile.b = 2
+            inst.db.global.g = 5
+            plain.global.kept = true
+            local postLogout = F.Lifecycle._state.postLogout
+            local entries, entry = #postLogout, S.postLogoutEntry
+            T.eq(timesListed(postLogout, entry), 1, who .. "the serving copy registered one entry")
+            local stores, storeList = S.stores, {}
+            for i = 1, #stores do storeList[i] = stores[i] end
+            local controllerStore, byController = S.controllerStore, {}
+            for c, store in pairs(controllerStore) do byController[c] = store end
+            local records = {}
+            for i = 1, #stores do
+                local fields = {}
+                for k, v in pairs(stores[i]) do fields[k] = v end
+                records[i] = fields
+            end
+            local saved = { TestDB = deepCopy(_G.TestDB), TestPlainDB = deepCopy(_G.TestPlainDB) }
+            local savedTables = { TestDB = _G.TestDB, TestPlainDB = _G.TestPlainDB }
+            local warn = S.sizeWarningEvents
+            local warnFrame, warnHandlers = warn._frame, warn._handlers
+            local registers, unregisters = callCount(warnFrame, "RegisterEvent"), callCount(warnFrame, "UnregisterEvent")
+            local impl = { Controller = I.Controller, controllerMeta = I.controllerMeta }
+
+            local seamCalls, errors = loadOverWatchingLogoutSeam(F, mode)
+            T.eq(next(errors), nil, who .. "the incoming copy raised nothing: " .. firstError(errors))
+            T.eq(D._build, INCOMING_BUILD, who .. "DB took over")
+            T.eq(D._source, "IncomingHost", who .. "the newer copy's addon is named")
+            T.eq(D.API_VERSION, 2, who .. "API version")
+            T.eq(D._layoutVersion, 1, who .. "layout version")
+            T.truthy(rawequal(F.DB, D) and rawequal(D._state, S) and rawequal(D._impl, I),
+                who .. "the module, state and implementation tables are kept")
+            T.truthy(rawequal(I.Controller, impl.Controller) and rawequal(I.controllerMeta, impl.controllerMeta),
+                who .. "the controller tables are kept")
+
+            T.eq(seamCalls, 0, who .. "the post-logout seam is not called")
+            T.truthy(rawequal(F.Lifecycle._state.postLogout, postLogout), who .. "the logout list is kept")
+            T.eq(#postLogout, entries, who .. "the logout list has as many entries as before")
+            T.truthy(rawequal(S.postLogoutEntry, entry), who .. "the logout entry is the same function")
+            T.eq(timesListed(postLogout, entry), 1, who .. "and is listed once")
+            if kind == "layout1" then
+                T.truthy(isOlderFunction(entry), who .. "the entry is the older copy's relay")
+            end
+
+            T.truthy(rawequal(S.stores, stores) and #stores == #storeList, who .. "the store list is kept")
+            for i = 1, #storeList do
+                T.truthy(rawequal(stores[i], storeList[i]), who .. "store " .. i .. " is kept")
+            end
+            T.truthy(rawequal(S.controllerStore, controllerStore), who .. "the controller-store map is kept")
+            local mapped = 0
+            for c, store in pairs(controllerStore) do
+                mapped = mapped + 1
+                T.truthy(rawequal(byController[c], store), who .. "a controller keeps its store")
+            end
+            local mappedBefore = 0
+            for _ in pairs(byController) do mappedBefore = mappedBefore + 1 end
+            T.eq(mapped, mappedBefore, who .. "the controller-store map has as many entries")
+            for i = 1, #stores do
+                for k, v in pairs(records[i]) do
+                    if k ~= "onMismatch" then
+                        T.truthy(rawequal(stores[i][k], v), who .. "store " .. i .. " keeps " .. k)
+                    end
+                end
+                for k in pairs(stores[i]) do
+                    T.truthy(records[i][k] ~= nil, who .. "store " .. i .. " gains no field " .. k)
+                end
+                T.truthy(stores[i].onMismatch ~= records[i].onMismatch, who .. "store " .. i .. " has a new mismatch handler")
+                T.eq(buildOf(stores[i].onMismatch), tostring(INCOMING_BUILD), who .. "store " .. i .. "'s mismatch handler is the newer copy's")
+            end
+            for name, value in pairs(saved) do
+                T.truthy(rawequal(_G[name], savedTables[name]), who .. name .. " is the same table")
+                T.eq(firstDifference(value, _G[name]), nil, who .. name .. " is unchanged")
+            end
+
+            T.truthy(rawequal(S.sizeWarningEvents, warn) and rawequal(warn._handlers, warnHandlers),
+                who .. "the size-warning controller is kept")
+            T.truthy(rawequal(warnHandlers.SAVED_VARIABLES_TOO_LARGE, I.onSavedVariablesTooLarge),
+                who .. "the size-warning handler is the serving implementation's")
+            T.eq(buildOf(I.onSavedVariablesTooLarge), tostring(INCOMING_BUILD), who .. "which is the newer copy's")
+            T.eq(callCount(warnFrame, "RegisterEvent"), registers, who .. "no event is registered")
+            T.eq(callCount(warnFrame, "UnregisterEvent"), unregisters, who .. "no event is unregistered")
+
+            T.eq(buildOf(I.controllerMeta.__index), tostring(INCOMING_BUILD), who .. "the db lookup is the newer copy's")
+            local value
+            local lookups = slots.countCalls(I.controllerMeta, "__index", function() value = inst.db.profile end)
+            T.eq(lookups, 1, who .. "db.profile on a db made before the takeover reads through the newer lookup")
+            T.eq(value.b, 2, who .. "and finds the value written before")
+
+            local newer = I.onLogout
+            T.eq(buildOf(newer), tostring(INCOMING_BUILD), who .. "the logout strip is the newer copy's")
+            local strips = slots.countCalls(I, "onLogout", function() fireLogout(F) end)
+            T.eq(strips, 1, who .. "the logout event runs the newer strip once")
+            local profile = _G.TestDB.profiles.Default
+            T.eq(profile.a, nil, who .. "a default-equal value is stripped")
+            T.eq(profile.b, 2, who .. "a set value is kept")
+            T.eq(_G.TestPlainDB.global.kept, true, who .. "a db without defaults keeps its data")
+            T.eq(#T.output, 0, who .. "nothing is printed")
+        end
+    end
+end)
+
+test("a newer DB over a serving DB with no db yet takes over, and the first New after it registers exactly one logout entry", function()
+    for _, kind in ipairs({ "layout1", "current" }) do
+        for _, mode in ipairs({ "release", "dev" }) do
+            local who = kind .. ", " .. mode .. ": "
+            local F = serve(kind, mode)
+            local S = F.DB._state
+            T.eq(S.postLogoutRegistered, false, who .. "nothing registered yet")
+            local seamCalls, errors = loadOverWatchingLogoutSeam(F, mode)
+            T.eq(next(errors), nil, who .. "the incoming copy raised nothing: " .. firstError(errors))
+            T.eq(F.DB._build, INCOMING_BUILD, who .. "DB took over")
+            T.eq(seamCalls, 0, who .. "the post-logout seam is not called")
+            local postLogout = F.Lifecycle._state.postLogout
+            local entries = #postLogout
+            T.loadedAddons["TakeoverAddon"] = true
+            local db = F.DB:New({ name = "TakeoverAddon", sv = "TestDB", defaultProfile = true,
+                defaults = { profile = { a = 1 } } })
+            T.eq(#postLogout, entries + 1, who .. "the first New adds one entry")
+            T.eq(timesListed(postLogout, S.postLogoutEntry), 1, who .. "and it is the logout entry")
+            T.eq(buildOf(S.postLogoutEntry), tostring(INCOMING_BUILD), who .. "made by the newer copy")
+            T.loadedAddons["TakeoverOther"] = true
+            F.DB:New({ name = "TakeoverOther", sv = "TestOtherDB", defaultProfile = true })
+            T.eq(#postLogout, entries + 1, who .. "a second New adds none")
+            db.profile.b = 2
+            local strips = slots.countCalls(F.DB._impl, "onLogout", function() fireLogout(F) end)
+            T.eq(strips, 1, who .. "the strip runs once at logout")
+            T.eq(_G.TestDB.profiles.Default.a, nil, who .. "a default-equal value is stripped")
+        end
+    end
+end)
+
+local function makeDB(F)
+    T.loadedAddons["TakeoverAddon"] = true
+    return F.DB:New({ name = "TakeoverAddon", sv = "TestDB", defaultProfile = true, defaults = { profile = { a = 1 } } })
+end
+
+local function withDB(change)
+    return function(F, unitTbl)
+        makeDB(F)
+        change(F, unitTbl, unitTbl._state)
+    end
+end
+
+local DB_PROOFS = {
+    { name = "a logout entry listed twice", outcome = "refused: logout entry",
+        inject = withDB(function(F, _, S)
+            local list = F.Lifecycle._state.postLogout
+            list[#list + 1] = S.postLogoutEntry
+        end) },
+    { name = "a logout entry missing from the list", outcome = "refused: logout entry",
+        inject = withDB(function(F, _, S)
+            local list = F.Lifecycle._state.postLogout
+            for i = #list, 1, -1 do
+                if rawequal(list[i], S.postLogoutEntry) then table.remove(list, i) end
+            end
+        end) },
+    { name = "a logout entry listed but not recorded as registered", outcome = "refused: logout entry",
+        inject = withDB(function(_, _, S) S.postLogoutRegistered = false end) },
+    { name = "a controller whose store is not in the store list", outcome = "refused: stores",
+        inject = withDB(function(_, _, S) S.controllerStore[{}] = {} end) },
+    { name = "a store with a field it is never built with", outcome = "refused: store record",
+        inject = withDB(function(_, _, S) S.stores[1].extra = true end) },
+    { name = "a store whose destroyed flag is not a boolean", outcome = "refused: store record",
+        inject = withDB(function(_, _, S) S.stores[1].destroyed = "no" end) },
+    { name = "a store with no mismatch handler", outcome = "refused: store record",
+        inject = withDB(function(_, _, S) S.stores[1].onMismatch = nil end) },
+    { name = "a store list holding something other than a store", outcome = "refused: store record",
+        inject = withDB(function(_, _, S) S.stores[#S.stores + 1] = "store" end) },
+    { name = "a size-warning handler that is not the serving one", outcome = "refused: size warning",
+        inject = withDB(function(_, _, S) S.sizeWarningEvents._handlers.SAVED_VARIABLES_TOO_LARGE = function() end end) },
+    { name = "an Events with layout 2 while a size-warning controller exists", outcome = "refused: size warning",
+        inject = withDB(function(F) rawset(F.Events, "_layoutVersion", 2) end) },
+    { name = "a Lifecycle with no layout", outcome = "refused: lifecycle layout",
+        inject = function(F) rawset(F.Lifecycle, "_layoutVersion", nil) end },
+    { name = "a Lifecycle whose logout list is not a table", outcome = "refused: lifecycle layout",
+        inject = function(F) F.Lifecycle._state.postLogout = false end },
+    { name = "a DB with no state table", outcome = "refused: shape",
+        inject = function(_, unitTbl) unitTbl._state = nil end },
+    { name = "a DB with no controller lookup table", outcome = "refused: shape",
+        inject = function(_, unitTbl) unitTbl._impl.controllerMeta = nil end },
+    { name = "a store list that is not a table", outcome = "refused: shape",
+        inject = function(_, unitTbl) unitTbl._state.stores = "stores" end },
+    { name = "a registered flag that is not a boolean", outcome = "refused: shape",
+        inject = function(_, unitTbl) unitTbl._state.postLogoutRegistered = 1 end },
+}
+
+test("a newer DB declines a serving DB whose logout entry, stores or size warning it cannot adopt, changes nothing, and raises only in a development serving copy", function()
+    for _, case in ipairs(DB_PROOFS) do
+        for _, kind in ipairs({ "current", "layout1" }) do
+            runCase({
+                name = "a serving copy with " .. case.name, inject = case.inject, outcome = case.outcome,
+                refused = true, units = { "DB" },
+            }, kind)
+        end
+    end
+end)
+
+test("a newer DB taking over from inside an older db's migration leaves that db working, with one logout entry and one strip", function()
+    for _, kind in ipairs({ "layout1", "current" }) do
+        for _, mode in ipairs({ "release", "dev" }) do
+            local who = kind .. ", " .. mode .. ": "
+            local F = serve(kind, mode)
+            local postLogout = F.Lifecycle._state.postLogout
+            local entries = #postLogout
+            T.loadedAddons["MigrateAddon"] = true
+            _G.MigrateDB = { global = { version = 1, old = true } }
+            local migrations, errors = 0, nil
+            local db = F.DB:New({
+                name = "MigrateAddon", sv = "MigrateDB", defaultProfile = true,
+                defaults = { global = { d = 1 }, profile = { a = 1 } },
+                schema = { version = 2, key = "global.version", migrate = function(c, from)
+                    migrations = migrations + 1
+                    errors = loadEach({ build = INCOMING_BUILD, addonName = "IncomingHost", version = incomingVersion(mode) })
+                    c.global.migratedFrom = from
+                end },
+            })
+            T.eq(next(errors), nil, who .. "the incoming copy raised nothing: " .. firstError(errors))
+            local D = F.DB
+            T.eq(D._build, INCOMING_BUILD, who .. "DB took over during the migration")
+            T.eq(migrations, 1, who .. "the migration ran once")
+            T.truthy(db ~= nil, who .. "New returned a db")
+            T.eq(db.global.migratedFrom, 1, who .. "the migration saw the stored version")
+            T.eq(db.global.version, 2, who .. "the stamp is written")
+            T.eq(db.global.d, 1, who .. "defaults apply")
+            db.profile.b = 2
+            T.eq(#postLogout, entries + 1, who .. "one logout entry was added")
+            T.eq(timesListed(postLogout, D._state.postLogoutEntry), 1, who .. "and it is the logout entry")
+            T.truthy(rawequal(D._state.sizeWarningEvents._handlers.SAVED_VARIABLES_TOO_LARGE, D._impl.onSavedVariablesTooLarge),
+                who .. "the size warning is the serving handler")
+            T.eq(buildOf(D._impl.onSavedVariablesTooLarge), tostring(INCOMING_BUILD), who .. "which is the newer copy's")
+            local strips = slots.countCalls(D._impl, "onLogout", function() fireLogout(F) end)
+            T.eq(strips, 1, who .. "the strip runs once at logout")
+            T.eq(_G.MigrateDB.global.d, nil, who .. "a default-equal global is stripped")
+            T.eq(_G.MigrateDB.global.version, 2, who .. "the stamp is kept")
+            T.eq(_G.MigrateDB.profiles.Default.b, 2, who .. "a set value is kept")
+            T.eq(#T.output, 0, who .. "nothing is printed")
+        end
+    end
+end)
+
+-- Every committed saved-data fixture, with its global name.
+local FIXTURES = {
+    { "bawrspam_sanitized.lua", "BawrSpamDB" },
+    { "downgrade_stamped.lua", "SyntheticDB" },
+    { "empty.lua", "SyntheticDB" },
+    { "empty_profile_materialized.lua", "SyntheticDB" },
+    { "homestead_sanitized.lua", "HomesteadDB" },
+    { "malformed_char_bucket.lua", "SyntheticDB" },
+    { "malformed_profile_entry.lua", "SyntheticDB" },
+    { "malformed_profilekeys_entry.lua", "SyntheticDB" },
+    { "malformed_profilekeys_nontable.lua", "SyntheticDB" },
+    { "malformed_sv_nontable.lua", "SyntheticDB" },
+}
+
+local PARITY_DEFAULTS = {
+    profile = { a = 1, flag = true, nested = { on = true, size = 3 } },
+    char = { c = 0, seen = {} },
+    global = { g = 1, list = { x = 1 } },
+}
+
+-- One session over a fixture: a db is made, read and written, then the player
+-- logs out. how is "older" (the layout-1 copy alone), "taken over" (the
+-- layout-1 copy makes the db, then the newer copy takes over before the writes)
+-- or "newer" (the current code alone). Returns what the session left behind.
+local function sessionOver(file, globalName, how)
+    T.installMocks("1.0.0")
+    local F
+    if how == "newer" then
+        F = T.loadBuild({ build = INCOMING_BUILD, addonName = "ServingHost", version = "1.0.1" })
+    else
+        F = T.loadOldCopy("layout1", "ServingHost", "1.0.1")
+    end
+    _G[globalName] = deepCopy(T.loadFixture(T.testsDir .. "/DB/fixtures/" .. file)[globalName])
+    T.loadedAddons["ParityAddon"] = true
+    local ok, db = pcall(F.DB.New, F.DB, {
+        name = "ParityAddon", sv = globalName, defaultProfile = true, defaults = deepCopy(PARITY_DEFAULTS),
+    })
+    if how == "taken over" then
+        local errors = loadEach({ build = INCOMING_BUILD, addonName = "IncomingHost", version = "1.0.2" })
+        T.eq(next(errors), nil, file .. ": the incoming copy raised nothing: " .. firstError(errors))
+        T.eq(F.DB._build, INCOMING_BUILD, file .. ": DB took over")
+    end
+    if ok then
+        local profile, char, global = db.profile, db.char, db.global
+        profile.a = 1
+        profile.extra = 5
+        if type(profile.nested) == "table" then profile.nested.size = 4 end
+        char.c = 0
+        char.level = 10
+        global.g = 2
+        local _ = db.sv
+    end
+    if F.Lifecycle._state.dispatcher then fireLogout(F) end
+    return { ok = ok, err = not ok and tostring(db) or nil, saved = deepCopy(_G[globalName]),
+        output = table.concat(T.output, "\n") }
+end
+
+test("the older and newer copies give the same saved file after applying and stripping defaults on each saved-data fixture", function()
+    for _, fixture in ipairs(FIXTURES) do
+        local file, globalName = fixture[1], fixture[2]
+        local older = sessionOver(file, globalName, "older")
+        for _, how in ipairs({ "taken over", "newer" }) do
+            local got = sessionOver(file, globalName, how)
+            local who = file .. ", " .. how .. ": "
+            T.eq(got.ok, older.ok, who .. "the db is made exactly when the older copy makes it")
+            T.eq(got.err, older.err, who .. "the same refusal")
+            T.eq(firstDifference(older.saved, got.saved), nil, who .. "the same saved file")
+            T.eq(got.output, older.output, who .. "the same output")
+        end
+    end
+end)
+
+test("a handler the newer copy writes into an older events controller is called with the event name first", function()
+    for _, kind in ipairs({ "layout1", "current" }) do
+        local who = kind .. ": "
+        local F = serve(kind, "release")
+        local inst = buildInstances(F)
+        local calls = {}
+        inst.db:OnSavedVariablesTooLarge(function(...) calls[#calls + 1] = { ... } end)
+        local olderNew = F.Events.New
+        local errors = loadEach({ build = INCOMING_BUILD, addonName = "IncomingHost", version = "1.0.2" })
+        T.eq(next(errors), nil, who .. "the incoming copy raised nothing: " .. firstError(errors))
+        T.eq(F.DB._build, INCOMING_BUILD, who .. "DB took over")
+        T.truthy(rawequal(F.Events.New, olderNew), who .. "Events stays the older copy's")
+        local warn = F.DB._state.sizeWarningEvents
+        T.eq(buildOf(warn._handlers.SAVED_VARIABLES_TOO_LARGE), tostring(INCOMING_BUILD), who .. "the slot holds the newer handler")
+        T.Fire(warn._frame, "SAVED_VARIABLES_TOO_LARGE", "TakeoverAddon")
+        T.eq(#calls, 1, who .. "the db's size-warning handler runs once")
+        T.truthy(rawequal(calls[1][1], inst.db), who .. "with the db")
+        T.eq(calls[1][2], "TakeoverAddon", who .. "the addon name")
+        T.eq(calls[1][3], "TestDB", who .. "and the saved-variable name")
+        T.outputContains("DB: addon 'TakeoverAddon' SavedVariables globals 'TestDB' were too large", who .. "the warning is printed")
+    end
+end)
+
+test("a DB that fails partway through taking over leaves the version, build and source of the active copy unchanged", function()
+    local lines = { "local DB = served or {}", "local function onLogout()", "if takingOver then", "DB.API_VERSION = API_VERSION" }
+    for _, kind in ipairs({ "current", "layout1" }) do
+        for _, mode in ipairs({ "release", "dev" }) do
+            for _, line in ipairs(lines) do
+                local who = kind .. ", " .. mode .. ", failing before '" .. line .. "': "
+                local F = serve(kind, mode)
+                local D = F.DB
+                local before = { api = rawget(D, "API_VERSION"), build = rawget(D, "_build"), source = rawget(D, "_source") }
+                local ok, err = pcall(loadDB, {
+                    version = incomingVersion(mode),
+                    replace = merge({ [DB_API_LINE] = "local API_VERSION = 3" }, T.plantError(line, "planted failure")),
+                })
+                T.falsy(ok, who .. "the copy fails")
+                T.truthy(tostring(err):find("planted failure", 1, true), who .. "at the planted line: " .. tostring(err))
+                T.truthy(rawequal(F.DB, D), who .. "the module is the same table")
+                T.eq(rawget(D, "API_VERSION"), before.api, who .. "API version")
+                T.eq(rawget(D, "_build"), before.build, who .. "build")
+                T.eq(rawget(D, "_source"), before.source, who .. "source")
+            end
+        end
+    end
+end)
+
+--------------------------------------------------------------------------------
 -- The shape of each file after its decision block
 --------------------------------------------------------------------------------
 
 -- The files whose shape is not scanned yet. A file joins the scan when its
 -- decision block lands and its unit leaves the ledger.
 local SHAPE_PENDING = {
-    "Modules/Commands.lua", "Modules/Events.lua", "Modules/DB.lua",
+    "Modules/Commands.lua", "Modules/Events.lua",
     "Modules/List.lua", "Modules/Settings.lua", "Modules/Tooltip.lua", "Modules/Menu.lua", "Modules/Window.lua",
 }
 
