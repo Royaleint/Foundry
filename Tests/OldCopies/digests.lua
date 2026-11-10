@@ -25,5 +25,19 @@ return {
             ["Modules/Menu.lua"] = { dump = "4762:8bf1bdab:29ab9570", source = "5825:5c261338:01cb9df0" },
             ["Modules/Window.lua"] = { dump = "7970:3c7214fe:0713450c", source = "8072:20edca43:9f568991" },
         },
+        -- Not a release: the ten files exactly as they stand at commit e6afff5,
+        -- before any file carried a build number.
+        layout1 = {
+            ["Foundry.lua"] = { dump = "7239:3ba3ff22:97623dcc", source = "6551:58e520ee:be2dcf6e" },
+            ["Modules/Commands.lua"] = { dump = "20806:ee95144b:e45ccb3d", source = "18198:6d1aa9ea:dc69c6c3" },
+            ["Modules/Events.lua"] = { dump = "19457:ce542279:00837cbe", source = "16701:0eab097f:fe8b72b3" },
+            ["Modules/Lifecycle.lua"] = { dump = "27239:41242c6e:562c9bf7", source = "24707:0784ee06:a80a762e" },
+            ["Modules/DB.lua"] = { dump = "34085:405352e0:90530b82", source = "32667:dbb561e6:0d4ad59c" },
+            ["Modules/List.lua"] = { dump = "10850:61fed46e:3b834eac", source = "10006:96e24499:10a227e5" },
+            ["Modules/Settings.lua"] = { dump = "11381:1f2a0c37:91f7ad49", source = "12951:f5111a4d:63594898" },
+            ["Modules/Tooltip.lua"] = { dump = "7171:fbe02458:6731435f", source = "8992:3e40bdc0:c23016bc" },
+            ["Modules/Menu.lua"] = { dump = "5553:bc9ff66b:b36bd9e9", source = "6044:09d18339:c5a72f98" },
+            ["Modules/Window.lua"] = { dump = "9066:1e9c3b67:6a3fd2ac", source = "8775:8163a309:d64e4efe" },
+        },
     },
 }
