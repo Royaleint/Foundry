@@ -663,10 +663,21 @@ end
 test("loading every file a second time against a used library changes no state, makes no frame and prints nothing", function()
     local F = stack({ { kind = "new", addonName = "OnlyHost" } }, "release")
     scenario.run(F)
-    -- The record of copies that stood down grows by one per copy loaded; the rest of the library state does not.
-    local roots = { library = { modules = F._state.modules } }
+    -- The record of copies not used grows by one per copy loaded; the rest of the library state does not.
+    local view = {}
+    local function libraryState()
+        for key in pairs(view) do view[key] = nil end
+        for key, value in pairs(F._state) do
+            if key ~= "copies" then view[key] = value end
+        end
+        return view
+    end
+    local roots = {}
+    local recordBefore = {}
+    for i, entry in ipairs(F._state.copies) do recordBefore[i] = entry end
+    roots.record = recordBefore
     for _, name in ipairs(MODULES) do roots[name] = { state = F[name]._state, impl = F[name]._impl } end
-    local before = {}
+    local before = { library = deepSnapshot(libraryState()) }
     for label, root in pairs(roots) do before[label] = deepSnapshot(root) end
     local seenBefore = snapshot(F)
     local frames = #T.frames
@@ -677,7 +688,11 @@ test("loading every file a second time against a used library changes no state, 
         T.eq(#errors, 0, "no file raised an error")
     end
 
-    T.eq(#F._state.copies, 2, "each later copy added one entry to the record")
+    T.eq(#F._state.copies, #recordBefore + 2, "each later copy added one entry to the record")
+    for i, entry in ipairs(recordBefore) do
+        T.eq(F._state.copies[i], entry, "record entry " .. i .. " is unchanged")
+    end
+    assertSnapshotsEqual(before.library, deepSnapshot(libraryState()), "library state")
     for label, root in pairs(roots) do
         assertSnapshotsEqual(before[label], deepSnapshot(root), label .. " state")
     end

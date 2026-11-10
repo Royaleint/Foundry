@@ -162,8 +162,8 @@ end
 case({
     name = "RequireModule for a module that is not present", kind = "caller",
     run = function(F) F:RequireModule("Nope") end,
-    -- The current message adds the serving copy after the release's text.
-    strip = " Serving copy:.*$",
+    -- The current message adds the active copy after the release's text.
+    strip = " Active copy:.*$",
 })
 case({
     name = "RequireModule for a newer API version than the module has", kind = "caller",

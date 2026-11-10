@@ -71,7 +71,7 @@ function F:RequireModule(name, minApiVersion)
     local module = F._state.modules[name]
     if not module then
         error("Foundry-1.0: required module '" .. tostring(name)
-            .. "' is not present in this build. Serving copy: " .. tostring(F.SOURCE)
+            .. "' is not present in this build. Active copy: " .. tostring(F.SOURCE)
             .. ", version " .. tostring(F.VERSION) .. ", API version "
             .. tostring(F.API_VERSION) .. ".", 2)
     end
@@ -89,12 +89,13 @@ end
 -- second live instance would double-run DB's logout strip and corrupt saves.
 local existing = _G.Foundry_1_0
 if existing then
-    -- rawget: an older serving copy may carry a metatable that watches reads.
+    -- rawget: a current copy reads none of the newer layout fields on an older
+    -- library table through a normal lookup.
     local state = rawget(existing, "_state")
     if type(state) == "table" and type(state.copies) == "table" then
         state.copies[#state.copies + 1] = {
             source = ADDON_NAME, version = F.VERSION, apiVersion = F.API_VERSION,
-            unit = "core", outcome = "stood down",
+            unit = "core", outcome = "not used",
         }
     end
     -- Suppression rests on the API_VERSION check only -- _LOAD_TOKEN is
@@ -128,10 +129,10 @@ if SlashCmdList and SlashCmdList.FOUNDRY == nil and _G.SLASH_FOUNDRY1 == nil the
     SlashCmdList.FOUNDRY = function(message)
         local word = tostring(message or ""):match("^%s*(%S*)"):lower()
         if word ~= "copies" then
-            print("Foundry: type /foundry copies to see which copies of the library are loaded")
+            print("Foundry: type /foundry copies to list the loaded copies of the Foundry library")
             return
         end
-        print(("Foundry: serving copy: %s, version %s, API version %s")
+        print(("Foundry: active copy: %s, version %s, API version %s")
             :format(tostring(F.SOURCE), tostring(F.VERSION), tostring(F.API_VERSION)))
         local names = {}
         for name, module in pairs(F._state.modules) do
@@ -139,10 +140,10 @@ if SlashCmdList and SlashCmdList.FOUNDRY == nil and _G.SLASH_FOUNDRY1 == nil the
         end
         table.sort(names)
         for _, name in ipairs(names) do
-            print(("Foundry: %s comes from %s"):format(name, F._state.modules[name]._source or "an older copy"))
+            print(("Foundry: %s comes from %s"):format(name, F._state.modules[name]._source or "an older copy that does not name its addon"))
         end
         if #names == 0 then
-            print("Foundry: every module comes from the serving copy")
+            print("Foundry: every module comes from the active copy")
         end
         local copies = F._state.copies
         for _, copy in ipairs(copies) do
@@ -150,7 +151,7 @@ if SlashCmdList and SlashCmdList.FOUNDRY == nil and _G.SLASH_FOUNDRY1 == nil the
                 :format(tostring(copy.outcome), tostring(copy.source), tostring(copy.version), tostring(copy.apiVersion)))
         end
         if #copies == 0 then
-            print("Foundry: no copy stood down")
+            print("Foundry: no other copies recorded (copies older than this version are not listed)")
         end
     end
 end

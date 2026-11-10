@@ -85,7 +85,7 @@ test("a later copy appends exactly one entry with the right fields", function()
     T.eq(entry.version, "1.0.201", "version")
     T.eq(entry.apiVersion, F.API_VERSION, "api version")
     T.eq(entry.unit, "core", "unit")
-    T.eq(entry.outcome, "stood down", "outcome")
+    T.eq(entry.outcome, "not used", "outcome")
     T.eq(entry.build, nil, "build is left absent")
     T.eq(F.SOURCE, "HostA", "the serving copy is unchanged")
 end)
@@ -101,7 +101,7 @@ test("two later copies append two entries in load order", function()
     T.eq(copies[2].version, "1.0.202", "second version")
 end)
 
-test("a development build of a later copy is recorded and its suppression message still raises", function()
+test("a development build of a later copy is recorded and a release serving copy prints the existing message", function()
     T.installMocks("1.0.0")
     load(nil, "HostA", "1.0.200")
     local F = _G.Foundry_1_0
@@ -109,7 +109,32 @@ test("a development build of a later copy is recorded and its suppression messag
     T.eq(#F._state.copies, 1, "recorded before the message")
     T.eq(F._state.copies[1].source, "HostB", "the later copy")
     T.eq(#errors, 0, "a release serving copy prints the message instead of raising")
+    T.eq(F._state.copies[1].outcome, "not used", "outcome")
     T.outputContains("an enabled Foundry-1.0 DevBuild was suppressed", "the existing message still appears")
+end)
+
+-- The current Foundry.lua with another API version, loaded as a later copy.
+local function loadOtherApi(addonName)
+    local f = assert(io.open(T.foundryRoot .. "/Foundry.lua", "rb"))
+    local source = f:read("*a")
+    f:close()
+    local changed, count = source:gsub("F%.API_VERSION = 7", "F.API_VERSION = 8")
+    T.eq(count, 1, "the API version line is found once")
+    T.addonVersions[addonName] = "@project-version@"
+    return pcall(assert(loadstring(changed, "@" .. T.foundryRoot .. "/Foundry.lua")), addonName)
+end
+
+test("a dev serving copy raises the redundant copy message for another API version, after the copy is recorded", function()
+    T.installMocks("@project-version@")
+    load(nil, "HostA", nil)
+    local F = _G.Foundry_1_0
+    local ok, err = loadOtherApi("HostB")
+    T.falsy(ok, "the message raises in a dev serving copy")
+    T.truthy(tostring(err):find("a redundant embedded Foundry-1.0 copy was suppressed", 1, true), "existing message: " .. tostring(err))
+    T.eq(#F._state.copies, 1, "recorded before the raise")
+    T.eq(F._state.copies[1].source, "HostB", "source")
+    T.eq(F._state.copies[1].apiVersion, 8, "api version of the later copy")
+    T.eq(F.API_VERSION, 7, "the serving copy is unchanged")
 end)
 
 for _, tag in ipairs({ "v1.0.4", "v1.0.114" }) do
@@ -127,10 +152,12 @@ end
 test("nothing is created when the serving copy has a state table without a record", function()
     local F = releaseStack({ { name = "HostA" } })
     F._state.copies = nil
-    load(nil, "HostB", "1.0.201")
+    local e1 = load(nil, "HostB", "1.0.201")
+    T.eq(#e1, 0, "no error without a record: " .. tostring(e1[1]))
     T.eq(F._state.copies, nil, "no record created by a later copy")
     F._state.copies = "not a table"
-    load(nil, "HostC", "1.0.202")
+    local e2 = load(nil, "HostC", "1.0.202")
+    T.eq(#e2, 0, "no error with a non-table record: " .. tostring(e2[1]))
     T.eq(F._state.copies, "not a table", "a non-table is left alone")
 end)
 
@@ -162,7 +189,7 @@ test("the missing module error keeps its leading text and names the serving copy
     T.falsy(err:find("HostB", 1, true), "not the copy that stood down")
     T.truthy(err:find("copies_record_spec.lua", 1, true), "the location is still the caller: " .. err)
     T.eq(err:match("(Foundry%-1%.0: required.*)$"),
-        "Foundry-1.0: required module 'Nope' is not present in this build. Serving copy: HostA, version 1.0.200, API version 7.",
+        "Foundry-1.0: required module 'Nope' is not present in this build. Active copy: HostA, version 1.0.200, API version 7.",
         "exact text")
 end)
 
@@ -176,9 +203,9 @@ test("the command on a single copy", function()
     T.eq(_G.SLASH_FOUNDRY1, "/foundry", "slash name")
     T.eq(type(_G.SlashCmdList.FOUNDRY), "function", "handler")
     T.eq(table.concat(run("copies"), "\n"), table.concat({
-        "Foundry: serving copy: HostA, version 1.0.200, API version 7",
-        "Foundry: every module comes from the serving copy",
-        "Foundry: no copy stood down",
+        "Foundry: active copy: HostA, version 1.0.200, API version 7",
+        "Foundry: every module comes from the active copy",
+        "Foundry: no other copies recorded (copies older than this version are not listed)",
     }, "\n"), "output")
     T.eq(table.concat(run("  COPIES  "), "\n"), table.concat(run("copies"), "\n"), "case and spaces do not matter")
 end)
@@ -187,10 +214,10 @@ test("the command lists a copy that stood down", function()
     releaseStack({ { name = "HostA", version = "1.0.200" }, { name = "HostB", version = "1.0.201" },
         { name = "HostC", version = "1.0.202" } })
     T.eq(table.concat(run("copies"), "\n"), table.concat({
-        "Foundry: serving copy: HostA, version 1.0.200, API version 7",
-        "Foundry: every module comes from the serving copy",
-        "Foundry: stood down: HostB, version 1.0.201, API version 7",
-        "Foundry: stood down: HostC, version 1.0.202, API version 7",
+        "Foundry: active copy: HostA, version 1.0.200, API version 7",
+        "Foundry: every module comes from the active copy",
+        "Foundry: not used: HostB, version 1.0.201, API version 7",
+        "Foundry: not used: HostC, version 1.0.202, API version 7",
     }, "\n"), "output")
 end)
 
@@ -202,10 +229,10 @@ test("the command lists modules filled in from another copy", function()
     T.eq(F.Menu._source, "HostB", "Menu came from the later copy")
     local lines = run("copies")
     T.eq(table.concat(lines, "\n"), table.concat({
-        "Foundry: serving copy: HostA, version 1.0.200, API version 7",
+        "Foundry: active copy: HostA, version 1.0.200, API version 7",
         "Foundry: Menu comes from HostB",
         "Foundry: Window comes from HostB",
-        "Foundry: stood down: HostB, version 1.0.201, API version 7",
+        "Foundry: not used: HostB, version 1.0.201, API version 7",
     }, "\n"), "output")
 end)
 
@@ -215,9 +242,9 @@ test("the command names a module from an older copy that carries no source", fun
         { tag = "v1.0.114", name = "HostB" },
     })
     T.eq(table.concat(run("copies"), "\n"), table.concat({
-        "Foundry: serving copy: HostA, version 1.0.200, API version 7",
-        "Foundry: Window comes from an older copy",
-        "Foundry: no copy stood down",
+        "Foundry: active copy: HostA, version 1.0.200, API version 7",
+        "Foundry: Window comes from an older copy that does not name its addon",
+        "Foundry: no other copies recorded (copies older than this version are not listed)",
     }, "\n"), "output")
 end)
 
@@ -226,7 +253,7 @@ test("any other argument prints one usage line", function()
     for _, arg in ipairs({ "", "   ", "help", "copy", "x copies" }) do
         local lines = run(arg)
         T.eq(#lines, 1, "[" .. arg .. "] line count")
-        T.eq(lines[1], "Foundry: type /foundry copies to see which copies of the library are loaded", "[" .. arg .. "] usage")
+        T.eq(lines[1], "Foundry: type /foundry copies to list the loaded copies of the Foundry library", "[" .. arg .. "] usage")
     end
     T.eq(#run(nil), 1, "no argument at all")
 end)
