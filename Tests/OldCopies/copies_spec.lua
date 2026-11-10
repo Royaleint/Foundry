@@ -58,6 +58,17 @@ test("release 1.0.114 copies are byte-identical to the release source", function
     end
 end)
 
+test("the layout-1 copy is byte-identical to its commit", function()
+    local rows = pinned.copies["layout1"]
+    for _, rel in ipairs(T.OLD_COPIES["layout1"]) do
+        local source = readFile(copiesDir .. "/layout1/" .. rel)
+        T.eq(digestLib.digest(source), rows[rel].source, "source of " .. rel)
+        T.eq(digestLib.digest(digestLib.compiledForm(source)), rows[rel].dump,
+            "compiled form of " .. rel)
+        T.falsy(source:find("\nlocal BUILD = ", 1, true), rel .. " carries no build number")
+    end
+end)
+
 test("release 1.0.4 copies keep only the three released error strings that contain a section mark", function()
     local marked = {}
     for _, rel in ipairs(T.OLD_COPIES["v1.0.4"]) do
@@ -96,6 +107,95 @@ test("loadCopy applies its version to the copy it loads, as a release build", fu
     T.eq(F.SOURCE, "HostAddon", "copy loaded under the host name")
     T.eq(F.IS_DEV_BUILD, false, "a real version reads as a release build")
     T.eq(F.VERSION, "1.2.3", "version taken from the map")
+end)
+
+--------------------------------------------------------------------------------
+-- Harness: loading the current code under another build number
+--------------------------------------------------------------------------------
+
+test("loadBuild writes the number to the one build line and leaves lines that only look like it", function()
+    local seen
+    local source = "local BUILD = 4\nseen(BUILD)\n-- local BUILD = 9\n    local BUILD = 3\nseen(BUILD)\n"
+    _G.seen = function(v) seen = v end
+    T.installMocks("@project-version@")
+    local ok, err = pcall(T.loadBuild, { build = 7, files = { "Foundry.lua" }, text = { ["Foundry.lua"] = source } })
+    _G.seen = nil
+    T.truthy(ok, "loads: " .. tostring(err))
+    T.eq(seen, 3, "the indented line still shadows, and the commented one is untouched")
+end)
+
+test("loadBuild reads the number back from the line it wrote", function()
+    T.installMocks("@project-version@")
+    local reads = {}
+    _G.seen = function(v) reads[#reads + 1] = v end
+    T.loadBuild({ build = 12, files = { "Foundry.lua" }, text = { ["Foundry.lua"] =
+        "local BUILD = 1\nseen(BUILD)\n" } })
+    _G.seen = nil
+    T.eq(reads[1], 12, "the written number")
+end)
+
+test("loadBuild refuses a file with no build line or with two", function()
+    T.installMocks("@project-version@")
+    T.raises(function()
+        T.loadBuild({ build = 2, files = { "Foundry.lua" }, text = { ["Foundry.lua"] = "local x = 1\n" } })
+    end, "no build line", "0 build lines")
+    T.raises(function()
+        T.loadBuild({ build = 2, files = { "Foundry.lua" }, text = { ["Foundry.lua"] =
+            "local BUILD = 1\nlocal BUILD = 2\n" } })
+    end, "two build lines", "2 build lines")
+end)
+
+test("loadBuild replaces an exact line once and refuses a line that matches zero or two times", function()
+    T.installMocks("@project-version@")
+    local reads = {}
+    _G.seen = function(v) reads[#reads + 1] = v end
+    local text = { ["Foundry.lua"] = "local BUILD = 1\nlocal marker = 'a'\nseen(marker)\n" }
+    T.loadBuild({ build = 2, files = { "Foundry.lua" }, text = text,
+        replace = { ["local marker = 'a'"] = "local marker = 'b'" } })
+    T.eq(reads[1], "b", "the line was replaced")
+    T.raises(function()
+        T.loadBuild({ build = 2, files = { "Foundry.lua" }, text = text, replace = { ["local missing = 1"] = "x" } })
+    end, "zero matches", "matched 0 times")
+    local twice = { ["Foundry.lua"] = "local BUILD = 1\nlocal marker = 'a'\nlocal marker = 'a'\n" }
+    T.raises(function()
+        T.loadBuild({ build = 2, files = { "Foundry.lua" }, text = twice,
+            replace = { ["local marker = 'a'"] = "local marker = 'b'" } })
+    end, "two matches", "matched 2 times")
+    _G.seen = nil
+end)
+
+test("a build loaded by loadBuild reads as library source and builds are told apart by their path", function()
+    local walker = assert(loadfile(T.testsDir .. "/Layout/walker.lua"))(T)
+    T.installMocks("@project-version@")
+    local F2 = T.loadBuild({ build = 2, addonName = "HostTwo" })
+    T.eq(F2._build, 2, "build written to the library table")
+    local source = debug.getinfo(F2.HasModule, "S").source
+    T.truthy(source:find("/build-2/Foundry.lua", 1, true), "build segment in the source of the core: " .. source)
+    T.truthy(walker.isLibrarySource(source), "the core reads as library source")
+    local events = debug.getinfo(F2.Events.New, "S").source
+    T.truthy(events:find("/build-2/Modules/Events.lua", 1, true), "module source: " .. events)
+    T.truthy(walker.isLibrarySource(events), "a module reads as library source")
+    T.installMocks("@project-version@")
+    local F3 = T.loadBuild({ build = 3, addonName = "HostThree" })
+    T.truthy(debug.getinfo(F3.HasModule, "S").source:find("/build-3/", 1, true), "the other build is told apart")
+    T.eq(F3.Events._build, 3, "module build")
+end)
+
+test("a pinned copy does not read as library source, so the walker never counts it", function()
+    local walker = assert(loadfile(T.testsDir .. "/Layout/walker.lua"))(T)
+    T.installMocks("@project-version@")
+    local F = T.loadOldCopy("layout1")
+    T.falsy(walker.isLibrarySource(debug.getinfo(F.HasModule, "S").source), "layout-1 core")
+    T.falsy(walker.isLibrarySource(debug.getinfo(F.Events.New, "S").source), "layout-1 module")
+end)
+
+test("plantError makes a copy fail just before the named line, after the lines above it ran", function()
+    T.installMocks("@project-version@")
+    local err = T.raises(function()
+        T.loadBuild({ build = 2, files = { "Foundry.lua" }, replace = T.plantError("local existing = _G.Foundry_1_0", "boom") })
+    end, "planted error", "boom")
+    T.truthy(tostring(err):find("/build-2/Foundry.lua", 1, true), "raised from the loaded chunk: " .. tostring(err))
+    T.eq(_G.Foundry_1_0, nil, "nothing was published before the error")
 end)
 
 --------------------------------------------------------------------------------
@@ -163,6 +263,28 @@ test("release 1.0.114 copy loads and runs under the current mocks", function()
     for _, name in ipairs({ "Commands", "Events", "Lifecycle", "DB", "List",
         "Settings", "Tooltip", "Menu", "Window" }) do
         T.truthy(F:HasModule(name), name .. " present")
+    end
+    exerciseCommonModules(F)
+    local list = F.List:New({
+        name = "OldCopyList", parent = {}, elementType = "Button",
+        extent = 20, initializer = function() end,
+    })
+    list:SetData({ { id = 1 } })
+    T.eq(type(list:GetNativeHandles().view), "table", "List built over the mock view")
+end)
+
+test("the layout-1 copy loads and runs under the current mocks", function()
+    T.installMocks("@project-version@")
+    local F = T.loadOldCopy("layout1")
+    T.eq(F.API_VERSION, 7, "API version of the pinned copy")
+    T.eq(F._layoutVersion, 1, "layout of the library table")
+    T.eq(F._build, nil, "the library table has no build number")
+    local modules = { "Commands", "Events", "Lifecycle", "DB", "List",
+        "Settings", "Tooltip", "Menu", "Window" }
+    for _, name in ipairs(modules) do
+        T.truthy(F:HasModule(name), name .. " present")
+        T.eq(F[name]._layoutVersion, 1, name .. " layout")
+        T.eq(F[name]._build, nil, name .. " has no build number")
     end
     exerciseCommonModules(F)
     local list = F.List:New({

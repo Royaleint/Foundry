@@ -667,9 +667,17 @@ T.OLD_COPIES = {
         "Modules/Settings.lua", "Modules/Tooltip.lua", "Modules/Menu.lua",
         "Modules/Window.lua",
     },
+    -- The library at the commit before the build number existed: layout 1, no
+    -- build number on any unit. A copy with a build number takes it over.
+    layout1 = {
+        "Foundry.lua", "Modules/Commands.lua", "Modules/Events.lua",
+        "Modules/Lifecycle.lua", "Modules/DB.lua", "Modules/List.lua",
+        "Modules/Settings.lua", "Modules/Tooltip.lua", "Modules/Menu.lua",
+        "Modules/Window.lua",
+    },
 }
 
--- Load one pinned release copy ("v1.0.4" or "v1.0.114") under the current
+-- Load one pinned copy ("v1.0.4", "v1.0.114" or "layout1") under the current
 -- mocks; returns the Foundry table.
 function T.loadOldCopy(tag, addonName, version)
     return T.loadCopy({
@@ -678,6 +686,76 @@ function T.loadOldCopy(tag, addonName, version)
         addonName = addonName,
         version = version,
     })
+end
+
+-- Load the current library files as a copy with another build number, under
+-- the current mocks, the way the TOC would; returns the Foundry table now
+-- serving. The sources are read from the repo root and the build line is
+-- rewritten, so the loaded code is the current code under another number.
+--   build      the number written to each file's build line (default: the
+--              current number)
+--   addonName  the name each file receives as its first argument (default
+--              "Foundry-1.0")
+--   version    optional: the Version answered for addonName
+--   files      relative paths to load, in order (default: all ten)
+--   replace    optional map of exact line -> exact line; each key must match
+--              exactly one line among the files loaded by this call
+--   text       optional map of relative path -> source, used instead of the
+--              file on disk (for the loader's own cases)
+-- Every file must carry exactly one build line. The chunk name is
+-- "@<root>/build-<n>/<path>", so the walker reads it as library code and a
+-- test can tell builds apart by the build-<n> segment of a function's source.
+function T.loadBuild(spec)
+    local build = spec.build or T.libraryBuild()
+    assert(type(build) == "number" and build == build and build > -math.huge and build < math.huge,
+        "loadBuild: build must be a finite number")
+    local addonName = spec.addonName or "Foundry-1.0"
+    if spec.version ~= nil then T.addonVersions[addonName] = spec.version end
+    local replace = spec.replace or {}
+    local matched = {}
+    local chunks = {}
+    for _, rel in ipairs(spec.files or T.FOUNDRY_FILES) do
+        local text = spec.text and spec.text[rel]
+        if text == nil then
+            local handle = assert(io.open(foundryRoot .. "/" .. rel, "rb"))
+            text = handle:read("*a")
+            handle:close()
+        end
+        local lines, buildLines = {}, 0
+        for line in (text .. "\n"):gmatch("([^\n]*)\n") do
+            local bare = line:gsub("\r$", "")
+            if bare:match(T.BUILD_LINE) then
+                buildLines = buildLines + 1
+                line = "local BUILD = " .. string.format("%.14g", build)
+            elseif replace[bare] ~= nil then
+                matched[bare] = (matched[bare] or 0) + 1
+                line = replace[bare]
+            end
+            lines[#lines + 1] = line
+        end
+        if buildLines ~= 1 then
+            error("loadBuild: " .. rel .. " has " .. buildLines .. " build lines, expected exactly 1", 2)
+        end
+        chunks[#chunks + 1] = { rel = rel, source = table.concat(lines, "\n") }
+    end
+    for from in pairs(replace) do
+        if matched[from] ~= 1 then
+            error("loadBuild: the line to replace matched " .. (matched[from] or 0)
+                .. " times, expected exactly 1: " .. from, 2)
+        end
+    end
+    for _, chunk in ipairs(chunks) do
+        local name = "@" .. foundryRoot .. "/build-" .. string.format("%.14g", build) .. "/" .. chunk.rel
+        assert(loadstring(chunk.source, name))(addonName)
+    end
+    return _G.Foundry_1_0
+end
+
+-- A replace map for loadBuild that makes the file raise an error just before
+-- the given line, which must begin a top-level statement. Used to prove that a
+-- copy failing partway through leaves the serving copy as it was.
+function T.plantError(line, message)
+    return { [line] = string.format("error(%q) ", message or "planted") .. line }
 end
 
 -- Install dev-build mocks (default) and load; returns the Foundry table.
@@ -739,6 +817,7 @@ local suites = {
     { label = "Foundry.Layout.mixed", cases = assert(loadfile(testsDir .. "/Layout/mixed_copies_spec.lua"))(T) },
     { label = "Foundry.Layout.copies", cases = assert(loadfile(testsDir .. "/Layout/copies_record_spec.lua"))(T) },
     { label = "Foundry.Layout.build", cases = assert(loadfile(testsDir .. "/Layout/build_spec.lua"))(T) },
+    { label = "Foundry.Layout.takeover", cases = assert(loadfile(testsDir .. "/Layout/takeover_spec.lua"))(T) },
 }
 
 if T.REHEARSE then
