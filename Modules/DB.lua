@@ -11,56 +11,181 @@ if not F then
     error("Foundry-1.0: DB.lua requires the Foundry-1.0 bootstrap (Foundry.lua) "
         .. "to have loaded first; _G.Foundry_1_0 is missing.", 0)
 end
--- Already registered on the winning copy: this is a redundant embedded copy.
-if F:HasModule("DB") then return end
+local BUILD = 1
+local API_VERSION = 2
 
-if type(F.Lifecycle) ~= "table"
-    or type(F.Lifecycle._RegisterPostLogout) ~= "function"
-    or type(F.Lifecycle._PlayerIdentity) ~= "function" then
-    F:RaiseDevError("DB requires Lifecycle's post-logout seam "
-        .. "(F.Lifecycle._RegisterPostLogout) and its player-identity check "
-        .. "(F.Lifecycle._PlayerIdentity), which the Foundry core serving this "
-        .. "session does not provide. The Foundry core serving this session reports "
-        .. "version " .. tostring(F.VERSION) .. " (API_VERSION " .. tostring(F.API_VERSION)
-        .. "), from " .. tostring(F.SOURCE) .. ". This has two possible causes: either "
-        .. "an older standalone Foundry addon won the runtime and is serving everyone "
-        .. "(update that addon to a newer version), or Foundry's files loaded in the "
-        .. "wrong order and Lifecycle has not run yet (load through Foundry-1.0.xml, "
-        .. "or list Lifecycle ahead of DB by hand). DB is unavailable this session.")
-    return
+-- An older DB already serving is taken over in place when this copy is newer
+-- and the moment is safe; otherwise it keeps serving and this file loads
+-- nothing. The checks only read, in a fixed order, and the first to fail names
+-- the outcome; nil means this copy takes over. BUILD, API_VERSION, served and
+-- takingOver are read at file scope only: no function below may capture them.
+local served = F:HasModule("DB") and F.DB or nil
+if served == nil and F:HasModule("DB") then return end
+if served ~= nil then
+    -- rawget: a current copy reads none of the newer layout fields on an older
+    -- library table through a normal lookup.
+    if rawget(F, "_layoutVersion") ~= 1 then return end
+    local outcome
+    local build = rawget(served, "_build")
+    local api = rawget(served, "API_VERSION")
+    if rawget(served, "_layoutVersion") ~= 1 then
+        outcome = "layout"
+    elseif build ~= nil and (type(build) ~= "number" or build ~= math.floor(build)
+        or build < 1 or build == math.huge or BUILD <= build) then
+        outcome = "not used"
+    elseif type(api) ~= "number" or api > API_VERSION then
+        outcome = "refused: api version"
+    elseif type(IsLoggedIn) ~= "function" or IsLoggedIn() then
+        outcome = "after login"
+    elseif type(InCombatLockdown) ~= "function" or InCombatLockdown() then
+        outcome = "combat"
+    else
+        -- What a fresh load requires of Lifecycle and Events, then every key of
+        -- the fresh state below by type; the logout entry and the size-warning
+        -- controller are set later, so they may still be absent.
+        local lifecycle, events = F.Lifecycle, F.Events
+        local state, impl = rawget(served, "_state"), rawget(served, "_impl")
+        local lifecycleState = type(lifecycle) == "table" and rawget(lifecycle, "_state") or nil
+        if type(lifecycle) ~= "table" or type(lifecycle._RegisterPostLogout) ~= "function"
+            or type(lifecycle._PlayerIdentity) ~= "function" then
+            outcome = "refused: lifecycle seams"
+        elseif type(events) ~= "table" or type(events.New) ~= "function" then
+            outcome = "refused: events"
+        elseif rawget(lifecycle, "_layoutVersion") ~= 1 or type(lifecycleState) ~= "table"
+            or type(lifecycleState.postLogout) ~= "table" then
+            outcome = "refused: lifecycle layout"
+        elseif type(state) ~= "table" or type(impl) ~= "table" or type(impl.Controller) ~= "table"
+            or type(impl.controllerMeta) ~= "table" then
+            outcome = "refused: shape"
+        else
+            for _, key in ipairs({ "liveControllers", "liveControllersByAddon", "controllerStore", "stores" }) do
+                if type(state[key]) ~= "table" then outcome = "refused: shape" end
+            end
+            if type(state.postLogoutRegistered) ~= "boolean"
+                or (state.postLogoutEntry ~= nil and type(state.postLogoutEntry) ~= "function")
+                or (state.sizeWarningEvents ~= nil and type(state.sizeWarningEvents) ~= "table") then
+                outcome = "refused: shape"
+            end
+        end
+        -- The logout strip rides one entry in Lifecycle's list, kept as it is:
+        -- a second entry would strip twice, a missing one never.
+        if not outcome then
+            local entry, list, count = state.postLogoutEntry, lifecycleState.postLogout, 0
+            for i = 1, #list do
+                if entry ~= nil and rawequal(list[i], entry) then count = count + 1 end
+            end
+            if count ~= (state.postLogoutRegistered and 1 or 0) then outcome = "refused: logout entry" end
+        end
+        if not outcome then
+            local listed = {}
+            for i = 1, #state.stores do listed[state.stores[i]] = true end
+            for _, record in pairs(state.controllerStore) do
+                if not listed[record] then outcome = "refused: stores" end
+            end
+        end
+        if not outcome then
+            -- The fields a store is built with; defaults is the one that may be
+            -- absent.
+            local RECORD = {
+                addonName = "string", svName = "string", sv = "table", defaults = "table",
+                charKey = "string", profileKey = "string", sections = "table", materialized = "table",
+                sizeWarningHandlers = "table", destroyed = "boolean", onMismatch = "function",
+            }
+            for i = 1, #state.stores do
+                local record = state.stores[i]
+                if type(record) ~= "table" then
+                    outcome = "refused: store record"
+                else
+                    for key in pairs(record) do
+                        if RECORD[key] == nil then outcome = "refused: store record" end
+                    end
+                    for key, kind in pairs(RECORD) do
+                        local got = type(record[key])
+                        if got ~= kind and not (key == "defaults" and got == "nil") then
+                            outcome = "refused: store record"
+                        end
+                    end
+                end
+            end
+        end
+        if not outcome then
+            -- The handler slot is rewritten below, so the controller must be
+            -- one whose layout this copy knows, holding the serving handler.
+            local warn = state.sizeWarningEvents
+            local handlers = warn ~= nil and rawget(warn, "_handlers") or nil
+            if warn ~= nil and (type(handlers) ~= "table"
+                or not rawequal(handlers.SAVED_VARIABLES_TOO_LARGE, impl.onSavedVariablesTooLarge)
+                or rawget(events, "_layoutVersion") ~= 1) then
+                outcome = "refused: size warning"
+            end
+        end
+    end
+    if outcome then
+        if outcome:sub(1, 9) == "refused: " and F.IS_DEV_BUILD then
+            F:RaiseDevError("DB: a newer copy from " .. tostring((...))
+                .. " did not take over (" .. outcome .. ")")
+        end
+        return
+    end
 end
-if type(F.Events) ~= "table" or type(F.Events.New) ~= "function" then
-    F:RaiseDevError("DB requires Foundry.Events, which the Foundry core serving this "
-        .. "session does not provide. The Foundry core serving this session reports "
-        .. "version " .. tostring(F.VERSION) .. ", from " .. tostring(F.SOURCE)
-        .. ". This has two possible causes: either an older standalone Foundry addon "
-        .. "won the runtime and is serving everyone (update that addon to a newer "
-        .. "version), or Foundry's files loaded in the wrong order and Events has "
-        .. "not run yet (load through Foundry-1.0.xml, or list Events ahead of DB "
-        .. "by hand). DB is unavailable this session.")
-    return
+local takingOver = served ~= nil
+
+if not takingOver then
+    if type(F.Lifecycle) ~= "table"
+        or type(F.Lifecycle._RegisterPostLogout) ~= "function"
+        or type(F.Lifecycle._PlayerIdentity) ~= "function" then
+        F:RaiseDevError("DB requires Lifecycle's post-logout seam "
+            .. "(F.Lifecycle._RegisterPostLogout) and its player-identity check "
+            .. "(F.Lifecycle._PlayerIdentity), which the Foundry core serving this "
+            .. "session does not provide. The Foundry core serving this session reports "
+            .. "version " .. tostring(F.VERSION) .. " (API_VERSION " .. tostring(F.API_VERSION)
+            .. "), from " .. tostring(F.SOURCE) .. ". This has two possible causes: either "
+            .. "an older standalone Foundry addon won the runtime and is serving everyone "
+            .. "(update that addon to a newer version), or Foundry's files loaded in the "
+            .. "wrong order and Lifecycle has not run yet (load through Foundry-1.0.xml, "
+            .. "or list Lifecycle ahead of DB by hand). DB is unavailable this session.")
+        return
+    end
+    if type(F.Events) ~= "table" or type(F.Events.New) ~= "function" then
+        F:RaiseDevError("DB requires Foundry.Events, which the Foundry core serving this "
+            .. "session does not provide. The Foundry core serving this session reports "
+            .. "version " .. tostring(F.VERSION) .. ", from " .. tostring(F.SOURCE)
+            .. ". This has two possible causes: either an older standalone Foundry addon "
+            .. "won the runtime and is serving everyone (update that addon to a newer "
+            .. "version), or Foundry's files loaded in the wrong order and Events has "
+            .. "not run yet (load through Foundry-1.0.xml, or list Events ahead of DB "
+            .. "by hand). DB is unavailable this session.")
+        return
+    end
 end
 
-local DB = {}
-DB.API_VERSION = 2
+-- On a takeover every definition below lands in the serving tables, so the
+-- older copy's controllers, stores and logout entry reach the newer code.
+local DB = served or {}
 
 --------------------------------------------------------------------------------
--- Shared private state (one set of upvalues per loaded library, lazy)
+-- Shared private state
 --------------------------------------------------------------------------------
 
-local liveControllers = {}
-
-local liveControllersByAddon = {}
-
--- Held OFF the controller: a present `_store` field would bypass
--- __newindex's write-guard (Lua 5.1 only traps ABSENT keys).
-local controllerStore = {}
-
-local stores = {}
-
-local postLogoutRegistered = false
-
-local sizeWarningEvents = nil
+-- All module state lives on the module table. sizeWarningEvents is set once,
+-- when it is first needed, so it and the flag are always read through the
+-- state table.
+if not takingOver then
+    DB._layoutVersion = 1
+    DB._state = {
+        liveControllers = {},
+        liveControllersByAddon = {},
+        -- Held OFF the controller: a present `_store` field would bypass
+        -- __newindex's write-guard (Lua 5.1 only traps ABSENT keys).
+        controllerStore = {},
+        stores = {},
+        postLogoutRegistered = false,
+    }
+    DB._impl = {}
+end
+local S, I = DB._state, DB._impl
+local liveControllers, liveControllersByAddon = S.liveControllers, S.liveControllersByAddon
+local controllerStore, stores = S.controllerStore, S.stores
 
 local SECTION_GLOBAL = "global"
 local SECTION_PROFILE = "profile"
@@ -133,11 +258,12 @@ local function onSavedVariablesTooLarge(_, addonName)
         F:RaiseDevError(message)
     end
 end
+I.onSavedVariablesTooLarge = onSavedVariablesTooLarge
 
 local function registerSizeWarning()
-    if sizeWarningEvents then return end
-    sizeWarningEvents = F.Events:New("Foundry.DB")
-    sizeWarningEvents:Register("SAVED_VARIABLES_TOO_LARGE", onSavedVariablesTooLarge)
+    if S.sizeWarningEvents then return end
+    S.sizeWarningEvents = F.Events:New("Foundry.DB")
+    S.sizeWarningEvents:Register("SAVED_VARIABLES_TOO_LARGE", I.onSavedVariablesTooLarge)
 end
 
 --------------------------------------------------------------------------------
@@ -277,6 +403,7 @@ local function onLogout()
         F:RaiseDevError("DB: a store's logout strip errored: " .. tostring(firstErr))
     end
 end
+I.onLogout = onLogout
 
 --------------------------------------------------------------------------------
 -- Controller
@@ -322,8 +449,10 @@ local function materialize(store, section)
 
     return tbl
 end
+I.materialize = materialize
 
-local Controller = {}
+local Controller = I.Controller or {}
+I.Controller = Controller
 
 function Controller.OnReady(self, handler)
     local store = controllerStore[self]
@@ -420,7 +549,8 @@ end
 -- raw write (like a normal AceDB db object). Sections are served from the
 -- store cache, never rawset on the controller, or __index/__newindex stop
 -- firing for that key.
-local controllerMeta = {}
+local controllerMeta = I.controllerMeta or {}
+I.controllerMeta = controllerMeta
 
 function controllerMeta.__index(self, key)
     local store = controllerStore[self]
@@ -463,6 +593,16 @@ function controllerMeta.__newindex(self, key, value)
     end
     rawset(self, key, value)
 end
+
+-- Captures nothing but F, so a store's handler can be rebuilt at any time.
+local function makeOnMismatch()
+    return function(slotPath)
+        F:RaiseDevError("DB: stored value at '" .. slotPath
+            .. "' has a type that conflicts with its table-typed default; the "
+            .. "stored value is preserved and the default subtree is not applied")
+    end
+end
+I.makeOnMismatch = makeOnMismatch
 
 --------------------------------------------------------------------------------
 -- Factory
@@ -763,17 +903,18 @@ function DB:New(config)
         sizeWarningHandlers = {},
         destroyed = false,
     }
-    store.onMismatch = function(slotPath)
-        F:RaiseDevError("DB: stored value at '" .. slotPath
-            .. "' has a type that conflicts with its table-typed default; the "
-            .. "stored value is preserved and the default subtree is not applied")
-    end
+    store.onMismatch = makeOnMismatch()
 
     stores[#stores + 1] = store
 
-    if not postLogoutRegistered then
-        F.Lifecycle._RegisterPostLogout(onLogout)
-        postLogoutRegistered = true
+    -- One entry per session, however many stores: it looks up the strip on
+    -- the module table each time it runs.
+    if not S.postLogoutRegistered then
+        S.postLogoutEntry = function()
+            return DB._impl.onLogout()
+        end
+        F.Lifecycle._RegisterPostLogout(S.postLogoutEntry)
+        S.postLogoutRegistered = true
     end
 
     -- Metatable-backed; not Mixin()-able.
@@ -826,4 +967,24 @@ function DB:New(config)
     return c
 end
 
-F:RegisterModule("DB", DB)
+-- The older copy's size-warning controller and stores keep their tables; only
+-- the handlers they hold are swapped for this copy's, by table writes. The
+-- logout entry stays as it is: it looks the strip up on the module table.
+if takingOver then
+    if S.sizeWarningEvents then
+        S.sizeWarningEvents._handlers.SAVED_VARIABLES_TOO_LARGE = I.onSavedVariablesTooLarge
+    end
+    for i = 1, #stores do
+        stores[i].onMismatch = makeOnMismatch()
+    end
+end
+
+-- Written last, so a copy that fails before this point leaves the serving DB
+-- reporting what it did before.
+DB.API_VERSION = API_VERSION
+DB._source = ...
+DB._build = BUILD
+
+if not takingOver then
+    F:RegisterModule("DB", DB)
+end

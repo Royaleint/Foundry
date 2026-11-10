@@ -1,0 +1,1065 @@
+-- The library table's layout header and shared state, and the source rule
+-- that keeps module state off file-level locals.
+
+local T = ...
+
+local tests = {}
+local function test(name, fn) tests[#tests + 1] = { name = name, fn = fn } end
+
+test("the serving copy carries the layout version and the state table", function()
+    local F = T.fresh()
+    T.eq(F._layoutVersion, 1, "layout version")
+    T.eq(type(F._state), "table", "state table")
+    T.eq(type(F._state.modules), "table", "module list")
+end)
+
+test("the module methods use the module list held on the state table", function()
+    local F = T.fresh()
+    local mod = { API_VERSION = 3 }
+    T.falsy(F:HasModule("Probe"), "absent before registering")
+    T.eq(F:RegisterModule("Probe", mod), mod, "register returns the module")
+    T.eq(F._state.modules.Probe, mod, "listed on the state table")
+    T.truthy(F:HasModule("Probe"), "found after registering")
+    T.eq(F:RequireModule("Probe", 3), mod, "required module")
+
+    local other = { API_VERSION = 1 }
+    F._state.modules.Planted = other
+    T.truthy(F:HasModule("Planted"), "a module placed on the table is seen")
+    T.eq(F:RequireModule("Planted"), other, "and required")
+    F._state.modules.Planted = nil
+    T.falsy(F:HasModule("Planted"), "and gone when removed")
+end)
+
+test("every bundled module is listed on the state table", function()
+    local F = T.fresh()
+    for _, name in ipairs({ "Commands", "Events", "Lifecycle", "DB", "List", "Settings", "Tooltip", "Menu", "Window" }) do
+        T.truthy(F._state.modules[name] ~= nil, name .. " listed")
+        T.eq(F._state.modules[name], F[name], name .. " is the module on the table")
+    end
+end)
+
+test("a copy that stands down leaves the serving table untouched", function()
+    local F = T.fresh()
+    local state, modules = F._state, F._state.modules
+    F:RegisterModule("Probe", {})
+    local chunk = assert(loadfile(T.foundryRoot .. "/Foundry.lua"))
+    chunk("Foundry-1.0")
+    T.eq(_G.Foundry_1_0, F, "the first copy keeps the global")
+    T.eq(F._state, state, "state table unchanged")
+    T.eq(F._state.modules, modules, "module list unchanged")
+    T.truthy(F:HasModule("Probe"), "earlier registration kept")
+    T.eq(F._layoutVersion, 1, "layout version unchanged")
+end)
+
+--------------------------------------------------------------------------------
+-- Lifecycle
+--------------------------------------------------------------------------------
+
+local LIFECYCLE_STATE_TABLES = {
+    "byAddonName", "ownedNames", "loginControllers", "unloadingControllers", "postLogout", "identityHeld",
+}
+local LIFECYCLE_STATE_FLAGS = {
+    "unloadingSupported", "loginFired", "identityWatching", "pollScheduled", "identityStopped",
+    "devNoticePrinted", "surnameSettled",
+}
+local LIFECYCLE_IMPL = {
+    "Controller", "onEvent", "pollTick", "releaseIdentityHeld", "holdForIdentity", "schedulePoll",
+    "surfaceHookError", "identityResolved", "stopWatching", "ensureDispatcher",
+}
+
+test("Lifecycle carries the layout header, its state and its implementation", function()
+    local F = T.fresh()
+    local L = F.Lifecycle
+    T.eq(L._layoutVersion, 1, "layout version")
+    T.eq(L._source, "Foundry-1.0", "source addon name")
+    T.eq(L._build, T.libraryBuild(), "build number")
+    T.eq(type(L._state), "table", "state table")
+    T.eq(type(L._impl), "table", "implementation table")
+    for _, name in ipairs(LIFECYCLE_STATE_TABLES) do
+        T.eq(type(L._state[name]), "table", "state " .. name)
+    end
+    for _, name in ipairs(LIFECYCLE_STATE_FLAGS) do
+        T.eq(L._state[name], false, "flag " .. name .. " starts false")
+    end
+    T.eq(L._state.dispatcher, nil, "no dispatcher before the first controller")
+    for _, name in ipairs(LIFECYCLE_IMPL) do
+        T.eq(type(L._impl[name]), name == "Controller" and "table" or "function", "implementation " .. name)
+    end
+    local c = L:New(nil, "LayoutHeader")
+    T.eq(getmetatable(c), L._impl.Controller, "controllers use the published method table")
+end)
+
+test("Lifecycle's dispatcher runs the event handler published on the module table", function()
+    local F = T.fresh()
+    local L = F.Lifecycle
+    local c = L:New(nil, "LayoutDispatcher")
+    local frame = L._state.dispatcher
+    T.truthy(frame, "dispatcher created by the first controller")
+    T.eq(frame, T.frames[1], "the one dispatcher frame")
+    local published, seen = L._impl.onEvent, nil
+    L._impl.onEvent = function(...) seen = { ... } end
+    frame:GetScript("OnEvent")(frame, "ADDON_LOADED", "Nothing")
+    L._impl.onEvent = published
+    T.eq(seen and seen[1], frame, "OnEvent forwards the frame to the published handler")
+    T.eq(seen and seen[2], "ADDON_LOADED", "and the event")
+    T.eq(seen and seen[3], "Nothing", "and its arguments")
+    T.eq(c:GetNativeHandles().frame, frame, "consumers are handed the same frame")
+    L:New(nil, "LayoutDispatcherTwo")
+    T.eq(L._state.dispatcher, frame, "a second controller keeps the frame")
+    T.eq(#T.frames, 1, "no second frame")
+end)
+
+test("after one identity hold is released, a second hold uses the live held set and fires on time", function()
+    local F = T.fresh()
+    local L = F.Lifecycle
+    T.SetRegional(true)   -- surname missing until the first poll settles it
+    local frame
+
+    local firstFired = 0
+    local a = L:New(nil, "HoldFirst")
+    a:OnAddonLoaded(function() firstFired = firstFired + 1 end)
+    frame = L._state.dispatcher
+    T.Fire(frame, "ADDON_LOADED", "HoldFirst")
+    local firstSet = L._state.identityHeld
+    T.eq(firstSet[1], a, "first controller held")
+    T.eq(firstFired, 0, "not fired while held")
+    T.Fire(frame, "PLAYER_LOGIN")
+    T.Fire(frame, "PLAYER_ENTERING_WORLD")
+    T.RunAfters()
+    T.eq(firstFired, 1, "first hold released by the poll")
+    T.eq(L._identityResolvedBy, "POLL", "released by the poll")
+    T.truthy(L._state.identityHeld ~= firstSet, "the held set was replaced on release")
+    T.eq(#L._state.identityHeld, 0, "nothing held after release")
+    T.falsy(L._state.identityWatching, "identity events no longer watched")
+
+    -- The name goes missing again, so the next controllers are held.
+    T.identity = { name = "Unknown", realm = T.identity.realm }
+    local addonFired, loginFired, droppedFired = 0, 0, 0
+    local b = L:New(nil, "HoldSecond")
+    b:OnAddonLoaded(function() addonFired = addonFired + 1 end)
+    local d = L:New(nil, "HoldDropped")
+    d:OnAddonLoaded(function() droppedFired = droppedFired + 1 end)
+    T.Fire(frame, "ADDON_LOADED", "HoldSecond")
+    T.Fire(frame, "ADDON_LOADED", "HoldDropped")
+    b:OnLogin(function() loginFired = loginFired + 1 end)   -- held, so it waits for the release
+    local held = L._state.identityHeld
+    T.eq(#held, 2, "both held in the live set")
+    T.eq(held[1], b, "second controller held first")
+    T.eq(held[2], d, "third controller held next")
+    T.eq(#firstSet, 1, "the released set is left as it was")
+    T.truthy(L._state.identityWatching, "identity events watched again")
+    T.eq(addonFired + loginFired, 0, "nothing fired while the name is missing")
+
+    d:Destroy()
+    T.eq(#L._state.identityHeld, 1, "a destroyed controller leaves the live set")
+    T.eq(L._state.identityHeld[1], b, "the other stays held")
+
+    T.Fire(frame, "UNIT_NAME_UPDATE", "player")
+    T.RunAfters()
+    T.eq(addonFired + loginFired, 0, "still held while the name is missing")
+    T.eq(#T.afters, 1, "the poll re-armed itself")
+
+    T.identity = { name = "Tester", realm = T.identity.realm }
+    T.Fire(frame, "UNIT_NAME_UPDATE", "player")
+    T.eq(addonFired, 1, "addon-loaded fired when the name arrived")
+    T.eq(loginFired, 1, "login fired with it")
+    T.eq(L._identityResolvedBy, "UNIT_NAME_UPDATE", "released by the name update")
+    T.eq(#L._state.identityHeld, 0, "nothing held after the second release")
+    T.RunAfters()
+    T.eq(addonFired + loginFired, 2, "the pending poll fires nothing more")
+    T.eq(droppedFired, 0, "the destroyed controller never fired")
+end)
+
+test("entering the world after a release there reads the new, empty held set", function()
+    local F = T.fresh()
+    local L = F.Lifecycle
+    T.identity = { name = "Unknown", realm = T.identity.realm }
+    local fired = 0
+    local c = L:New(nil, "HoldEnterWorld")
+    c:OnAddonLoaded(function() fired = fired + 1 end)
+    local frame = L._state.dispatcher
+    T.Fire(frame, "ADDON_LOADED", "HoldEnterWorld")
+    T.Fire(frame, "PLAYER_LOGIN")
+    T.eq(fired, 0, "held through login while the name is missing")
+    T.eq(#T.afters, 0, "no poll before entering the world")
+
+    T.identity = { name = "Tester", realm = T.identity.realm }
+    T.Fire(frame, "PLAYER_ENTERING_WORLD")
+    T.eq(fired, 1, "released on entering the world")
+    T.eq(L._identityResolvedBy, "PLAYER_ENTERING_WORLD", "released by entering the world")
+    T.eq(#T.output, 0, "no waiting notice once the hold is released")
+    T.falsy(L._state.devNoticePrinted, "the notice was not used up")
+    T.eq(#T.afters, 0, "no poll scheduled")
+end)
+
+test("the poll timer reaches whatever pollTick the module table holds when it fires", function()
+    local F = T.fresh()
+    local L = F.Lifecycle
+    T.SetRegional(true)
+    local c = L:New(nil, "PollRelay")
+    c:OnAddonLoaded(function() end)
+    local frame = L._state.dispatcher
+    T.Fire(frame, "ADDON_LOADED", "PollRelay")
+    T.Fire(frame, "PLAYER_LOGIN")
+    T.Fire(frame, "PLAYER_ENTERING_WORLD")
+    T.eq(#T.afters, 1, "one poll pending")
+    T.truthy(T.afters[1].cb ~= L._impl.pollTick, "the timer holds a relay, not the tick itself")
+
+    local original = L._impl.pollTick
+    local calls = 0
+    L._impl.pollTick = function() calls = calls + 1 end
+    T.RunAfters()
+    L._impl.pollTick = original
+    T.eq(calls, 1, "the replaced tick ran once")
+    T.eq(L._state.identityHeld[1], c, "the original tick did not run")
+end)
+
+--------------------------------------------------------------------------------
+-- DB
+--------------------------------------------------------------------------------
+
+local DB_STATE_TABLES = { "liveControllers", "liveControllersByAddon", "controllerStore", "stores" }
+local DB_IMPL = {
+    "Controller", "controllerMeta", "onLogout", "onSavedVariablesTooLarge", "materialize", "makeOnMismatch",
+}
+
+local function newStore(F, sv, defaults)
+    T.loadedAddons["LayoutDBAddon"] = true
+    return F.DB:New({
+        name = "LayoutDBAddon", sv = sv, defaultProfile = true,
+        defaults = defaults or { profile = { size = 3 }, global = { flag = true } },
+    })
+end
+
+-- How many times fn appears in the logout list of the Lifecycle serving F:
+-- its state table when it has one, else the list _RegisterPostLogout holds.
+local function logoutEntries(F, fn)
+    local list = F.Lifecycle._layoutVersion and F.Lifecycle._state.postLogout
+    if not list then
+        local i = 1
+        while true do
+            local name, value = debug.getupvalue(F.Lifecycle._RegisterPostLogout, i)
+            if not name then break end
+            if name == "postLogout" then list = value end
+            i = i + 1
+        end
+    end
+    local n = 0
+    for i = 1, #list do
+        if rawequal(list[i], fn) then n = n + 1 end
+    end
+    return n, #list
+end
+
+-- The frame Lifecycle delivers its events through: the one that registered PLAYER_LOGOUT.
+local function logoutFrame()
+    for _, frame in ipairs(T.frames) do
+        for _, call in ipairs(frame.calls.RegisterEvent) do
+            if call[1] == "PLAYER_LOGOUT" then return frame end
+        end
+    end
+end
+
+local function deepEqual(a, b, path, diffs)
+    if type(a) ~= type(b) then
+        diffs[#diffs + 1] = path .. ": " .. type(a) .. " vs " .. type(b)
+    elseif type(a) ~= "table" then
+        if a ~= b then diffs[#diffs + 1] = path .. ": " .. tostring(a) .. " vs " .. tostring(b) end
+    else
+        for k, v in pairs(a) do deepEqual(v, b[k], path .. "." .. tostring(k), diffs) end
+        for k, v in pairs(b) do
+            if a[k] == nil then deepEqual(nil, v, path .. "." .. tostring(k), diffs) end
+        end
+    end
+    return diffs
+end
+
+test("DB carries the layout header, its state and its implementation", function()
+    local F = T.fresh()
+    local D = F.DB
+    T.eq(D._layoutVersion, 1, "layout version")
+    T.eq(D._source, "Foundry-1.0", "source addon name")
+    T.eq(D._build, T.libraryBuild(), "build number")
+    T.eq(type(D._state), "table", "state table")
+    T.eq(type(D._impl), "table", "implementation table")
+    for _, name in ipairs(DB_STATE_TABLES) do
+        T.eq(type(D._state[name]), "table", "state " .. name)
+    end
+    T.eq(D._state.postLogoutRegistered, false, "logout entry not registered before the first store")
+    T.eq(D._state.postLogoutEntry, nil, "no logout entry before the first store")
+    T.eq(D._state.sizeWarningEvents, nil, "no size-warning events before the first store")
+    for _, name in ipairs(DB_IMPL) do
+        local want = (name == "Controller" or name == "controllerMeta") and "table" or "function"
+        T.eq(type(D._impl[name]), want, "implementation " .. name)
+    end
+end)
+
+test("DB controllers use the published metatable, and the store record is held on the state table", function()
+    local F = T.fresh()
+    local D = F.DB
+    local meta = D._impl.controllerMeta
+    local db = newStore(F, "LayoutMetaDB")
+    T.eq(getmetatable(db), meta, "a controller's metatable is the published one")
+    T.eq(D._state.controllerStore[db].svName, "LayoutMetaDB", "store record found on the state table")
+    T.eq(D._state.stores[1], D._state.controllerStore[db], "the same record is listed in stores")
+    T.eq(D._state.liveControllers.LayoutMetaDB, db, "live controller listed by saved-variables name")
+    T.eq(D._state.liveControllersByAddon.LayoutDBAddon[1], db, "live controller listed by addon")
+    T.eq(type(D._state.controllerStore[db].onMismatch), "function", "store has its mismatch handler")
+    local second = newStore(F, "LayoutMetaDB2")
+    T.eq(D._impl.controllerMeta, meta, "the metatable keeps its identity")
+    T.eq(getmetatable(second), meta, "a later controller shares it")
+    T.eq(getmetatable(db), meta, "the first controller still uses it")
+end)
+
+test("DB registers its size warning through the published handler", function()
+    local F = T.fresh()
+    local D = F.DB
+    newStore(F, "LayoutSizeDB")
+    local events = D._state.sizeWarningEvents
+    T.truthy(events, "size-warning events created by the first store")
+    T.eq(events._handlers.SAVED_VARIABLES_TOO_LARGE, D._impl.onSavedVariablesTooLarge,
+        "the handler is the published one")
+    newStore(F, "LayoutSizeDB2")
+    T.eq(D._state.sizeWarningEvents, events, "a second store keeps the same events object")
+end)
+
+test("DB has exactly one logout entry however stores come and go and however often the file loads", function()
+    local F = T.fresh()
+    local D = F.DB
+    local first = newStore(F, "LayoutLogoutDB")
+    local entry = D._state.postLogoutEntry
+    T.eq(type(entry), "function", "entry recorded at the first store")
+    T.truthy(entry ~= D._impl.onLogout, "the entry is a relay, not the strip itself")
+    T.eq(D._state.postLogoutRegistered, true, "flag set")
+    T.eq(logoutEntries(F, entry), 1, "one entry after the first store")
+
+    newStore(F, "LayoutLogoutDB2")
+    T.eq(D._state.postLogoutEntry, entry, "the entry keeps its identity")
+    local n, total = logoutEntries(F, entry)
+    T.eq(n, 1, "one entry after two stores")
+    T.eq(total, 1, "nothing else in the logout list")
+
+    first:Destroy()
+    newStore(F, "LayoutLogoutDB")
+    n, total = logoutEntries(F, entry)
+    T.eq(n, 1, "one entry after a store is destroyed and re-created")
+    T.eq(total, 1, "nothing else in the logout list after re-creating")
+
+    local state, impl = D._state, D._impl
+    T.loadModule("Modules/DB.lua")
+    T.eq(F.DB, D, "a second copy of the file stands down")
+    T.eq(D._state, state, "state table unchanged")
+    T.eq(D._impl, impl, "implementation table unchanged")
+    newStore(F, "LayoutLogoutDB3")
+    n, total = logoutEntries(F, entry)
+    T.eq(n, 1, "one entry after a second copy stands down and another store is made")
+    T.eq(total, 1, "the second copy added nothing to the logout list")
+end)
+
+test("the logout entry reaches whatever strip the module table holds when logout fires", function()
+    local F = T.fresh()
+    local D = F.DB
+    local db = newStore(F, "LayoutRelayDB")
+    local _ = db.profile
+    local original = D._impl.onLogout
+    local calls = 0
+    D._impl.onLogout = function() calls = calls + 1 end
+    T.Fire(F.Lifecycle._state.dispatcher, "PLAYER_LOGOUT")
+    D._impl.onLogout = original
+    T.eq(calls, 1, "the replaced strip ran once")
+    T.eq(_G.LayoutRelayDB.profiles.Default.size, 3, "the original strip did not run")
+    T.eq(D._impl.onLogout, original, "the strip is restored")
+end)
+
+-- The 1.0.114 release core and every module but DB, then this DB.lua under a
+-- host addon name, the way a newer embed fills in a module an older core lacks.
+local OLD_WITHOUT_DB = {}
+for _, rel in ipairs(T.OLD_COPIES["v1.0.114"]) do
+    if rel ~= "Modules/DB.lua" then OLD_WITHOUT_DB[#OLD_WITHOUT_DB + 1] = rel end
+end
+
+local function graftSteps(F)
+    _G.GraftDB = { profiles = { Default = { size = 3, other = 2 } }, char = { Stale = {} } }
+    _G.GraftDB2 = nil
+    local db = newStore(F, "GraftDB", { profile = { size = 3, keep = 1 }, global = { flag = true } })
+    db.profile.keep = 4
+    local _ = db.global
+    newStore(F, "GraftDB2")
+    T.Fire(logoutFrame(), "PLAYER_LOGOUT")
+    return { GraftDB = _G.GraftDB, GraftDB2 = _G.GraftDB2 }
+end
+
+test("this DB on a 1.0.114 core registers one logout entry, strips once and saves what the release saves", function()
+    T.installMocks("@project-version@")
+    T.loadCopy({ root = T.testsDir .. "/OldCopies/v1.0.114", files = OLD_WITHOUT_DB, addonName = "OldHost", version = "1.0.114" })
+    local F = T.loadCopy({ root = T.foundryRoot, files = { "Modules/DB.lua" }, addonName = "NewHost" })
+    T.eq(F.Lifecycle._layoutVersion, nil, "the serving Lifecycle is the release's")
+    T.eq(F.DB._source, "NewHost", "DB is this copy's")
+    local original = F.DB._impl.onLogout
+    local strips = 0
+    F.DB._impl.onLogout = function() strips = strips + 1; return original() end
+    local grafted = graftSteps(F)
+    F.DB._impl.onLogout = original
+    local n, total = logoutEntries(F, F.DB._state.postLogoutEntry)
+    T.eq(n, 1, "the release's logout list holds the entry once")
+    T.eq(total, 1, "and nothing else")
+    T.eq(strips, 1, "the strip ran once")
+
+    T.installMocks("@project-version@")
+    local old = T.loadOldCopy("v1.0.114", "OldHost", "1.0.114")
+    local released = graftSteps(old)
+    T.truthy(not rawequal(grafted.GraftDB2, released.GraftDB2), "each run saves its own tables")
+    local diffs = deepEqual(grafted, released, "saved", {})
+    T.eq(#diffs, 0, "saved data differs from the release: " .. table.concat(diffs, "; "))
+end)
+
+test("this DB loaded after a 1.0.114 DB stands down and adds no logout entry", function()
+    T.installMocks("@project-version@")
+    local F = T.loadOldCopy("v1.0.114", "OldHost", "1.0.114")
+    local served = F.DB
+    T.loadCopy({ root = T.foundryRoot, files = { "Modules/DB.lua" }, addonName = "NewHost" })
+    T.eq(F.DB, served, "the release DB keeps serving")
+    T.eq(served._state, nil, "nothing was written onto the release DB")
+    newStore(F, "StandDownDB")
+    newStore(F, "StandDownDB2")
+    local _, total = logoutEntries(F, nil)
+    T.eq(total, 1, "the release DB registered its own single entry, and nothing else was added")
+end)
+
+--------------------------------------------------------------------------------
+-- Events and Commands
+--------------------------------------------------------------------------------
+
+local function countKeys(t)
+    local n = 0
+    for _ in pairs(t) do n = n + 1 end
+    return n
+end
+
+test("Events carries the layout header, its state and its implementation", function()
+    local F = T.fresh()
+    local E = F.Events
+    T.eq(E._layoutVersion, 1, "layout version")
+    T.eq(E._source, "Foundry-1.0", "source addon name")
+    T.eq(E._build, T.libraryBuild(), "build number")
+    T.eq(type(E._state), "table", "state table")
+    T.eq(type(E._impl), "table", "implementation table")
+    for _, name in ipairs({ "Controller", "Bucket" }) do
+        T.eq(type(E._impl[name]), "table", "implementation " .. name)
+    end
+    for _, name in ipairs({ "makeOnEvent", "makeOnce", "makeBucketFns" }) do
+        T.eq(type(E._impl[name]), "function", "implementation " .. name)
+    end
+    local c = E:New("LayoutEventsHeader")
+    T.eq(getmetatable(c), E._impl.Controller, "controllers use the published method table")
+    local b = c:RegisterBucket({ events = "E", interval = 1, handler = function() end })
+    T.eq(getmetatable(b), E._impl.Bucket, "buckets use the published method table")
+end)
+
+test("Commands carries the layout header, its state and its implementation", function()
+    local F = T.fresh()
+    local C = F.Commands
+    T.eq(C._layoutVersion, 1, "layout version")
+    T.eq(C._source, "Foundry-1.0", "source addon name")
+    T.eq(C._build, T.libraryBuild(), "build number")
+    T.eq(type(C._state), "table", "state table")
+    T.eq(type(C._impl), "table", "implementation table")
+    T.eq(type(C._impl.Controller), "table", "implementation Controller")
+    T.eq(type(C._impl.makeRestrictionHandler), "function", "implementation makeRestrictionHandler")
+    local c = C:New({ name = "LayoutCmdHeader", slashes = { "/layoutcmdheader" } })
+    T.eq(getmetatable(c), C._impl.Controller, "controllers use the published method table")
+end)
+
+test("a second copy of Events or Commands stands down and leaves the first one's tables alone", function()
+    local F = T.fresh()
+    for _, name in ipairs({ "Events", "Commands" }) do
+        local M = F[name]
+        local state, impl, instances = M._state, M._impl, M._state.instances
+        T.loadModule("Modules/" .. name .. ".lua")
+        T.eq(F[name], M, name .. " keeps serving")
+        T.eq(M._state, state, name .. " state table unchanged")
+        T.eq(M._impl, impl, name .. " implementation table unchanged")
+        T.eq(M._state.instances, instances, name .. " registry unchanged")
+    end
+end)
+
+test("the Events registry holds a live controller and drops it on Destroy", function()
+    local F = T.fresh()
+    local E = F.Events
+    local reg = E._state.instances
+    T.eq(getmetatable(reg).__mode, "k", "weak keys")
+    T.eq(countKeys(reg), 0, "empty before any controller")
+    local a, b = E:New("LayoutRegA"), E:New("LayoutRegB")
+    T.eq(reg[a], true, "first listed")
+    T.eq(reg[b], true, "second listed")
+    T.eq(countKeys(reg), 2, "two listed")
+    a:Destroy()
+    T.eq(reg[a], nil, "destroyed controller dropped")
+    T.eq(reg[b], true, "the other stays")
+    pcall(function() a:Destroy() end)
+    T.eq(countKeys(reg), 1, "one left after a repeated destroy")
+end)
+
+test("the Commands registry holds a live controller and drops it on Destroy", function()
+    local F = T.fresh()
+    local C = F.Commands
+    local reg = C._state.instances
+    T.eq(getmetatable(reg).__mode, "k", "weak keys")
+    T.eq(countKeys(reg), 0, "empty before any controller")
+    local a = C:New({ name = "LayoutRegCmdA", slashes = { "/layoutrega" } })
+    local b = C:New({ name = "LayoutRegCmdB", slashes = { "/layoutregb" } })
+    T.eq(reg[a], true, "first listed")
+    T.eq(reg[b], true, "second listed")
+    a:Destroy()
+    T.eq(reg[a], nil, "destroyed controller dropped")
+    T.eq(reg[b], true, "the other stays")
+    a:Destroy()
+    T.eq(countKeys(reg), 1, "one left after a repeated destroy")
+end)
+
+test("a refused Events or Commands construction lists nothing", function()
+    local F = T.fresh("1.0.114")
+    F.Events:New("")
+    F.Commands:New({ name = "LayoutRefused" })
+    T.eq(countKeys(F.Events._state.instances), 0, "Events registry empty")
+    T.eq(countKeys(F.Commands._state.instances), 0, "Commands registry empty")
+end)
+
+test("controllers nobody references any more are not kept alive by the registries", function()
+    local F = T.fresh()
+    local E, C = F.Events, F.Commands
+    do
+        local e = E:New("LayoutGcEvents")
+        C:New({ name = "LayoutGcCmd", slashes = { "/layoutgc" } })
+        T.eq(countKeys(E._state.instances), 1, "event controller listed")
+        T.eq(countKeys(C._state.instances), 1, "command controller listed")
+        T.truthy(e, "held")
+    end
+    T.frames = {}
+    _G.SlashCmdList.LAYOUTGCCMD = nil
+    collectgarbage()
+    collectgarbage()
+    T.eq(countKeys(E._state.instances), 0, "Events registry empty after collection")
+    T.eq(countKeys(C._state.instances), 0, "Commands registry empty after collection")
+end)
+
+-- Run on a release-mode core, where a call on a destroyed controller is
+-- silent, so a closure taken from a snapshot behaves as in the 1.0.114 release.
+local function onceSnapshotSteps(F)
+    local log = {}
+    local function handler(ev, ...)
+        log[#log + 1] = ev .. ":" .. select("#", ...) .. ":" .. tostring((...))
+    end
+    local c = F.Events:New("LayoutOnceSnap")
+    c:RegisterOnce("E_ONE", handler)
+    local first = c:GetNativeHandles().handlers.E_ONE
+    c:Unregister("E_ONE")
+    log[#log + 1] = "registered:" .. tostring(c:IsRegistered("E_ONE"))
+    first("E_ONE", "a", "b")
+    c:RegisterOnce("E_TWO", handler)
+    local second = c:GetNativeHandles().handlers.E_TWO
+    c:Destroy()
+    second("E_TWO", "z")
+    c = F.Events:New("LayoutOnceSnapFire")
+    c:RegisterOnce("E_THREE", handler)
+    local third = c:GetNativeHandles().handlers.E_THREE
+    T.Fire(c:GetNativeHandles().frame, "E_THREE", 7)
+    third("E_THREE", 8)
+    return table.concat(log, "|")
+end
+
+test("a once-handler snapshot still calls the consumer handler after Unregister and after Destroy, as in the 1.0.114 release", function()
+    local F = T.fresh("1.0.114")
+    local current = onceSnapshotSteps(F)
+    T.installMocks("@project-version@")
+    local old = T.loadOldCopy("v1.0.114", "OldHost", "1.0.114")
+    local released = onceSnapshotSteps(old)
+    T.eq(current, released, "observable calls differ from the release")
+    T.eq(current, "registered:false|E_ONE:2:a|E_TWO:1:z|E_THREE:1:7|E_THREE:1:8", "calls made")
+end)
+
+test("a once-handler is recorded next to the stored closure and cleared by Unregister", function()
+    local F = T.fresh("1.0.114")
+    local c = F.Events:New("LayoutOnce")
+    T.eq(c._onceHandlers, nil, "nothing before the first RegisterOnce")
+    local h = function() end
+    c:RegisterOnce("E_ONE", h)
+    T.eq(c._onceHandlers.E_ONE, h, "consumer handler recorded")
+    T.truthy(c._handlers.E_ONE ~= h, "the stored handler is the wrapper")
+    c:Unregister("E_ONE")
+    T.eq(c._onceHandlers.E_ONE, nil, "cleared by Unregister")
+end)
+
+test("a once-handler record is cleared by UnregisterAll, Destroy and the once firing", function()
+    local F = T.fresh("1.0.114")
+    local c = F.Events:New("LayoutOnce")
+    local h = function() end
+    c:RegisterOnce("E_ONE", h)
+    c:RegisterOnce("E_TWO", h)
+    c:Register("E_PLAIN", h)
+    c:UnregisterAll()
+    T.eq(next(c._onceHandlers), nil, "cleared by UnregisterAll")
+
+    c:RegisterOnce("E_ONE", h)
+    c:RegisterOnce("E_TWO", h)
+    T.Fire(c._frame, "E_ONE")
+    T.eq(c._onceHandlers.E_ONE, nil, "cleared by the firing")
+    T.eq(c._onceHandlers.E_TWO, h, "another event's record kept")
+    c:Destroy()
+    T.eq(next(c._onceHandlers), nil, "cleared by Destroy")
+end)
+
+test("a once-handler may register itself again and the new record is kept", function()
+    local F = T.fresh("1.0.114")
+    local c = F.Events:New("LayoutOnce")
+    local hits = 0
+    local function again()
+        hits = hits + 1
+        if hits == 1 then c:RegisterOnce("E_ONE", again) end
+    end
+    c:RegisterOnce("E_ONE", again)
+    T.Fire(c._frame, "E_ONE")
+    T.eq(c._onceHandlers.E_ONE, again, "re-armed record present")
+    T.Fire(c._frame, "E_ONE")
+    T.eq(hits, 2, "ran twice")
+    T.eq(c._onceHandlers.E_ONE, nil, "cleared after the second firing")
+end)
+
+test("a refused RegisterOnce, and one whose native register throws, leave the record untouched", function()
+    local F = T.fresh("1.0.114")
+    local c = F.Events:New("LayoutOnce")
+    local h = function() end
+
+    -- Nothing recorded yet: every refusal leaves the table absent.
+    c:Register("E_TAKEN", h)
+    c:RegisterOnce("E_TAKEN", h)
+    c:RegisterOnce("", h)
+    c:RegisterOnce("E_NEW", "not a function")
+    T.eq(c._onceHandlers, nil, "refusals created no record")
+
+    T.throwOnRegister = { E_BAD = true }
+    local ok = pcall(function() c:RegisterOnce("E_BAD", h) end)
+    T.falsy(ok, "native register threw")
+    T.eq(c._onceHandlers, nil, "a throwing native register created no record")
+    T.eq(c._handlers.E_BAD, nil, "and stored no handler")
+
+    -- With a record present: refusals and throws change nothing in it.
+    local kept = function() end
+    c:RegisterOnce("E_KEPT", kept)
+    local record = c._onceHandlers
+    c:RegisterOnce("E_KEPT", h)
+    pcall(function() c:RegisterOnce("E_BAD", h) end)
+    T.eq(c._onceHandlers, record, "same table")
+    T.eq(record.E_KEPT, kept, "existing entry untouched")
+    T.eq(record.E_BAD, nil, "no entry for the throwing event")
+    T.eq(record.E_TAKEN, nil, "no entry for the refused event")
+end)
+
+test("a bucket's closures read the edge stored on the bucket", function()
+    local F = T.fresh("1.0.114")
+    local c = F.Events:New("LayoutBucket")
+    local fired = 0
+    local b = c:RegisterBucket({ events = "E_ONE", interval = 1, edge = "trailing", handler = function() fired = fired + 1 end })
+    T.eq(b._edge, "trailing", "edge stored")
+    T.Fire(c._frame, "E_ONE")
+    T.truthy(b._deadline ~= nil, "trailing arms a deadline")
+    b._edge = "leading"
+    b._deadline = nil
+    b._timer:Cancel()
+    b._timer = nil
+    T.Fire(c._frame, "E_ONE")
+    T.eq(b._deadline, nil, "the stored edge decides the branch")
+    T.truthy(b._timer, "leading armed a timer")
+    T.eq(fired, 0, "nothing fired yet")
+end)
+
+test("the slash command closure dispatches to its controller and returns nothing", function()
+    local F = T.fresh()
+    local out = {}
+    local c = F.Commands:New({
+        name = "LayoutSlash", slashes = { "/layoutslash" }, printer = function(line) out[#out + 1] = line end,
+    })
+    local fn = _G.SlashCmdList.LAYOUTSLASH
+    T.eq(type(fn), "function", "closure registered")
+    T.eq(c:GetNativeHandles().handler, fn, "handles expose the same closure")
+    T.eq(select("#", fn("hello")), 0, "the closure returns nothing")
+    T.eq(out[1], "Unknown command: hello", "dispatched to the controller")
+end)
+
+--------------------------------------------------------------------------------
+-- List, Menu, Tooltip, Settings and Window
+--------------------------------------------------------------------------------
+
+local surfaces = assert(loadfile(T.testsDir .. "/Layout/surfaces.lua"))(T)
+
+local function newList(F, name)
+    return F.List:New({
+        name = name or "LayoutList", parent = {}, elementType = "Button",
+        extentCalculator = function() return 20 end, initializer = function() end,
+    })
+end
+
+local function checkHeader(M, label, impl)
+    T.eq(M._layoutVersion, 1, label .. " layout version")
+    T.eq(M._source, "Foundry-1.0", label .. " source addon name")
+    T.eq(M._build, T.libraryBuild(), label .. " build number")
+    T.eq(type(M._state), "table", label .. " state table")
+    T.eq(type(M._impl), "table", label .. " implementation table")
+    for name, kind in pairs(impl) do
+        T.eq(type(M._impl[name]), kind, label .. " implementation " .. name)
+    end
+end
+
+test("List, Menu, Tooltip, Settings and Window carry the layout header, their state and their implementation", function()
+    local F = T.fresh()
+    checkHeader(F.List, "List", { Controller = "table", initRow = "function", extent = "function" })
+    T.eq(type(F.List._state.instances), "table", "List registry")
+    checkHeader(F.Menu, "Menu", { Controller = "table", generate = "function" })
+    T.eq(type(F.Menu._state.instances), "table", "Menu registry")
+    T.eq(type(F.Menu._state.liveKeys), "table", "Menu live keys")
+    T.eq(F.Menu._state.anonCounter, 0, "Menu counter starts at zero")
+    checkHeader(F.Tooltip, "Tooltip", { Controller = "table", dispatch = "function", sweep = "function", ensureDispatcher = "function" })
+    T.eq(type(F.Tooltip._state.liveKeys), "table", "Tooltip live keys")
+    T.eq(type(F.Tooltip._state.dispatchers), "table", "Tooltip dispatchers")
+    checkHeader(F.Settings, "Settings", { Controller = "table", launcherClick = "function" })
+    T.eq(type(F.Settings._state.liveKeys), "table", "Settings live keys")
+    T.eq(type(F.Settings._state.registeredCategories), "table", "Settings registered categories")
+    checkHeader(F.Window, "Window", {
+        saveGeometry = "function", dragStart = "function", dragStop = "function", makeDragScripts = "function",
+    })
+    T.eq(type(F.Window._state.attached), "table", "Window attached frames")
+end)
+
+test("a second copy of List, Menu, Tooltip, Settings or Window stands down and leaves the first one's tables alone", function()
+    local F = T.fresh()
+    for _, name in ipairs({ "List", "Menu", "Tooltip", "Settings", "Window" }) do
+        local M = F[name]
+        local state, impl = M._state, M._impl
+        T.loadModule("Modules/" .. name .. ".lua")
+        T.eq(F[name], M, name .. " keeps serving")
+        T.eq(M._state, state, name .. " state table unchanged")
+        T.eq(M._impl, impl, name .. " implementation table unchanged")
+    end
+end)
+
+test("the List registry holds a live controller and drops it on Destroy", function()
+    local F = T.fresh()
+    local reg = F.List._state.instances
+    T.eq(getmetatable(reg).__mode, "k", "weak keys")
+    T.eq(countKeys(reg), 0, "empty before any controller")
+    local a, b = newList(F, "LayoutListA"), newList(F, "LayoutListB")
+    T.eq(reg[a], true, "first listed")
+    T.eq(reg[b], true, "second listed")
+    a:Destroy()
+    T.eq(reg[a], nil, "destroyed controller dropped")
+    T.eq(reg[b], true, "the other stays")
+    T.eq(countKeys(reg), 1, "one left")
+end)
+
+test("the Menu registry holds a live controller and drops it on Destroy", function()
+    local F = T.fresh()
+    surfaces.installMenuUtil()
+    local reg = F.Menu._state.instances
+    T.eq(getmetatable(reg).__mode, "k", "weak keys")
+    T.eq(countKeys(reg), 0, "empty before any controller")
+    local a = F.Menu:New({ builder = function() end })
+    local b = F.Menu:New({ builder = function() end })
+    T.eq(reg[a], true, "first listed")
+    T.eq(reg[b], true, "second listed")
+    a:Destroy()
+    T.eq(reg[a], nil, "destroyed controller dropped")
+    a:Destroy()
+    T.eq(reg[b], true, "the other stays")
+    T.eq(countKeys(reg), 1, "one left after a repeated destroy")
+    T.eq(F.Menu._state.anonCounter, 2, "the counter lives on the state table")
+end)
+
+test("a refused List or Menu construction lists nothing", function()
+    local F = T.fresh("1.0.114")
+    F.List:New({})
+    F.Menu:New({})
+    T.eq(countKeys(F.List._state.instances), 0, "List registry empty")
+    T.eq(countKeys(F.Menu._state.instances), 0, "Menu registry empty")
+end)
+
+test("List and Menu controllers nobody references any more are not kept alive by the registries", function()
+    local F = T.fresh()
+    surfaces.installMenuUtil()
+    do
+        local l = newList(F, "LayoutGcList")
+        local m = F.Menu:New({ builder = function() end })
+        T.eq(countKeys(F.List._state.instances), 1, "list listed")
+        T.eq(countKeys(F.Menu._state.instances), 1, "menu listed")
+        T.truthy(l and m, "held")
+    end
+    T.frames = {}
+    T.views = {}
+    collectgarbage()
+    collectgarbage()
+    T.eq(countKeys(F.List._state.instances), 0, "List registry empty after collection")
+    T.eq(countKeys(F.Menu._state.instances), 0, "Menu registry empty after collection")
+end)
+
+-- Replaces module._impl[name] with a counting stand-in, runs fn, restores it.
+-- Returns the number of calls the stand-in saw.
+local function withSpy(module, name, fn)
+    local original = module._impl[name]
+    local calls = 0
+    module._impl[name] = function() calls = calls + 1 end
+    local ok, err = pcall(fn)
+    module._impl[name] = original
+    if not ok then error(err, 0) end
+    T.eq(module._impl[name], original, name .. " restored")
+    return calls
+end
+
+test("the tooltip post-call reaches whatever dispatch the module table holds", function()
+    local F = T.fresh()
+    local processor = surfaces.installTooltipProcessor()
+    local ran = 0
+    F.Tooltip:New({ type = 1, handler = function() ran = ran + 1 end })
+    local postCall = processor.postCalls[1].fn
+    T.eq(withSpy(F.Tooltip, "dispatch", function() postCall(surfaces.makeTooltip(), {}) end), 1, "spy counted once")
+    T.eq(ran, 0, "the original dispatch did not run")
+    postCall(surfaces.makeTooltip(), {})
+    T.eq(ran, 1, "the original dispatch runs once restored")
+end)
+
+test("the settings launcher click reaches whatever click function the module table holds", function()
+    local F = T.fresh()
+    local panel = surfaces.installSettingsLauncher()
+    local launched = 0
+    F.Settings:New({ title = "LayoutLauncher", buttonText = "Open", launch = function() launched = launched + 1 end })
+    local click = panel.clicks[1]
+    T.eq(withSpy(F.Settings, "launcherClick", function() click({}, "LeftButton", false) end), 1, "spy counted once")
+    T.eq(launched, 0, "the original click did not run")
+    click({}, "LeftButton", false)
+    T.eq(launched, 1, "the original click runs once restored")
+end)
+
+test("the menu generator reaches whatever generate function the module table holds", function()
+    local F = T.fresh()
+    surfaces.installMenuUtil()
+    local built = 0
+    local c = F.Menu:New({ builder = function() built = built + 1 end })
+    local wrapper = c._generatorWrapper
+    T.eq(withSpy(F.Menu, "generate", function() wrapper({}, surfaces.makeRootDescription()) end), 1, "spy counted once")
+    T.eq(built, 0, "the original generate did not run")
+    wrapper({}, surfaces.makeRootDescription())
+    T.eq(built, 1, "the original generate runs once restored")
+end)
+
+test("the list row initializer and extent reach whatever functions the module table holds", function()
+    local F = T.fresh()
+    local inits, extents = 0, 0
+    local c = F.List:New({
+        name = "LayoutRelayList", parent = {}, elementType = "Button",
+        extentCalculator = function() extents = extents + 1; return 20 end,
+        initializer = function() inits = inits + 1 end,
+    })
+    local view = c:GetNativeHandles().view
+    local init, calc = view._initializer, view._calc
+    T.eq(withSpy(F.List, "initRow", function() init({}, {}) end), 1, "initializer spy counted once")
+    T.eq(inits, 0, "the original row initializer did not run")
+    T.eq(withSpy(F.List, "extent", function() calc(1, {}) end), 1, "extent spy counted once")
+    T.eq(extents, 0, "the original extent did not run")
+    init({}, {})
+    T.eq(inits, 1, "the original row initializer runs once restored")
+    T.eq(calc(1, {}), 20, "the original extent runs once restored")
+    T.eq(extents, 1, "and called the consumer's calculator")
+end)
+
+test("a list with a fixed extent registers no extent calculator", function()
+    local F = T.fresh()
+    local c = F.List:New({
+        name = "LayoutFixedList", parent = {}, template = "SomeTemplate", extent = 18, initializer = function() end,
+    })
+    local view = c:GetNativeHandles().view
+    T.eq(view._extent, 18, "fixed extent set")
+    T.eq(#view.calls.SetElementExtentCalculator, 0, "no calculator registered")
+    T.eq(c._extentFn, nil, "no calculator kept")
+end)
+
+local function registeredRecord(F, name)
+    return F.Settings._state.registeredCategories[name]
+end
+
+-- First New throws inside the Register calls; the same inputs are then tried again.
+local function cleanRetrySteps(F, state)
+    local panel = surfaces.installSettingsLauncher()
+    local category = { GetID = function() return 35 end }
+    local fail = true
+    _G.Settings.RegisterInitializer = function()
+        if fail then error("register failed", 0) end
+    end
+    _G.Settings.RegisterVerticalLayoutCategory = function() state.categories = (state.categories or 0) + 1; return category, {} end
+    local launched = 0
+    local config = { title = "RetryLauncher", buttonText = "Open", launch = function() launched = launched + 1 end }
+    local ok1, err1 = pcall(function() return F.Settings:New(config) end)
+    state.firstOk, state.firstErr = ok1, tostring(err1)
+    fail = false
+    local ok2, second = pcall(function() return F.Settings:New(config) end)
+    state.secondOk = ok2 and type(second) == "table"
+    panel.clicks[#panel.clicks]({}, "LeftButton", false)
+    return table.concat({
+        tostring(ok1), tostring(err1), tostring(state.secondOk), tostring(state.categories),
+        tostring(#panel.clicks), tostring(launched),
+    }, "|")
+end
+
+test("a launcher whose first registration throws leaves nothing cached and registers cleanly on a retry, as in the 1.0.114 release", function()
+    local F = T.fresh("1.0.114")
+    local state = {}
+    local current = cleanRetrySteps(F, state)
+    T.eq(state.firstOk, false, "first New threw")
+    T.eq(state.secondOk, true, "the retry registered")
+    T.eq(current, "false|register failed|true|2|2|1", "observable steps")
+    local record = registeredRecord(F, "RetryLauncher")
+    T.eq(record.name, "RetryLauncher", "the retry cached its record")
+
+    -- Nothing is cached between the failed attempt and the retry.
+    local F2 = T.fresh("1.0.114")
+    local panel = surfaces.installSettingsLauncher()
+    _G.Settings.RegisterInitializer = function() error("register failed", 0) end
+    pcall(function() F2.Settings:New({ title = "NoCache", buttonText = "Open", launch = function() end }) end)
+    T.eq(registeredRecord(F2, "NoCache"), nil, "no cached record after a throw")
+    T.eq(#panel.clicks, 1, "the button was created before the throw, as in the release")
+
+    T.installMocks("@project-version@")
+    local old = T.loadOldCopy("v1.0.114", "OldHost", "1.0.114")
+    local released = cleanRetrySteps(old, {})
+    T.eq(current, released, "observable steps differ from the release")
+end)
+
+test("a launcher created again over its cached registration reuses the cached record", function()
+    local F = T.fresh()
+    local panel = surfaces.installSettingsLauncher()
+    local launched = 0
+    local function config()
+        return { title = "CachedLauncher", buttonText = "Open", launch = function() launched = launched + 1 end }
+    end
+    local first = F.Settings:New(config())
+    local record = registeredRecord(F, "CachedLauncher")
+    T.eq(record.name, "CachedLauncher", "record carries its name")
+    first:Destroy()
+    local second = F.Settings:New(config())
+    T.eq(registeredRecord(F, "CachedLauncher"), record, "same record table")
+    T.eq(#panel.clicks, 1, "no second button")
+    panel.clicks[1]({}, "LeftButton", false)
+    T.eq(launched, 1, "the first button reaches the new controller")
+    second:Destroy()
+    local canvasFrame = { GetObjectType = function() return "Frame" end }
+    F.Settings:New({ title = "CachedCanvas", frame = canvasFrame }):Destroy()
+    local canvasRecord = registeredRecord(F, "CachedCanvas")
+    T.eq(canvasRecord.name, "CachedCanvas", "canvas record carries its name")
+    F.Settings:New({ title = "CachedCanvas", frame = canvasFrame })
+    T.eq(registeredRecord(F, "CachedCanvas"), canvasRecord, "same canvas record table")
+end)
+
+test("the window drag scripts read the window and geometry from the record", function()
+    local F = T.fresh()
+    local win = _G.CreateFrame("Frame", nil, _G.UIParent)
+    local geometry = {}
+    F.Window:Attach(win, { handle = win, geometry = geometry, default = { "CENTER", "CENTER", 0, 0 } })
+    local record = F.Window._state.attached[win]
+    T.eq(record.win, win, "record holds the window")
+    T.eq(record.geometry, geometry, "record holds the geometry table")
+    local onStart, onStop = win:GetScript("OnDragStart"), win:GetScript("OnDragStop")
+    T.eq(type(onStart), "function", "start script set")
+    T.eq(type(onStop), "function", "stop script set")
+
+    local other = {}
+    record.geometry = other
+    onStop()
+    T.eq(geometry.point, nil, "the original geometry table is not written")
+    T.truthy(other.point ~= nil, "the record's geometry table is written")
+
+    local started = 0
+    local fake = { StartMoving = function() started = started + 1 end }
+    record.win = fake
+    onStart()
+    T.eq(started, 1, "the record's window is moved")
+end)
+
+--------------------------------------------------------------------------------
+-- state never declared as a file-level local
+--------------------------------------------------------------------------------
+
+-- Names that must not be declared as locals, by file. A file is checked once
+-- it has no entries left in the reachability expected list.
+local FORBIDDEN = {
+    ["Modules/Lifecycle.lua"] = { "identityHeld", "dispatcher" },
+    ["Modules/DB.lua"] = { "sizeWarningEvents" },
+    ["Modules/Menu.lua"] = { "anonCounter" },
+}
+
+local function readSource(file)
+    local f = assert(io.open(T.foundryRoot .. "/" .. file, "rb"))
+    local src = f:read("*a")
+    f:close()
+    return src
+end
+
+-- Lines that declare `name` as a local: `local name`, `local a, name = ...`
+-- and `local function name`. Comment text is ignored.
+local function declarations(src, name)
+    local found = {}
+    local n = 0
+    for line in (src .. "\n"):gmatch("(.-)\r?\n") do
+        n = n + 1
+        local code = line:gsub("%-%-.*$", "")
+        local hit = code:match("^%s*local%s+function%s+([%w_]+)") == name
+        local list = code:match("^%s*local%s+([%w_,%s]-)%s*=") or code:match("^%s*local%s+([%w_,%s]+)%s*$")
+        if list and not code:match("^%s*local%s+function") then
+            for ident in list:gmatch("[%w_]+") do
+                if ident == name then hit = true end
+            end
+        end
+        if hit then found[#found + 1] = n end
+    end
+    return found
+end
+
+test("the declaration scan recognises the forms it looks for", function()
+    local src = table.concat({
+        "local identityHeld = false",
+        "local a, identityHeld = 1, 2",
+        "local function identityHeld() end",
+        "local identityHeld",
+        "  local x = identityHeld",
+        "-- local identityHeld = 1",
+        "F._state.identityHeld = 1",
+        "local identityHeldCount = 0",
+    }, "\n")
+    local lines = declarations(src, "identityHeld")
+    T.eq(#lines, 4, "declarations found")
+    T.eq(lines[1], 1, "first")
+    T.eq(lines[4], 4, "last")
+end)
+
+local checked = {}
+
+for file, names in pairs(FORBIDDEN) do
+    test(file .. " declares none of its state as file-level locals once it is moved", function()
+        local remaining = T.expectedTrapped[file]
+        if remaining and #remaining > 0 then return end   -- not moved yet: rule not active
+        local src = readSource(file)
+        T.truthy(#src > 0, "source read")
+        checked[file] = true
+        for _, name in ipairs(names) do
+            local lines = declarations(src, name)
+            T.eq(#lines, 0, name .. " declared as a local at line " .. tostring(lines[1]))
+        end
+    end)
+end
+
+test("once the expected list is empty every file above has been checked", function()
+    for _, list in pairs(T.expectedTrapped) do
+        if #list > 0 then return end
+    end
+    for file in pairs(FORBIDDEN) do
+        T.truthy(checked[file], file .. " was never checked although nothing is left in the expected list")
+    end
+end)
+
+return tests

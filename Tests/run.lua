@@ -131,9 +131,17 @@ function T.installMocks(tocVersion)
     T.loggedIn = false
     _G.IsLoggedIn = function() return T.loggedIn end
 
+    -- Per-addon-name Version overrides: T.addonVersions[addonName] = "1.2.3"
+    -- answers that name instead of tocVersion. Empty by default, so every name
+    -- gets tocVersion. T.loadCopy fills it for the copy it loads.
+    T.addonVersions = {}
     _G.C_AddOns = {
-        GetAddOnMetadata = function(_, key)
-            if key == "Version" then return tocVersion end
+        GetAddOnMetadata = function(addonName, key)
+            if key == "Version" then
+                local override = T.addonVersions[addonName]
+                if override ~= nil then return override end
+                return tocVersion
+            end
             return nil
         end,
         -- The REAL C_AddOns.IsAddOnLoaded returns TWO booleans: loadedOrLoading,
@@ -551,31 +559,250 @@ function T.loadFixture(path)
     return env
 end
 
--- Load the bootstrap + the Commands and Events modules fresh; returns the
--- Foundry table. Loading Events is additive: Commands tests reference only
--- F.Commands and are unaffected by the extra module being present.
+-- The library's files, in load order.
+T.FOUNDRY_FILES = {
+    "Foundry.lua", "Modules/Commands.lua", "Modules/Events.lua",
+    "Modules/Lifecycle.lua", "Modules/DB.lua", "Modules/List.lua",
+    "Modules/Settings.lua", "Modules/Tooltip.lua", "Modules/Menu.lua",
+    "Modules/Window.lua",
+}
+
+-- The one line every library file carries to state its build number. The
+-- build spec reads it with this pattern.
+T.BUILD_LINE = "^local BUILD = (%d+)$"
+
+-- The build number Foundry.lua carries.
+function T.libraryBuild()
+    for line in io.lines(foundryRoot .. "/Foundry.lua") do
+        local value = line:gsub("\r$", ""):match(T.BUILD_LINE)
+        if value then return tonumber(value) end
+    end
+end
+
+-- Rehearsal mode (--rehearse): every T.loadFoundry also installs a second
+-- copy of the library over the first, so the whole suite runs against code
+-- swapped in over a running copy.
+T.REHEARSE = false
+T.TAKEOVER = false
+for i = 1, (arg and #arg or 0) do
+    if arg[i] == "--rehearse" then T.REHEARSE = true end
+    if arg[i] == "--takeover" then T.TAKEOVER = true end
+end
+if T.REHEARSE and T.TAKEOVER then
+    realPrint("--takeover and --rehearse cannot be combined: each replaces the library the suite loads")
+    os.exit(2)
+end
+
+-- Load a second copy of the library without disturbing the one serving: each
+-- file runs in an environment that reads through to _G but hides
+-- Foundry_1_0, and whose _G is the environment itself, so the copy builds
+-- its own library table instead of standing down. files are relative to the
+-- repo root. Returns the second library table and the environment.
+function T.shadowLoad(files, addonName)
+    local env = {}
+    setmetatable(env, {
+        __index = function(_, key)
+            if key == "Foundry_1_0" then return nil end
+            return _G[key]
+        end,
+    })
+    env._G = env
+    for _, rel in ipairs(files) do
+        local chunk = assert(loadfile(foundryRoot .. "/" .. rel))
+        setfenv(chunk, env)
+        chunk(addonName)
+    end
+    return rawget(env, "Foundry_1_0"), env
+end
+
+local installer
+function T.installer()
+    installer = installer or assert(loadfile(testsDir .. "/Layout/installer.lua"))(T)
+    return installer
+end
+
+-- Shadow-load the library's files and install them over the serving copy F.
+-- Returns the second library table and its environment.
+function T.installSecondCopy(F)
+    local F2, env = T.shadowLoad(T.FOUNDRY_FILES, "Foundry-1.0")
+    T.installer().install({ F = F, F2 = F2, env = env })
+    T.lastSecondCopy = F2
+    return F2, env
+end
+
+-- Takeover mode (--takeover): every T.loadFoundry that could be a real
+-- takeover loads the pinned layout-1 copy first and the current files over
+-- it, under the same addon name, so the whole suite runs against code that
+-- took over an older copy in place. It cannot be combined with --rehearse
+-- (parsed with it, above).
+
+-- Loads of the library in the running suite, by kind; the runner resets and
+-- prints them per suite.
+T.loadCounts = { takeovers = 0, plain = 0 }
+
+-- A takeover is possible only when no library is serving yet and the mocks
+-- report the player neither logged in nor in combat; any other load is plain.
+local function takeoverPossible()
+    return _G.Foundry_1_0 == nil
+        and type(_G.IsLoggedIn) == "function" and not _G.IsLoggedIn()
+        and type(_G.InCombatLockdown) == "function" and not _G.InCombatLockdown()
+end
+
+-- Every unit of the serving library must carry the current build after a
+-- takeover; a unit left on the older copy would let the suite pass against
+-- code that never took over.
+local function assertTookOver(F)
+    local build = T.libraryBuild()
+    local units = { { "the core", F } }
+    for name, module in pairs(F._state.modules) do units[#units + 1] = { name, module } end
+    for _, unit in ipairs(units) do
+        if rawget(unit[2], "_build") ~= build then
+            error("takeover mode: " .. unit[1] .. " did not take over the layout-1 copy", 3)
+        end
+    end
+end
+
+-- Load the bootstrap and every module fresh; returns the Foundry table. In
+-- rehearsal mode a second copy is then installed over it; in takeover mode
+-- the current files load over the layout-1 copy when a takeover is possible.
 function T.loadFoundry()
-    local boot = assert(loadfile(foundryRoot .. "/Foundry.lua"))
-    boot("Foundry-1.0")
-    local cmds = assert(loadfile(foundryRoot .. "/Modules/Commands.lua"))
-    cmds("Foundry-1.0")
-    local events = assert(loadfile(foundryRoot .. "/Modules/Events.lua"))
-    events("Foundry-1.0")
-    local lifecycle = assert(loadfile(foundryRoot .. "/Modules/Lifecycle.lua"))
-    lifecycle("Foundry-1.0")
-    local db = assert(loadfile(foundryRoot .. "/Modules/DB.lua"))
-    db("Foundry-1.0")
-    local list = assert(loadfile(foundryRoot .. "/Modules/List.lua"))
-    list("Foundry-1.0")
-    local settings = assert(loadfile(foundryRoot .. "/Modules/Settings.lua"))
-    settings("Foundry-1.0")
-    local tooltip = assert(loadfile(foundryRoot .. "/Modules/Tooltip.lua"))
-    tooltip("Foundry-1.0")
-    local menu = assert(loadfile(foundryRoot .. "/Modules/Menu.lua"))
-    menu("Foundry-1.0")
-    local window = assert(loadfile(foundryRoot .. "/Modules/Window.lua"))
-    window("Foundry-1.0")
+    local takeover = T.TAKEOVER and takeoverPossible()
+    if takeover then T.loadOldCopy("layout1") end
+    for _, rel in ipairs(T.FOUNDRY_FILES) do
+        assert(loadfile(foundryRoot .. "/" .. rel))("Foundry-1.0")
+    end
+    local F = _G.Foundry_1_0
+    if takeover then
+        assertTookOver(F)
+        T.loadCounts.takeovers = T.loadCounts.takeovers + 1
+    else
+        T.loadCounts.plain = T.loadCounts.plain + 1
+    end
+    if T.REHEARSE then T.installSecondCopy(F) end
+    return F
+end
+
+-- Load a set of Foundry files from any root, in order, under one addon name,
+-- the way the TOC would. Returns the Foundry table now serving
+-- (_G.Foundry_1_0).
+--   root      directory holding the files
+--   files     relative paths, in load order
+--   addonName the name each file receives as its first argument; also the key
+--             the GetAddOnMetadata mock answers for (default "Foundry-1.0")
+--   version   optional: the Version answered for addonName; nil leaves the
+--             mock's default (the tocVersion given to installMocks)
+-- Call after installMocks; several copies may be loaded one after another.
+function T.loadCopy(spec)
+    local addonName = spec.addonName or "Foundry-1.0"
+    if spec.version ~= nil then T.addonVersions[addonName] = spec.version end
+    for _, rel in ipairs(spec.files) do
+        local chunk = assert(loadfile(spec.root .. "/" .. rel))
+        chunk(addonName)
+    end
     return _G.Foundry_1_0
+end
+
+-- The pinned release copies under Tests/OldCopies, with their load order.
+T.OLD_COPIES = {
+    ["v1.0.4"] = {
+        "Foundry.lua", "Modules/Commands.lua", "Modules/Events.lua",
+        "Modules/Lifecycle.lua", "Modules/DB.lua",
+    },
+    ["v1.0.114"] = {
+        "Foundry.lua", "Modules/Commands.lua", "Modules/Events.lua",
+        "Modules/Lifecycle.lua", "Modules/DB.lua", "Modules/List.lua",
+        "Modules/Settings.lua", "Modules/Tooltip.lua", "Modules/Menu.lua",
+        "Modules/Window.lua",
+    },
+    -- The library at the commit before the build number existed: layout 1, no
+    -- build number on any unit. A copy with a build number takes it over.
+    layout1 = {
+        "Foundry.lua", "Modules/Commands.lua", "Modules/Events.lua",
+        "Modules/Lifecycle.lua", "Modules/DB.lua", "Modules/List.lua",
+        "Modules/Settings.lua", "Modules/Tooltip.lua", "Modules/Menu.lua",
+        "Modules/Window.lua",
+    },
+}
+
+-- Load one pinned copy ("v1.0.4", "v1.0.114" or "layout1") under the current
+-- mocks; returns the Foundry table.
+function T.loadOldCopy(tag, addonName, version)
+    return T.loadCopy({
+        root = testsDir .. "/OldCopies/" .. tag,
+        files = assert(T.OLD_COPIES[tag], "unknown pinned copy " .. tostring(tag)),
+        addonName = addonName,
+        version = version,
+    })
+end
+
+-- Load the current library files as a copy with another build number, under
+-- the current mocks, the way the TOC would; returns the Foundry table now
+-- serving. The sources are read from the repo root and the build line is
+-- rewritten, so the loaded code is the current code under another number.
+--   build      the number written to each file's build line (default: the
+--              current number)
+--   addonName  the name each file receives as its first argument (default
+--              "Foundry-1.0")
+--   version    optional: the Version answered for addonName
+--   files      relative paths to load, in order (default: all ten)
+--   replace    optional map of exact line -> exact line; each key must match
+--              exactly one line among the files loaded by this call
+--   text       optional map of relative path -> source, used instead of the
+--              file on disk (for the loader's own cases)
+-- Every file must carry exactly one build line. The chunk name is
+-- "@<root>/build-<n>/<path>", so the walker reads it as library code and a
+-- test can tell builds apart by the build-<n> segment of a function's source.
+function T.loadBuild(spec)
+    local build = spec.build or T.libraryBuild()
+    assert(type(build) == "number" and build == build and build > -math.huge and build < math.huge,
+        "loadBuild: build must be a finite number")
+    local addonName = spec.addonName or "Foundry-1.0"
+    if spec.version ~= nil then T.addonVersions[addonName] = spec.version end
+    local replace = spec.replace or {}
+    local matched = {}
+    local chunks = {}
+    for _, rel in ipairs(spec.files or T.FOUNDRY_FILES) do
+        local text = spec.text and spec.text[rel]
+        if text == nil then
+            local handle = assert(io.open(foundryRoot .. "/" .. rel, "rb"))
+            text = handle:read("*a")
+            handle:close()
+        end
+        local lines, buildLines = {}, 0
+        for line in (text .. "\n"):gmatch("([^\n]*)\n") do
+            local bare = line:gsub("\r$", "")
+            if bare:match(T.BUILD_LINE) then
+                buildLines = buildLines + 1
+                line = "local BUILD = " .. string.format("%.14g", build)
+            elseif replace[bare] ~= nil then
+                matched[bare] = (matched[bare] or 0) + 1
+                line = replace[bare]
+            end
+            lines[#lines + 1] = line
+        end
+        if buildLines ~= 1 then
+            error("loadBuild: " .. rel .. " has " .. buildLines .. " build lines, expected exactly 1", 2)
+        end
+        chunks[#chunks + 1] = { rel = rel, source = table.concat(lines, "\n") }
+    end
+    for from in pairs(replace) do
+        if matched[from] ~= 1 then
+            error("loadBuild: the line to replace matched " .. (matched[from] or 0)
+                .. " times, expected exactly 1: " .. from, 2)
+        end
+    end
+    for _, chunk in ipairs(chunks) do
+        local name = "@" .. foundryRoot .. "/build-" .. string.format("%.14g", build) .. "/" .. chunk.rel
+        assert(loadstring(chunk.source, name))(addonName)
+    end
+    return _G.Foundry_1_0
+end
+
+-- A replace map for loadBuild that makes the file raise an error just before
+-- the given line, which must begin a top-level statement. Used to prove that a
+-- copy failing partway through leaves the serving copy as it was.
+function T.plantError(line, message)
+    return { [line] = string.format("error(%q) ", message or "planted") .. line }
 end
 
 -- Install dev-build mocks (default) and load; returns the Foundry table.
@@ -613,6 +840,31 @@ function T.outputContains(substr, msg)
         .. "' (output: " .. table.concat(T.output, " | ") .. ")", 2)
 end
 
+-- Suites that make no takeover in takeover mode, each with the reason. The
+-- takeover run mode takes over a layout-1 copy that holds no live objects yet,
+-- so it shows the suites pass on tables the newer code bound to; adopting live
+-- state is covered by the two takeover spec files.
+T.TAKEOVER_EXEMPT = {
+    ["Foundry.Bootstrap"] = "loads the bootstrap file alone against library tables it builds by hand",
+    ["Foundry.Packaging"] = "reads the packaging files and loads no library",
+    ["Foundry.Layout.mixed"] = "loads each copy itself, in the order under test",
+    ["Foundry.Layout.copies"] = "loads each copy itself, to check the record each one leaves",
+    ["Foundry.Layout.takeover_chain"] = "loads the layout-1 copy and each newer copy itself, to check every takeover directly",
+}
+
+-- In takeover mode, why a suite fails on its load counts, or nil: a suite
+-- with no takeover fails unless it is exempt, and an exempt suite that makes
+-- a takeover fails too.
+function T.takeoverVerdict(label, counts)
+    local exempt = T.TAKEOVER_EXEMPT[label] ~= nil
+    if counts.takeovers == 0 and not exempt then
+        return "takeover mode: the suite made no takeover and is not listed as exempt"
+    elseif counts.takeovers > 0 and exempt then
+        return "takeover mode: the suite is listed as exempt but made " .. counts.takeovers .. " takeovers"
+    end
+    return nil
+end
+
 -- Each suite: a label and the cases list its spec returns when called with T.
 local suites = {
     { label = "Foundry.Commands",  cases = assert(loadfile(testsDir .. "/Commands/commands_spec.lua"))(T) },
@@ -627,11 +879,37 @@ local suites = {
     { label = "Foundry.Menu",      cases = assert(loadfile(testsDir .. "/Menu/menu_spec.lua"))(T) },
     { label = "Foundry.Window",    cases = assert(loadfile(testsDir .. "/Window/window_spec.lua"))(T) },
     { label = "Foundry.Packaging", cases = assert(loadfile(testsDir .. "/Packaging/packaging_spec.lua"))(T) },
+    { label = "Foundry.OldCopies", cases = assert(loadfile(testsDir .. "/OldCopies/copies_spec.lua"))(T) },
+    { label = "Foundry.DB.equivalence", cases = assert(loadfile(testsDir .. "/DB/equivalence_spec.lua"))(T) },
+    { label = "Foundry.Layout.perf", cases = assert(loadfile(testsDir .. "/Layout/perf_spec.lua"))(T) },
+    { label = "Foundry.Layout.errors", cases = assert(loadfile(testsDir .. "/Layout/error_levels_spec.lua"))(T) },
+    { label = "Foundry.Layout.reachability", cases = assert(loadfile(testsDir .. "/Layout/reachability_spec.lua"))(T) },
+    { label = "Foundry.Layout.layout", cases = assert(loadfile(testsDir .. "/Layout/layout_spec.lua"))(T) },
+    { label = "Foundry.Layout.handover", cases = assert(loadfile(testsDir .. "/Layout/handover_spec.lua"))(T) },
+    { label = "Foundry.Layout.mixed", cases = assert(loadfile(testsDir .. "/Layout/mixed_copies_spec.lua"))(T) },
+    { label = "Foundry.Layout.copies", cases = assert(loadfile(testsDir .. "/Layout/copies_record_spec.lua"))(T) },
+    { label = "Foundry.Layout.build", cases = assert(loadfile(testsDir .. "/Layout/build_spec.lua"))(T) },
+    { label = "Foundry.Layout.takeover", cases = assert(loadfile(testsDir .. "/Layout/takeover_spec.lua"))(T) },
+    { label = "Foundry.Layout.takeover_chain", cases = assert(loadfile(testsDir .. "/Layout/takeover_chain_spec.lua"))(T) },
 }
+
+if T.REHEARSE then
+    realPrint("Rehearsal: a second copy is installed over every library the suite loads")
+end
+if T.TAKEOVER then
+    realPrint("Takeover: the current files take over the layout-1 copy in every load that allows it")
+    local labels = {}
+    for label in pairs(T.TAKEOVER_EXEMPT) do labels[#labels + 1] = label end
+    table.sort(labels)
+    for _, label in ipairs(labels) do
+        realPrint("  exempt: " .. label .. ": " .. T.TAKEOVER_EXEMPT[label])
+    end
+end
 
 local anyFailed = false
 for _, suite in ipairs(suites) do
     local passed, failed, failures = 0, 0, {}
+    T.loadCounts = { takeovers = 0, plain = 0 }
     for _, case in ipairs(suite.cases) do
         local ok, err = pcall(case.fn)
         if ok then
@@ -641,8 +919,17 @@ for _, suite in ipairs(suites) do
             failures[#failures + 1] = case.name .. "  ->  " .. tostring(err)
         end
     end
-    realPrint(string.format("%s: %d passed, %d failed (%d total)",
-        suite.label, passed, failed, passed + failed))
+    local loads = ""
+    if T.TAKEOVER then
+        loads = string.format("; %d takeovers, %d plain loads", T.loadCounts.takeovers, T.loadCounts.plain)
+        local verdict = T.takeoverVerdict(suite.label, T.loadCounts)
+        if verdict then
+            failed = failed + 1
+            failures[#failures + 1] = verdict
+        end
+    end
+    realPrint(string.format("%s: %d passed, %d failed (%d total)%s",
+        suite.label, passed, failed, passed + failed, loads))
     for _, f in ipairs(failures) do
         realPrint("  FAIL: " .. f)
     end
