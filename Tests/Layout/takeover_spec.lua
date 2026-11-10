@@ -40,12 +40,11 @@ local SERVING_BUILD, INCOMING_BUILD = 2, 3
 --------------------------------------------------------------------------------
 
 -- The units whose code is still the older copy's after a newer copy has loaded
--- over it. Each unit's task deletes its own name once the unit takes over; the
--- ledger test then holds the list to exactly the units that still serve older
--- code. With the list empty the test is strict: no unit may serve older code.
--- The same list holds back every case below that needs behaviour the unit does not
--- have yet (the record's outcome words, the raise for a refused takeover).
-local STILL_OLDER = { "List", "Settings", "Tooltip", "Menu", "Window" }
+-- over it. The ledger test holds the list to exactly the units that still serve
+-- older code. Every unit takes over now, so the list is empty and the test is
+-- strict: no unit may serve older code. A unit named here would also be held
+-- back from the cases below that need the raise for a refused takeover.
+local STILL_OLDER = {}
 
 local function pending(unit)
     for _, name in ipairs(STILL_OLDER) do
@@ -141,13 +140,14 @@ local function buildInstances(F)
     inst.guarded = F.Commands:New({
         name = "TakeoverGuarded", slashes = { "/tkg" }, guard = F.Commands.Guards.NotRestricted,
     })
-    surfaces.installSettingsLauncher()
+    inst.panel = surfaces.installSettingsLauncher()
     inst.settings = F.Settings:New({
         title = "TakeoverCanvas", frame = { GetObjectType = function() return "Frame" end },
     })
-    surfaces.installTooltipProcessor()
+    inst.launcher = F.Settings:New({ title = "TakeoverLauncher", buttonText = "Open", launch = function() end })
+    inst.processor = surfaces.installTooltipProcessor()
     inst.tooltip = F.Tooltip:New({ type = 1, handler = function() end })
-    surfaces.installMenuUtil()
+    inst.menuUtil = surfaces.installMenuUtil()
     inst.menu = F.Menu:New({ builder = function() end })
     local win = _G.CreateFrame("Frame", nil, _G.UIParent)
     F.Window:Attach(win, { handle = win, geometry = {}, default = { "CENTER", "CENTER", 0, 0 } })
@@ -737,6 +737,13 @@ local FROZEN_TARGETS = {
     { "Lifecycle", "_impl.onEvent" },
     { "DB", "_impl.onLogout" },
     { "Commands", "_impl.Controller.Dispatch" },
+    { "List", "_impl.initRow" },
+    { "List", "_impl.extent" },
+    { "Tooltip", "_impl.dispatch" },
+    { "Settings", "_impl.launcherClick" },
+    { "Menu", "_impl.generate" },
+    { "Window", "_impl.dragStart" },
+    { "Window", "_impl.dragStop" },
 }
 
 local function resolve(F, unit, path)
@@ -1847,14 +1854,468 @@ test("a Commands that fails partway through taking over leaves the version, buil
 end)
 
 --------------------------------------------------------------------------------
+-- List, Settings, Tooltip, Menu and Window
+--------------------------------------------------------------------------------
+
+local UI_UNITS = { "List", "Settings", "Tooltip", "Menu", "Window" }
+-- The public entry point each unit redefines, and the API version each file carries.
+local UI_ENTRY = { List = "New", Settings = "New", Tooltip = "New", Menu = "New", Window = "Attach" }
+local UI_API = { List = 1, Settings = 2, Tooltip = 1, Menu = 1, Window = 1 }
+
+local SETTINGS_REGISTRATIONS = {
+    "RegisterCanvasLayoutCategory", "RegisterCanvasLayoutSubcategory", "RegisterVerticalLayoutCategory",
+    "RegisterInitializer", "RegisterAddOnCategory",
+}
+
+-- Wraps each { table, key } while run() executes and returns how many calls
+-- the wrappers saw in all.
+local function countAll(targets, run)
+    local originals, total = {}, 0
+    for i, target in ipairs(targets) do
+        local tbl, key = target[1], target[2]
+        local fn = tbl[key]
+        originals[i] = fn
+        if type(fn) == "function" then
+            tbl[key] = function(...)
+                total = total + 1
+                return fn(...)
+            end
+        end
+    end
+    local ok, err = pcall(run)
+    for i, target in ipairs(targets) do target[1][target[2]] = originals[i] end
+    if not ok then error(err, 0) end
+    return total
+end
+
+-- The calls through which a module could reach the client or the library's
+-- registry: its own registration, frames, the scrolling list, the settings
+-- panel, the tooltip processor and the menu utility.
+local function clientTargets(F)
+    local targets = {
+        { F, "RegisterModule" }, { _G, "CreateFrame" }, { _G, "CreateScrollBoxListLinearView" },
+        { _G, "CreateDataProvider" }, { _G, "CreateSettingsButtonInitializer" },
+        { _G.TooltipDataProcessor, "AddTooltipPostCall" }, { _G.MenuUtil, "CreateContextMenu" },
+    }
+    for _, key in ipairs(SETTINGS_REGISTRATIONS) do targets[#targets + 1] = { _G.Settings, key } end
+    return targets
+end
+
+local function settingsTargets()
+    local targets = { { _G, "CreateSettingsButtonInitializer" } }
+    for _, key in ipairs(SETTINGS_REGISTRATIONS) do targets[#targets + 1] = { _G.Settings, key } end
+    return targets
+end
+
+-- Every slash name the client holds: the handler table's keys and the SLASH_ globals.
+local function slashKeys()
+    local keys = {}
+    for key in pairs(_G.SlashCmdList) do keys[#keys + 1] = "SlashCmdList." .. tostring(key) end
+    for key in pairs(_G) do
+        if type(key) == "string" and key:match("^SLASH_") then keys[#keys + 1] = key end
+    end
+    table.sort(keys)
+    return table.concat(keys, ",")
+end
+
+local UI_API_LINES = {}
+for unit, n in pairs(UI_API) do UI_API_LINES[unit] = "local API_VERSION = " .. n end
+
+test("a newer List, Settings, Tooltip, Menu or Window takes over the serving module in place, redefines its functions and makes no client call", function()
+    for _, unit in ipairs(UI_UNITS) do
+        for _, kind in ipairs({ "layout1", "current" }) do
+            for _, mode in ipairs({ "release", "dev" }) do
+                local who = unit .. ", " .. kind .. ", " .. mode .. ": "
+                local F = serve(kind, mode)
+                local inst = buildInstances(F)
+                local M = F[unit]
+                local S, I = M._state, M._impl
+                local kept = {}
+                for key, value in pairs(S) do kept[key] = value end
+                local controller = I.Controller
+                local olderEntry = M[UI_ENTRY[unit]]
+                local copies, frames, printed = #F._state.copies, #T.frames, #T.output
+                local before, slash = clientCalls(), slashKeys()
+                local views, posts = #T.views, #inst.processor.postCalls
+
+                local ok, err
+                local calls = countAll(clientTargets(F), function()
+                    ok, err = pcall(loadModule, unit, { version = incomingVersion(mode) })
+                end)
+                T.truthy(ok, who .. "the incoming file raised nothing: " .. tostring(err))
+                T.eq(calls, 0, who .. "no registration, frame or client surface call")
+                T.eq(firstCallDifference(before, clientCalls()), nil, who .. "no frame call is logged")
+                T.eq(#T.frames, frames, who .. "no frame is made")
+                T.eq(#T.views, views, who .. "no scrolling list view is made")
+                T.eq(#inst.processor.postCalls, posts, who .. "no tooltip post-call is added")
+                T.eq(slashKeys(), slash, who .. "no slash name appears")
+                T.eq(#F._state.copies, copies, who .. "a module file leaves the record alone")
+                T.eq(#T.output, printed, who .. "nothing is printed")
+
+                T.truthy(rawequal(F[unit], M) and rawequal(M._state, S) and rawequal(M._impl, I),
+                    who .. "the module, state and implementation tables are kept")
+                for key, value in pairs(kept) do
+                    T.truthy(rawequal(S[key], value), who .. "state '" .. key .. "' is kept")
+                end
+                if controller then
+                    T.truthy(rawequal(I.Controller, controller), who .. "the controller table is kept")
+                end
+                T.eq(M._build, INCOMING_BUILD, who .. "build is the newer number")
+                T.eq(M._source, "IncomingHost", who .. "the newer copy's addon is named")
+                T.eq(M.API_VERSION, UI_API[unit], who .. "API version")
+                T.eq(M._layoutVersion, 1, who .. "layout version")
+                T.truthy(M[UI_ENTRY[unit]] ~= olderEntry, who .. UI_ENTRY[unit] .. " is redefined")
+                T.eq(buildOf(M[UI_ENTRY[unit]]), tostring(INCOMING_BUILD), who .. UI_ENTRY[unit] .. " is the newer copy's")
+                local replaced = 0
+                for key, value in pairs(I) do
+                    if type(value) == "function" then
+                        replaced = replaced + 1
+                        T.eq(buildOf(value), tostring(INCOMING_BUILD), who .. "_impl." .. tostring(key) .. " is the newer copy's")
+                    end
+                end
+                T.truthy(replaced > 0, who .. "implementation functions were checked")
+            end
+        end
+    end
+end)
+
+-- name         the relay, in plain words
+-- unit/target  the function on the module's implementation table it calls by name
+-- slot         reads the function the client keeps, from the instances made before
+-- call         calls the slot the way the client does
+local RELAYS = {
+    { name = "the list's row initializer", unit = "List", target = "initRow",
+        slot = function(inst) return inst.list:GetNativeHandles().view._initializer end,
+        call = function(slot) slot({}, {}) end },
+    { name = "the list's extent calculator", unit = "List", target = "extent",
+        slot = function(inst) return inst.list:GetNativeHandles().view._calc end,
+        call = function(slot) T.eq(slot(1, {}), 20, "the extent") end },
+    { name = "the tooltip post-call", unit = "Tooltip", target = "dispatch",
+        slot = function(inst) return inst.processor.postCalls[1].fn end,
+        call = function(slot) slot(surfaces.makeTooltip(), {}) end },
+    { name = "the settings launcher click", unit = "Settings", target = "launcherClick",
+        slot = function(inst) return inst.panel.clicks[#inst.panel.clicks] end,
+        call = function(slot) slot({}, "LeftButton", false) end },
+    { name = "the menu generator", unit = "Menu", target = "generate",
+        slot = function(inst) return inst.menu._generatorWrapper end,
+        call = function(slot) slot({}, surfaces.makeRootDescription()) end },
+    { name = "the window's drag start script", unit = "Window", target = "dragStart",
+        slot = function(inst) return inst.windowFrame._scripts.OnDragStart end,
+        call = function(slot) slot() end },
+    { name = "the window's drag stop script", unit = "Window", target = "dragStop",
+        slot = function(inst) return inst.windowFrame._scripts.OnDragStop end,
+        call = function(slot) slot() end },
+}
+
+test("a relay an older copy made reaches the newer implementation function by name, once, and the slot that holds it is not touched", function()
+    for _, relay in ipairs(RELAYS) do
+        for _, kind in ipairs({ "layout1", "current" }) do
+            local who = relay.name .. ", " .. kind .. ": "
+            local F = serve(kind, "dev")
+            local inst = buildInstances(F)
+            local slot = relay.slot(inst)
+            T.eq(type(slot), "function", who .. "the client holds a function")
+            if kind == "layout1" then
+                T.truthy(isOlderFunction(slot), who .. "the slot holds the older copy's relay")
+            else
+                T.eq(buildOf(slot), tostring(SERVING_BUILD), who .. "the slot holds the serving build's relay")
+            end
+            loadModule(relay.unit, { version = nil })
+            T.eq(F[relay.unit]._build, INCOMING_BUILD, who .. "the unit took over")
+            T.truthy(rawequal(relay.slot(inst), slot), who .. "the slot is unchanged")
+            local impl = F[relay.unit]._impl
+            T.eq(buildOf(impl[relay.target]), tostring(INCOMING_BUILD), who .. relay.target .. " is the newer copy's")
+            T.eq(slots.countCalls(impl, relay.target, function() relay.call(slot) end), 1,
+                who .. "the relay calls the newer " .. relay.target .. " once")
+        end
+    end
+end)
+
+test("after a takeover a Settings New of an already registered category reuses it and registers nothing, and an older launcher click reaches the new controller", function()
+    for _, kind in ipairs({ "layout1", "current" }) do
+        for _, mode in ipairs({ "release", "dev" }) do
+            local who = kind .. ", " .. mode .. ": "
+            local F = serve(kind, mode)
+            local inst = buildInstances(F)
+            local canvas = inst.settings:GetNativeHandles()
+            local launcher = inst.launcher:GetNativeHandles()
+            local click = inst.panel.clicks[#inst.panel.clicks]
+            loadModule("Settings", { version = incomingVersion(mode) })
+            T.eq(F.Settings._build, INCOMING_BUILD, who .. "Settings took over")
+            inst.settings:Destroy()
+            inst.launcher:Destroy()
+            local launched, again, launcherAgain = 0, nil, nil
+            local registrations = countAll(settingsTargets(), function()
+                again = F.Settings:New({ title = "TakeoverCanvas", frame = canvas.frame })
+                launcherAgain = F.Settings:New({
+                    title = "TakeoverLauncher", buttonText = "Open", launch = function() launched = launched + 1 end,
+                })
+            end)
+            T.eq(registrations, 0, who .. "the same categories register nothing again")
+            T.truthy(again and launcherAgain, who .. "both New calls return a controller")
+            T.truthy(rawequal(again:GetNativeHandles().category, canvas.category), who .. "the canvas category is reused")
+            T.truthy(rawequal(launcherAgain:GetNativeHandles().category, launcher.category), who .. "the launcher category is reused")
+            click({}, "LeftButton", false)
+            T.eq(launched, 1, who .. "the click made before the takeover launches through the new controller")
+            local fresh = countAll(settingsTargets(), function()
+                F.Settings:New({ title = "TakeoverOther", frame = { GetObjectType = function() return "Frame" end } })
+            end)
+            T.truthy(fresh > 0, who .. "a category not seen before does register")
+            T.eq(#T.output, 0, who .. "nothing is printed")
+        end
+    end
+end)
+
+test("after a takeover a Tooltip New of a known type adds no post-call, a new type adds one, and the older post-call runs the new controller", function()
+    for _, kind in ipairs({ "layout1", "current" }) do
+        for _, mode in ipairs({ "release", "dev" }) do
+            local who = kind .. ", " .. mode .. ": "
+            local F = serve(kind, mode)
+            local inst = buildInstances(F)
+            local postCalls = inst.processor.postCalls
+            local posts = #postCalls
+            loadModule("Tooltip", { version = incomingVersion(mode) })
+            T.eq(F.Tooltip._build, INCOMING_BUILD, who .. "Tooltip took over")
+            T.eq(#postCalls, posts, who .. "the takeover adds no post-call")
+            local ran = 0
+            F.Tooltip:New({ type = 1, name = "TakeoverSecond", handler = function() ran = ran + 1 end })
+            T.eq(#postCalls, posts, who .. "a known type adds no post-call")
+            postCalls[1].fn(surfaces.makeTooltip(), {})
+            T.eq(ran, 1, who .. "the post-call made before the takeover runs the new controller once")
+            F.Tooltip:New({ type = 2, handler = function() end })
+            T.eq(#postCalls, posts + 1, who .. "a type not seen before adds one post-call")
+            T.eq(#T.output, 0, who .. "nothing is printed")
+        end
+    end
+end)
+
+test("a window made before a takeover saves its position through the newer code when dragged, with no SetScript", function()
+    for _, kind in ipairs({ "layout1", "current" }) do
+        for _, mode in ipairs({ "release", "dev" }) do
+            local who = kind .. ", " .. mode .. ": "
+            local F = serve(kind, mode)
+            local inst = buildInstances(F)
+            local win = inst.windowFrame
+            local onStart, onStop = win._scripts.OnDragStart, win._scripts.OnDragStop
+            local setScripts = setScriptCount()
+            loadModule("Window", { version = incomingVersion(mode) })
+            local W = F.Window
+            T.eq(W._build, INCOMING_BUILD, who .. "Window took over")
+            T.eq(setScriptCount(), setScripts, who .. "the takeover logs no SetScript")
+            T.truthy(rawequal(win._scripts.OnDragStart, onStart) and rawequal(win._scripts.OnDragStop, onStop),
+                who .. "the drag scripts are kept")
+            if kind == "layout1" then
+                T.truthy(isOlderFunction(onStop), who .. "the stop script is the older copy's relay")
+            end
+            local geometry = W._state.attached[win].geometry
+            win:ClearAllPoints()
+            win:SetPoint("TOPLEFT", _G.UIParent, "TOPLEFT", 12, -34)
+            local starts = #win.calls.StartMoving
+            T.eq(slots.countCalls(W._impl, "dragStart", function() onStart() end), 1, who .. "the newer drag start runs once")
+            T.eq(#win.calls.StartMoving, starts + 1, who .. "and starts the move")
+            T.eq(slots.countCalls(W._impl, "dragStop", function() onStop() end), 1, who .. "the newer drag stop runs once")
+            T.eq(buildOf(W._impl.saveGeometry), tostring(INCOMING_BUILD), who .. "and the save it makes is the newer copy's")
+            T.eq(geometry.point, "TOPLEFT", who .. "the position is saved")
+            T.eq(geometry.x, 12, who .. "x")
+            T.eq(geometry.y, -34, who .. "y")
+            T.eq(setScriptCount(), setScripts, who .. "no SetScript is logged by the drag either")
+            T.eq(#T.output, 0, who .. "nothing is printed")
+        end
+    end
+end)
+
+test("controllers made before a takeover of List or Menu keep working with the newer code, and new ones join them", function()
+    for _, kind in ipairs({ "layout1", "current" }) do
+        local who = kind .. ": "
+        local F = serve(kind, "dev")
+        local inst = buildInstances(F)
+        loadModule("List", { version = nil })
+        loadModule("Menu", { version = nil })
+        T.eq(F.List._build, INCOMING_BUILD, who .. "List took over")
+        T.eq(F.Menu._build, INCOMING_BUILD, who .. "Menu took over")
+        inst.list:SetData({ {}, {} })
+        T.eq(inst.list:GetNativeHandles().dataProvider:GetSize(), 2, who .. "a list made before takes data")
+        local list = F.List:New({
+            name = "TakeoverListAfter", parent = {}, elementType = "Button", extent = 20, initializer = function() end,
+        })
+        T.truthy(F.List._state.instances[inst.list] and F.List._state.instances[list], who .. "both lists are listed")
+        local built = 0
+        local menu = F.Menu:New({ builder = function() built = built + 1 end })
+        T.eq(menu._name, "F.Menu.anon.2", who .. "the anonymous name counter carries on")
+        inst.menu._generatorWrapper({}, surfaces.makeRootDescription())
+        T.eq(built, 0, who .. "the first menu's builder is its own")
+        menu._generatorWrapper({}, surfaces.makeRootDescription())
+        T.eq(built, 1, who .. "the new menu builds")
+        T.truthy(F.Menu._state.instances[inst.menu] and F.Menu._state.instances[menu], who .. "both menus are listed")
+    end
+end)
+
+test("a whole newer copy loading over the layout-1 copy adds no slash name and leaves the library command alone", function()
+    for _, kind in ipairs({ "layout1", "current" }) do
+        local F = serve(kind, "dev")
+        buildInstances(F)
+        local command, slash = _G.SlashCmdList.FOUNDRY, slashKeys()
+        local errors = loadEach({ build = INCOMING_BUILD, addonName = "IncomingHost" })
+        T.eq(next(errors), nil, kind .. ": the incoming copy raised nothing: " .. firstError(errors))
+        T.eq(slashKeys(), slash, kind .. ": no slash name appears")
+        T.truthy(rawequal(_G.SlashCmdList.FOUNDRY, command), kind .. ": the /foundry command is the first copy's")
+        T.truthy(rawequal(_G.Foundry_1_0, F), kind .. ": the library table is the same")
+    end
+end)
+
+test("after a whole newer copy loads over the layout-1 copy, /foundry copies lists every module as coming from it and one took over line", function()
+    for _, kind in ipairs({ "layout1", "current" }) do
+        local F = serve(kind, "dev")
+        buildInstances(F)
+        local errors = loadEach({ build = INCOMING_BUILD, addonName = "IncomingHost" })
+        T.eq(next(errors), nil, kind .. ": the incoming copy raised nothing: " .. firstError(errors))
+        T.output = {}
+        _G.SlashCmdList.FOUNDRY("copies")
+        local text = "\n" .. table.concat(T.output, "\n") .. "\n"
+        for _, unit in ipairs(UNITS) do
+            if unit ~= "core" then
+                T.truthy(text:find("\nFoundry: " .. unit .. " comes from IncomingHost\n", 1, true),
+                    kind .. ": " .. unit .. " comes from the newer copy: " .. text)
+            end
+        end
+        T.falsy(text:find("every module comes from the active copy", 1, true), kind .. ": the modules are not the active copy's")
+        local tookOver = 0
+        for _, line in ipairs(T.output) do
+            if line:find("Foundry: took over: ", 1, true) == 1 then tookOver = tookOver + 1 end
+        end
+        T.eq(tookOver, 1, kind .. ": one took over line")
+        T.truthy(text:find("\nFoundry: took over: IncomingHost, version dev, API version 7\n", 1, true),
+            kind .. ": the line names the newer copy: " .. text)
+    end
+end)
+
+test("a trimmed newer copy without Window leaves Window on the older copy while every other unit takes over", function()
+    local files = {}
+    for _, rel in ipairs(T.FOUNDRY_FILES) do
+        if rel ~= FILE.Window then files[#files + 1] = rel end
+    end
+    T.truthy(#files == #T.FOUNDRY_FILES - 1, "Window is the one file left out")
+    local F = serve("layout1", "release")
+    local inst = buildInstances(F)
+    local errors = loadEach({ build = INCOMING_BUILD, addonName = "IncomingHost", version = "1.0.2", files = files })
+    T.eq(next(errors), nil, "the trimmed copy raised nothing: " .. firstError(errors))
+    for _, unit in ipairs(UNITS) do
+        if unit ~= "core" and unit ~= "Window" then
+            T.eq(F[unit]._build, INCOMING_BUILD, unit .. " took over")
+        end
+    end
+    T.eq(rawget(F.Window, "_build"), nil, "Window has no build")
+    T.truthy(isOlderFunction(F.Window.Attach) and isOlderFunction(F.Window._impl.dragStop), "Window is still the older copy's code")
+    T.eq(F.Window._source, "ServingHost", "and still names the first copy")
+    local win = _G.CreateFrame("Frame", nil, _G.UIParent)
+    T.truthy(F.Window:Attach(win, { handle = win, geometry = {}, default = { "CENTER", "CENTER", 0, 0 } }), "it still attaches a window")
+    T.truthy(inst.windowFrame ~= nil, "the window made before is untouched")
+end)
+
+local UI_PARTWAY = {
+    List = { "local List = served or {}", "local function initRow(c, frame, elementData)", "function List:New(config)",
+        "List.API_VERSION = API_VERSION" },
+    Settings = { "local Settings = served or {}", "local function launcherClick(record)", "function Settings:New(config)",
+        "Settings.API_VERSION = API_VERSION" },
+    Tooltip = { "local Tooltip = served or {}", "local function dispatch(list, tooltip, data)", "function Tooltip:New(config)",
+        "Tooltip.API_VERSION = API_VERSION" },
+    Menu = { "local Menu = served or {}", "local function generate(c, owner, rootDescription, ...)", "function Menu:New(config)",
+        "Menu.API_VERSION = API_VERSION" },
+    Window = { "local Window = served or {}", "local function dragStart(record)", "function Window:Attach(win, config)",
+        "Window.API_VERSION = API_VERSION" },
+}
+
+test("a List, Settings, Tooltip, Menu or Window that fails partway through taking over leaves the version, build and source of the active copy unchanged", function()
+    for _, unit in ipairs(UI_UNITS) do
+        for _, kind in ipairs({ "current", "layout1" }) do
+            for _, mode in ipairs({ "release", "dev" }) do
+                for _, line in ipairs(UI_PARTWAY[unit]) do
+                    local who = unit .. ", " .. kind .. ", " .. mode .. ", failing before '" .. line .. "': "
+                    local F = serve(kind, mode)
+                    buildInstances(F)
+                    local M = F[unit]
+                    local before = { api = rawget(M, "API_VERSION"), build = rawget(M, "_build"), source = rawget(M, "_source") }
+                    local ok, err = pcall(loadModule, unit, {
+                        version = incomingVersion(mode),
+                        replace = merge({ [UI_API_LINES[unit]] = "local API_VERSION = " .. (UI_API[unit] + 1) },
+                            T.plantError(line, "planted failure")),
+                    })
+                    T.falsy(ok, who .. "the copy fails")
+                    T.truthy(tostring(err):find("planted failure", 1, true), who .. "at the planted line: " .. tostring(err))
+                    T.truthy(rawequal(F[unit], M), who .. "the module is the same table")
+                    T.eq(rawget(M, "API_VERSION"), before.api, who .. "API version")
+                    T.eq(rawget(M, "_build"), before.build, who .. "build")
+                    T.eq(rawget(M, "_source"), before.source, who .. "source")
+                end
+            end
+        end
+    end
+end)
+
+local function stateKey(key, value)
+    return function(_, unitTbl) unitTbl._state[key] = value end
+end
+
+local function noState(_, unitTbl) unitTbl._state = nil end
+local function noImpl(_, unitTbl) unitTbl._impl = nil end
+local function noController(_, unitTbl) unitTbl._impl.Controller = nil end
+
+local UI_PROOFS = {
+    List = {
+        { name = "a list of live controllers that is not a table", inject = stateKey("instances", "controllers") },
+        { name = "no state table", inject = noState },
+        { name = "no implementation table", inject = noImpl },
+        { name = "no controller implementation", inject = noController },
+    },
+    Settings = {
+        { name = "a live-name table that is not a table", inject = stateKey("liveKeys", "names") },
+        { name = "a registered-category table that is not a table", inject = stateKey("registeredCategories", "categories") },
+        { name = "no state table", inject = noState },
+        { name = "no implementation table", inject = noImpl },
+        { name = "no controller implementation", inject = noController },
+    },
+    Tooltip = {
+        { name = "a live-name table that is not a table", inject = stateKey("liveKeys", "names") },
+        { name = "a dispatcher table that is not a table", inject = stateKey("dispatchers", "dispatchers") },
+        { name = "no state table", inject = noState },
+        { name = "no implementation table", inject = noImpl },
+        { name = "no controller implementation", inject = noController },
+    },
+    Menu = {
+        { name = "a list of live controllers that is not a table", inject = stateKey("instances", "controllers") },
+        { name = "a live-name table that is not a table", inject = stateKey("liveKeys", "names") },
+        { name = "an anonymous-name counter that is not a number", inject = stateKey("anonCounter", "1") },
+        { name = "no state table", inject = noState },
+        { name = "no implementation table", inject = noImpl },
+        { name = "no controller implementation", inject = noController },
+    },
+    Window = {
+        { name = "an attached-window table that is not a table", inject = stateKey("attached", "windows") },
+        { name = "no state table", inject = noState },
+        { name = "no implementation table", inject = noImpl },
+    },
+}
+
+test("a newer List, Settings, Tooltip, Menu or Window declines a serving module whose state it cannot adopt, changes nothing, and raises only in a development serving copy", function()
+    for _, unit in ipairs(UI_UNITS) do
+        for _, case in ipairs(UI_PROOFS[unit]) do
+            for _, kind in ipairs({ "current", "layout1" }) do
+                runCase({
+                    name = "a serving copy with " .. case.name, inject = case.inject, outcome = "refused: shape",
+                    refused = true, units = { unit },
+                }, kind)
+            end
+        end
+    end
+end)
+
+--------------------------------------------------------------------------------
 -- The shape of each file after its decision block
 --------------------------------------------------------------------------------
 
 -- The files whose shape is not scanned yet. A file joins the scan when its
 -- decision block lands and its unit leaves the ledger.
-local SHAPE_PENDING = {
-    "Modules/List.lua", "Modules/Settings.lua", "Modules/Tooltip.lua", "Modules/Menu.lua", "Modules/Window.lua",
-}
+local SHAPE_PENDING = {}
 
 -- The last line of the decision block; every top-level statement after it is
 -- scanned.

@@ -12,23 +12,65 @@ if not F then
     error("Foundry-1.0: Window.lua requires the Foundry-1.0 bootstrap (Foundry.lua) "
         .. "to have loaded first; _G.Foundry_1_0 is missing.", 0)
 end
--- Another copy of the library already registered this module: load nothing.
-if F:HasModule("Window") then return end
 
 local BUILD = 1
+local API_VERSION = 1
 
-local Window = {}
-Window.API_VERSION = 1
+-- An older Window already serving is taken over in place when this copy is
+-- newer and the moment is safe; otherwise it keeps serving and this file loads
+-- nothing. The checks only read, in a fixed order, and the first to fail names
+-- the outcome; nil means this copy takes over. BUILD, API_VERSION, served and
+-- takingOver are read at file scope only: no function below may capture them.
+local served = F:HasModule("Window") and F.Window or nil
+if served == nil and F:HasModule("Window") then return end
+if served ~= nil then
+    -- rawget: a current copy reads none of the newer layout fields on an older
+    -- library table through a normal lookup.
+    if rawget(F, "_layoutVersion") ~= 1 then return end
+    local outcome
+    local build = rawget(served, "_build")
+    local api = rawget(served, "API_VERSION")
+    if rawget(served, "_layoutVersion") ~= 1 then
+        outcome = "layout"
+    elseif build ~= nil and (type(build) ~= "number" or build ~= math.floor(build)
+        or build < 1 or build == math.huge or BUILD <= build) then
+        outcome = "not used"
+    elseif type(api) ~= "number" or api > API_VERSION then
+        outcome = "refused: api version"
+    elseif type(IsLoggedIn) ~= "function" or IsLoggedIn() then
+        outcome = "after login"
+    elseif type(InCombatLockdown) ~= "function" or InCombatLockdown() then
+        outcome = "combat"
+    else
+        -- The state and implementation tables the definitions below write into.
+        local state, impl = rawget(served, "_state"), rawget(served, "_impl")
+        if type(state) ~= "table" or type(state.attached) ~= "table" or type(impl) ~= "table" then
+            outcome = "refused: shape"
+        end
+    end
+    if outcome then
+        if outcome:sub(1, 9) == "refused: " and F.IS_DEV_BUILD then
+            F:RaiseDevError("Window: a newer copy from " .. tostring((...))
+                .. " did not take over (" .. outcome .. ")")
+        end
+        return
+    end
+end
+local takingOver = served ~= nil
+
+-- On a takeover every definition below lands in the serving tables, so the
+-- drag scripts an older copy gave its windows reach the newer code.
+local Window = served or {}
 
 -- All module state lives on the module table.
-Window._layoutVersion = 1
-Window._source = ...
-Window._build = BUILD
-Window._state = {
-    -- Attached frame -> record.
-    attached = {},
-}
-Window._impl = {}
+if not takingOver then
+    Window._layoutVersion = 1
+    Window._state = {
+        -- Attached frame -> record.
+        attached = {},
+    }
+    Window._impl = {}
+end
 local S, I = Window._state, Window._impl
 local attached = S.attached
 
@@ -248,4 +290,12 @@ function Window:Reset(win)
     apply(win, default[1], default[2], default[3], default[4])
 end
 
-F:RegisterModule("Window", Window)
+-- Written last, so a copy that fails before this point leaves the serving
+-- Window reporting what it did before.
+Window.API_VERSION = API_VERSION
+Window._source = ...
+Window._build = BUILD
+
+if not takingOver then
+    F:RegisterModule("Window", Window)
+end
