@@ -45,22 +45,27 @@ local DB = {}
 DB.API_VERSION = 2
 
 --------------------------------------------------------------------------------
--- Shared private state (one set of upvalues per loaded library, lazy)
+-- Shared private state
 --------------------------------------------------------------------------------
 
-local liveControllers = {}
-
-local liveControllersByAddon = {}
-
--- Held OFF the controller: a present `_store` field would bypass
--- __newindex's write-guard (Lua 5.1 only traps ABSENT keys).
-local controllerStore = {}
-
-local stores = {}
-
-local postLogoutRegistered = false
-
-local sizeWarningEvents = nil
+-- All module state lives on the module table. sizeWarningEvents is set once,
+-- when it is first needed, so it and the flag are always read through the
+-- state table.
+DB._layoutVersion = 1
+DB._source = ...
+DB._state = {
+    liveControllers = {},
+    liveControllersByAddon = {},
+    -- Held OFF the controller: a present `_store` field would bypass
+    -- __newindex's write-guard (Lua 5.1 only traps ABSENT keys).
+    controllerStore = {},
+    stores = {},
+    postLogoutRegistered = false,
+}
+DB._impl = {}
+local S, I = DB._state, DB._impl
+local liveControllers, liveControllersByAddon = S.liveControllers, S.liveControllersByAddon
+local controllerStore, stores = S.controllerStore, S.stores
 
 local SECTION_GLOBAL = "global"
 local SECTION_PROFILE = "profile"
@@ -133,11 +138,12 @@ local function onSavedVariablesTooLarge(_, addonName)
         F:RaiseDevError(message)
     end
 end
+I.onSavedVariablesTooLarge = onSavedVariablesTooLarge
 
 local function registerSizeWarning()
-    if sizeWarningEvents then return end
-    sizeWarningEvents = F.Events:New("Foundry.DB")
-    sizeWarningEvents:Register("SAVED_VARIABLES_TOO_LARGE", onSavedVariablesTooLarge)
+    if S.sizeWarningEvents then return end
+    S.sizeWarningEvents = F.Events:New("Foundry.DB")
+    S.sizeWarningEvents:Register("SAVED_VARIABLES_TOO_LARGE", I.onSavedVariablesTooLarge)
 end
 
 --------------------------------------------------------------------------------
@@ -277,6 +283,7 @@ local function onLogout()
         F:RaiseDevError("DB: a store's logout strip errored: " .. tostring(firstErr))
     end
 end
+I.onLogout = onLogout
 
 --------------------------------------------------------------------------------
 -- Controller
@@ -322,8 +329,10 @@ local function materialize(store, section)
 
     return tbl
 end
+I.materialize = materialize
 
 local Controller = {}
+I.Controller = Controller
 
 function Controller.OnReady(self, handler)
     local store = controllerStore[self]
@@ -421,6 +430,7 @@ end
 -- store cache, never rawset on the controller, or __index/__newindex stop
 -- firing for that key.
 local controllerMeta = {}
+I.controllerMeta = controllerMeta
 
 function controllerMeta.__index(self, key)
     local store = controllerStore[self]
@@ -463,6 +473,16 @@ function controllerMeta.__newindex(self, key, value)
     end
     rawset(self, key, value)
 end
+
+-- Captures nothing but F, so a store's handler can be rebuilt at any time.
+local function makeOnMismatch()
+    return function(slotPath)
+        F:RaiseDevError("DB: stored value at '" .. slotPath
+            .. "' has a type that conflicts with its table-typed default; the "
+            .. "stored value is preserved and the default subtree is not applied")
+    end
+end
+I.makeOnMismatch = makeOnMismatch
 
 --------------------------------------------------------------------------------
 -- Factory
@@ -763,17 +783,18 @@ function DB:New(config)
         sizeWarningHandlers = {},
         destroyed = false,
     }
-    store.onMismatch = function(slotPath)
-        F:RaiseDevError("DB: stored value at '" .. slotPath
-            .. "' has a type that conflicts with its table-typed default; the "
-            .. "stored value is preserved and the default subtree is not applied")
-    end
+    store.onMismatch = makeOnMismatch()
 
     stores[#stores + 1] = store
 
-    if not postLogoutRegistered then
-        F.Lifecycle._RegisterPostLogout(onLogout)
-        postLogoutRegistered = true
+    -- One entry per session, however many stores: it looks up the strip on
+    -- the module table each time it runs.
+    if not S.postLogoutRegistered then
+        S.postLogoutEntry = function()
+            return DB._impl.onLogout()
+        end
+        F.Lifecycle._RegisterPostLogout(S.postLogoutEntry)
+        S.postLogoutRegistered = true
     end
 
     -- Metatable-backed; not Mixin()-able.

@@ -68,11 +68,7 @@ local SKIP_KEYS = { calls = true, _seq = true }
 -- the change that moves its state; the comparison is exact in both directions.
 local EXPECTED = {
     ["Modules/Commands.lua"] = { "Controller", "c" },
-    ["Modules/DB.lua"] = {
-        "Controller", "controllerMeta", "controllerStore", "liveControllers", "liveControllersByAddon",
-        "postLogoutRegistered", "sizeWarningEvents", "stores",
-    },
-    ["Modules/Events.lua"] = { "Bucket", "Controller", "bucket", "c", "edge", "handler", "self" },
+    ["Modules/Events.lua"] = { "Bucket", "bucket", "c", "edge", "handler", "self" },
     ["Modules/List.lua"] = { "Controller", "c", "consumerCalc", "consumerInit" },
     ["Modules/Menu.lua"] = { "Controller", "anonCounter", "c", "liveKeys" },
     ["Modules/Settings.lua"] = { "Controller", "liveKeys", "name", "registeredCategories" },

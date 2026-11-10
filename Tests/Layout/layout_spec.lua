@@ -209,6 +209,218 @@ test("the poll timer reaches whatever pollTick the module table holds when it fi
 end)
 
 --------------------------------------------------------------------------------
+-- DB
+--------------------------------------------------------------------------------
+
+local DB_STATE_TABLES = { "liveControllers", "liveControllersByAddon", "controllerStore", "stores" }
+local DB_IMPL = {
+    "Controller", "controllerMeta", "onLogout", "onSavedVariablesTooLarge", "materialize", "makeOnMismatch",
+}
+
+local function newStore(F, sv, defaults)
+    T.loadedAddons["LayoutDBAddon"] = true
+    return F.DB:New({
+        name = "LayoutDBAddon", sv = sv, defaultProfile = true,
+        defaults = defaults or { profile = { size = 3 }, global = { flag = true } },
+    })
+end
+
+-- How many times fn appears in the logout list of the Lifecycle serving F:
+-- its state table when it has one, else the list _RegisterPostLogout holds.
+local function logoutEntries(F, fn)
+    local list = F.Lifecycle._layoutVersion and F.Lifecycle._state.postLogout
+    if not list then
+        local i = 1
+        while true do
+            local name, value = debug.getupvalue(F.Lifecycle._RegisterPostLogout, i)
+            if not name then break end
+            if name == "postLogout" then list = value end
+            i = i + 1
+        end
+    end
+    local n = 0
+    for i = 1, #list do
+        if rawequal(list[i], fn) then n = n + 1 end
+    end
+    return n, #list
+end
+
+-- The frame Lifecycle delivers its events through: the one that registered PLAYER_LOGOUT.
+local function logoutFrame()
+    for _, frame in ipairs(T.frames) do
+        for _, call in ipairs(frame.calls.RegisterEvent) do
+            if call[1] == "PLAYER_LOGOUT" then return frame end
+        end
+    end
+end
+
+local function deepEqual(a, b, path, diffs)
+    if type(a) ~= type(b) then
+        diffs[#diffs + 1] = path .. ": " .. type(a) .. " vs " .. type(b)
+    elseif type(a) ~= "table" then
+        if a ~= b then diffs[#diffs + 1] = path .. ": " .. tostring(a) .. " vs " .. tostring(b) end
+    else
+        for k, v in pairs(a) do deepEqual(v, b[k], path .. "." .. tostring(k), diffs) end
+        for k, v in pairs(b) do
+            if a[k] == nil then deepEqual(nil, v, path .. "." .. tostring(k), diffs) end
+        end
+    end
+    return diffs
+end
+
+test("DB carries the layout header, its state and its implementation", function()
+    local F = T.fresh()
+    local D = F.DB
+    T.eq(D._layoutVersion, 1, "layout version")
+    T.eq(D._source, "Foundry-1.0", "source addon name")
+    T.eq(D._build, nil, "no build stamp yet")
+    T.eq(type(D._state), "table", "state table")
+    T.eq(type(D._impl), "table", "implementation table")
+    for _, name in ipairs(DB_STATE_TABLES) do
+        T.eq(type(D._state[name]), "table", "state " .. name)
+    end
+    T.eq(D._state.postLogoutRegistered, false, "logout entry not registered before the first store")
+    T.eq(D._state.postLogoutEntry, nil, "no logout entry before the first store")
+    T.eq(D._state.sizeWarningEvents, nil, "no size-warning events before the first store")
+    for _, name in ipairs(DB_IMPL) do
+        local want = (name == "Controller" or name == "controllerMeta") and "table" or "function"
+        T.eq(type(D._impl[name]), want, "implementation " .. name)
+    end
+end)
+
+test("DB controllers use the published metatable, and the store record is held on the state table", function()
+    local F = T.fresh()
+    local D = F.DB
+    local meta = D._impl.controllerMeta
+    local db = newStore(F, "LayoutMetaDB")
+    T.eq(getmetatable(db), meta, "a controller's metatable is the published one")
+    T.eq(D._state.controllerStore[db].svName, "LayoutMetaDB", "store record found on the state table")
+    T.eq(D._state.stores[1], D._state.controllerStore[db], "the same record is listed in stores")
+    T.eq(D._state.liveControllers.LayoutMetaDB, db, "live controller listed by saved-variables name")
+    T.eq(D._state.liveControllersByAddon.LayoutDBAddon[1], db, "live controller listed by addon")
+    T.eq(type(D._state.controllerStore[db].onMismatch), "function", "store has its mismatch handler")
+    local second = newStore(F, "LayoutMetaDB2")
+    T.eq(D._impl.controllerMeta, meta, "the metatable keeps its identity")
+    T.eq(getmetatable(second), meta, "a later controller shares it")
+    T.eq(getmetatable(db), meta, "the first controller still uses it")
+end)
+
+test("DB registers its size warning through the published handler", function()
+    local F = T.fresh()
+    local D = F.DB
+    newStore(F, "LayoutSizeDB")
+    local events = D._state.sizeWarningEvents
+    T.truthy(events, "size-warning events created by the first store")
+    T.eq(events._handlers.SAVED_VARIABLES_TOO_LARGE, D._impl.onSavedVariablesTooLarge,
+        "the handler is the published one")
+    newStore(F, "LayoutSizeDB2")
+    T.eq(D._state.sizeWarningEvents, events, "a second store keeps the same events object")
+end)
+
+test("DB has exactly one logout entry however stores come and go and however often the file loads", function()
+    local F = T.fresh()
+    local D = F.DB
+    local first = newStore(F, "LayoutLogoutDB")
+    local entry = D._state.postLogoutEntry
+    T.eq(type(entry), "function", "entry recorded at the first store")
+    T.truthy(entry ~= D._impl.onLogout, "the entry is a relay, not the strip itself")
+    T.eq(D._state.postLogoutRegistered, true, "flag set")
+    T.eq(logoutEntries(F, entry), 1, "one entry after the first store")
+
+    newStore(F, "LayoutLogoutDB2")
+    T.eq(D._state.postLogoutEntry, entry, "the entry keeps its identity")
+    local n, total = logoutEntries(F, entry)
+    T.eq(n, 1, "one entry after two stores")
+    T.eq(total, 1, "nothing else in the logout list")
+
+    first:Destroy()
+    newStore(F, "LayoutLogoutDB")
+    n, total = logoutEntries(F, entry)
+    T.eq(n, 1, "one entry after a store is destroyed and re-created")
+    T.eq(total, 1, "nothing else in the logout list after re-creating")
+
+    local state, impl = D._state, D._impl
+    T.loadModule("Modules/DB.lua")
+    T.eq(F.DB, D, "a second copy of the file stands down")
+    T.eq(D._state, state, "state table unchanged")
+    T.eq(D._impl, impl, "implementation table unchanged")
+    newStore(F, "LayoutLogoutDB3")
+    n, total = logoutEntries(F, entry)
+    T.eq(n, 1, "one entry after a second copy stands down and another store is made")
+    T.eq(total, 1, "the second copy added nothing to the logout list")
+end)
+
+test("the logout entry reaches whatever strip the module table holds when logout fires", function()
+    local F = T.fresh()
+    local D = F.DB
+    local db = newStore(F, "LayoutRelayDB")
+    local _ = db.profile
+    local original = D._impl.onLogout
+    local calls = 0
+    D._impl.onLogout = function() calls = calls + 1 end
+    T.Fire(F.Lifecycle._state.dispatcher, "PLAYER_LOGOUT")
+    D._impl.onLogout = original
+    T.eq(calls, 1, "the replaced strip ran once")
+    T.eq(_G.LayoutRelayDB.profiles.Default.size, 3, "the original strip did not run")
+    T.eq(D._impl.onLogout, original, "the strip is restored")
+end)
+
+-- The 1.0.114 release core and every module but DB, then this DB.lua under a
+-- host addon name, the way a newer embed fills in a module an older core lacks.
+local OLD_WITHOUT_DB = {}
+for _, rel in ipairs(T.OLD_COPIES["v1.0.114"]) do
+    if rel ~= "Modules/DB.lua" then OLD_WITHOUT_DB[#OLD_WITHOUT_DB + 1] = rel end
+end
+
+local function graftSteps(F)
+    _G.GraftDB = { profiles = { Default = { size = 3, other = 2 } }, char = { Stale = {} } }
+    _G.GraftDB2 = nil
+    local db = newStore(F, "GraftDB", { profile = { size = 3, keep = 1 }, global = { flag = true } })
+    db.profile.keep = 4
+    local _ = db.global
+    newStore(F, "GraftDB2")
+    T.Fire(logoutFrame(), "PLAYER_LOGOUT")
+    return { GraftDB = _G.GraftDB, GraftDB2 = _G.GraftDB2 }
+end
+
+test("this DB on a 1.0.114 core registers one logout entry, strips once and saves what the release saves", function()
+    T.installMocks("@project-version@")
+    T.loadCopy({ root = T.testsDir .. "/OldCopies/v1.0.114", files = OLD_WITHOUT_DB, addonName = "OldHost", version = "1.0.114" })
+    local F = T.loadCopy({ root = T.foundryRoot, files = { "Modules/DB.lua" }, addonName = "NewHost" })
+    T.eq(F.Lifecycle._layoutVersion, nil, "the serving Lifecycle is the release's")
+    T.eq(F.DB._source, "NewHost", "DB is this copy's")
+    local original = F.DB._impl.onLogout
+    local strips = 0
+    F.DB._impl.onLogout = function() strips = strips + 1; return original() end
+    local grafted = graftSteps(F)
+    F.DB._impl.onLogout = original
+    local n, total = logoutEntries(F, F.DB._state.postLogoutEntry)
+    T.eq(n, 1, "the release's logout list holds the entry once")
+    T.eq(total, 1, "and nothing else")
+    T.eq(strips, 1, "the strip ran once")
+
+    T.installMocks("@project-version@")
+    local old = T.loadOldCopy("v1.0.114", "OldHost", "1.0.114")
+    local released = graftSteps(old)
+    T.truthy(not rawequal(grafted.GraftDB2, released.GraftDB2), "each run saves its own tables")
+    local diffs = deepEqual(grafted, released, "saved", {})
+    T.eq(#diffs, 0, "saved data differs from the release: " .. table.concat(diffs, "; "))
+end)
+
+test("this DB loaded after a 1.0.114 DB stands down and adds no logout entry", function()
+    T.installMocks("@project-version@")
+    local F = T.loadOldCopy("v1.0.114", "OldHost", "1.0.114")
+    local served = F.DB
+    T.loadCopy({ root = T.foundryRoot, files = { "Modules/DB.lua" }, addonName = "NewHost" })
+    T.eq(F.DB, served, "the release DB keeps serving")
+    T.eq(served._state, nil, "nothing was written onto the release DB")
+    newStore(F, "StandDownDB")
+    newStore(F, "StandDownDB2")
+    local _, total = logoutEntries(F, nil)
+    T.eq(total, 1, "the release DB registered its own single entry, and nothing else was added")
+end)
+
+--------------------------------------------------------------------------------
 -- state never declared as a file-level local
 --------------------------------------------------------------------------------
 
