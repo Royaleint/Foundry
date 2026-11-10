@@ -583,8 +583,14 @@ end
 -- copy of the library over the first, so the whole suite runs against code
 -- swapped in over a running copy.
 T.REHEARSE = false
+T.TAKEOVER = false
 for i = 1, (arg and #arg or 0) do
     if arg[i] == "--rehearse" then T.REHEARSE = true end
+    if arg[i] == "--takeover" then T.TAKEOVER = true end
+end
+if T.REHEARSE and T.TAKEOVER then
+    realPrint("--takeover and --rehearse cannot be combined: each replaces the library the suite loads")
+    os.exit(2)
 end
 
 -- Load a second copy of the library without disturbing the one serving: each
@@ -624,13 +630,54 @@ function T.installSecondCopy(F)
     return F2, env
 end
 
+-- Takeover mode (--takeover): every T.loadFoundry that could be a real
+-- takeover loads the pinned layout-1 copy first and the current files over
+-- it, under the same addon name, so the whole suite runs against code that
+-- took over an older copy in place. It cannot be combined with --rehearse
+-- (parsed with it, above).
+
+-- Loads of the library in the running suite, by kind; the runner resets and
+-- prints them per suite.
+T.loadCounts = { takeovers = 0, plain = 0 }
+
+-- A takeover is possible only when no library is serving yet and the mocks
+-- report the player neither logged in nor in combat; any other load is plain.
+local function takeoverPossible()
+    return _G.Foundry_1_0 == nil
+        and type(_G.IsLoggedIn) == "function" and not _G.IsLoggedIn()
+        and type(_G.InCombatLockdown) == "function" and not _G.InCombatLockdown()
+end
+
+-- Every unit of the serving library must carry the current build after a
+-- takeover; a unit left on the older copy would let the suite pass against
+-- code that never took over.
+local function assertTookOver(F)
+    local build = T.libraryBuild()
+    local units = { { "the core", F } }
+    for name, module in pairs(F._state.modules) do units[#units + 1] = { name, module } end
+    for _, unit in ipairs(units) do
+        if rawget(unit[2], "_build") ~= build then
+            error("takeover mode: " .. unit[1] .. " did not take over the layout-1 copy", 3)
+        end
+    end
+end
+
 -- Load the bootstrap and every module fresh; returns the Foundry table. In
--- rehearsal mode a second copy is then installed over it.
+-- rehearsal mode a second copy is then installed over it; in takeover mode
+-- the current files load over the layout-1 copy when a takeover is possible.
 function T.loadFoundry()
+    local takeover = T.TAKEOVER and takeoverPossible()
+    if takeover then T.loadOldCopy("layout1") end
     for _, rel in ipairs(T.FOUNDRY_FILES) do
         assert(loadfile(foundryRoot .. "/" .. rel))("Foundry-1.0")
     end
     local F = _G.Foundry_1_0
+    if takeover then
+        assertTookOver(F)
+        T.loadCounts.takeovers = T.loadCounts.takeovers + 1
+    else
+        T.loadCounts.plain = T.loadCounts.plain + 1
+    end
     if T.REHEARSE then T.installSecondCopy(F) end
     return F
 end
@@ -793,6 +840,28 @@ function T.outputContains(substr, msg)
         .. "' (output: " .. table.concat(T.output, " | ") .. ")", 2)
 end
 
+-- Suites that make no takeover in takeover mode, each with the reason.
+T.TAKEOVER_EXEMPT = {
+    ["Foundry.Bootstrap"] = "loads the bootstrap file alone against library tables it builds by hand",
+    ["Foundry.Packaging"] = "reads the packaging files and loads no library",
+    ["Foundry.Layout.mixed"] = "loads each copy itself, in the order under test",
+    ["Foundry.Layout.copies"] = "loads each copy itself, to check the record each one leaves",
+    ["Foundry.Layout.takeover_chain"] = "loads the layout-1 copy and each newer copy itself, to check every takeover directly",
+}
+
+-- In takeover mode, why a suite fails on its load counts, or nil: a suite
+-- with no takeover fails unless it is exempt, and an exempt suite that makes
+-- a takeover fails too.
+function T.takeoverVerdict(label, counts)
+    local exempt = T.TAKEOVER_EXEMPT[label] ~= nil
+    if counts.takeovers == 0 and not exempt then
+        return "takeover mode: the suite made no takeover and is not listed as exempt"
+    elseif counts.takeovers > 0 and exempt then
+        return "takeover mode: the suite is listed as exempt but made " .. counts.takeovers .. " takeovers"
+    end
+    return nil
+end
+
 -- Each suite: a label and the cases list its spec returns when called with T.
 local suites = {
     { label = "Foundry.Commands",  cases = assert(loadfile(testsDir .. "/Commands/commands_spec.lua"))(T) },
@@ -818,15 +887,26 @@ local suites = {
     { label = "Foundry.Layout.copies", cases = assert(loadfile(testsDir .. "/Layout/copies_record_spec.lua"))(T) },
     { label = "Foundry.Layout.build", cases = assert(loadfile(testsDir .. "/Layout/build_spec.lua"))(T) },
     { label = "Foundry.Layout.takeover", cases = assert(loadfile(testsDir .. "/Layout/takeover_spec.lua"))(T) },
+    { label = "Foundry.Layout.takeover_chain", cases = assert(loadfile(testsDir .. "/Layout/takeover_chain_spec.lua"))(T) },
 }
 
 if T.REHEARSE then
     realPrint("Rehearsal: a second copy is installed over every library the suite loads")
 end
+if T.TAKEOVER then
+    realPrint("Takeover: the current files take over the layout-1 copy in every load that allows it")
+    local labels = {}
+    for label in pairs(T.TAKEOVER_EXEMPT) do labels[#labels + 1] = label end
+    table.sort(labels)
+    for _, label in ipairs(labels) do
+        realPrint("  exempt: " .. label .. ": " .. T.TAKEOVER_EXEMPT[label])
+    end
+end
 
 local anyFailed = false
 for _, suite in ipairs(suites) do
     local passed, failed, failures = 0, 0, {}
+    T.loadCounts = { takeovers = 0, plain = 0 }
     for _, case in ipairs(suite.cases) do
         local ok, err = pcall(case.fn)
         if ok then
@@ -836,8 +916,17 @@ for _, suite in ipairs(suites) do
             failures[#failures + 1] = case.name .. "  ->  " .. tostring(err)
         end
     end
-    realPrint(string.format("%s: %d passed, %d failed (%d total)",
-        suite.label, passed, failed, passed + failed))
+    local loads = ""
+    if T.TAKEOVER then
+        loads = string.format("; %d takeovers, %d plain loads", T.loadCounts.takeovers, T.loadCounts.plain)
+        local verdict = T.takeoverVerdict(suite.label, T.loadCounts)
+        if verdict then
+            failed = failed + 1
+            failures[#failures + 1] = verdict
+        end
+    end
+    realPrint(string.format("%s: %d passed, %d failed (%d total)%s",
+        suite.label, passed, failed, passed + failed, loads))
     for _, f in ipairs(failures) do
         realPrint("  FAIL: " .. f)
     end

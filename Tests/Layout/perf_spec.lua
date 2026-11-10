@@ -5,7 +5,11 @@
 -- in the same process through the same driver loop, so the driver's own
 -- instructions cancel out of the difference.
 --   * a db.profile read and an event dispatch must cost exactly the same
---   * each path a callback relay sits on may cost at most 10 more per call
+--   * each path callback relays sit on may cost at most 10 more per call for
+--     each relay it crosses
+--   * after the current code takes over the layout-1 copy in place, a
+--     db.profile read and an event dispatch on objects made before or after
+--     the takeover cost exactly what they cost on the current code alone
 -- Secondary check, timing: five interleaved rounds per side, the fastest round
 -- of each; the current code may be at most 15% slower on DB reads and event
 -- dispatch; the measurement is repeated up to three times and fails only if
@@ -14,7 +18,8 @@
 --
 -- Adding a relay path: append a row to RELAY_PATHS. `setup(F)` runs on a fresh
 -- build and returns `call`, a function that performs the path once the way a
--- player's session reaches it. The row is measured on both builds and held to
+-- player's session reaches it, and `relays` is the number of relays the call
+-- crosses. The row is measured on both builds and held to relays times
 -- RELAY_BUDGET extra instructions per call.
 --
 -- Set FOUNDRY_PERF_REPORT=1 to print every measured count.
@@ -94,13 +99,14 @@ local function eventDispatch(F)
 end
 
 local HOT_PATHS = {
-    { name = "db.profile read", setup = dbRead },
-    { name = "event dispatch", setup = eventDispatch },
+    { name = "db.profile read", setup = dbRead, unit = "DB" },
+    { name = "event dispatch", setup = eventDispatch, unit = "Events" },
 }
 
 local RELAY_PATHS = {
     {
         name = "poll timer callback",
+        relays = 1,
         setup = function(F)
             -- A region-wide-names client whose surname has not arrived: the
             -- hook is held and the one-second poll timer is scheduled.
@@ -117,6 +123,7 @@ local RELAY_PATHS = {
     },
     {
         name = "logout strip",
+        relays = 2,  -- the Lifecycle dispatcher, then the DB logout entry
         setup = function(F)
             T.loadedAddons["PerfAddon"] = true
             local db = F.DB:New({
@@ -130,6 +137,7 @@ local RELAY_PATHS = {
     },
     {
         name = "slash command",
+        relays = 1,
         setup = function(F)
             local c = F.Commands:New({ name = "PerfCmd", slashes = { "/perfcmd" } })
             c:Register({ name = "go", handler = noop })
@@ -139,6 +147,7 @@ local RELAY_PATHS = {
     },
     {
         name = "tooltip post-call",
+        relays = 1,
         setup = function(F)
             local processor = surfaces.installTooltipProcessor()
             F.Tooltip:New({ type = 1, handler = noop })
@@ -150,6 +159,7 @@ local RELAY_PATHS = {
     },
     {
         name = "settings launcher click",
+        relays = 1,
         setup = function(F)
             local panel = surfaces.installSettingsLauncher()
             F.Settings:New({ title = "PerfPanel", buttonText = "Open", launch = noop })
@@ -159,6 +169,7 @@ local RELAY_PATHS = {
     },
     {
         name = "menu build",
+        relays = 1,
         setup = function(F)
             surfaces.installMenuUtil()
             local c = F.Menu:New({ builder = noop })
@@ -172,6 +183,7 @@ local RELAY_PATHS = {
     },
     {
         name = "list row initialization",
+        relays = 1,
         setup = function(F)
             local c = F.List:New({
                 name = "PerfList", parent = {}, elementType = "Button",
@@ -184,6 +196,7 @@ local RELAY_PATHS = {
     },
     {
         name = "list row extent",
+        relays = 1,
         setup = function(F)
             local c = F.List:New({
                 name = "PerfList", parent = {}, elementType = "Button",
@@ -196,6 +209,7 @@ local RELAY_PATHS = {
     },
     {
         name = "lifecycle event dispatch",
+        relays = 1,
         setup = function(F)
             -- Another addon's ADDON_LOADED: the dispatcher's script runs and
             -- the event handler finds nothing to do for this controller.
@@ -206,6 +220,7 @@ local RELAY_PATHS = {
     },
     {
         name = "window drag stop",
+        relays = 1,
         setup = function(F)
             local win = CreateFrame("Frame", nil, UIParent)
             F.Window:Attach(win, { handle = win, geometry = {}, default = { "CENTER", "CENTER", 0, 0 } })
@@ -228,13 +243,61 @@ for _, path in ipairs(HOT_PATHS) do
 end
 
 for _, path in ipairs(RELAY_PATHS) do
-    test("the " .. path.name .. " path costs at most " .. RELAY_BUDGET
+    local budget = path.relays * RELAY_BUDGET
+    test("the " .. path.name .. " path costs at most " .. budget
         .. " more instructions per call than the 1.0.114 release", function()
         local counts = measure(path, ITERATIONS)
         T.truthy(counts.pinned > 0, "the count hook saw the path run")
         local extra = (counts.current - counts.pinned) / ITERATIONS
-        T.truthy(extra <= RELAY_BUDGET,
-            path.name .. ": " .. extra .. " extra instructions per call, budget " .. RELAY_BUDGET)
+        T.truthy(extra <= budget,
+            path.name .. ": " .. extra .. " extra instructions per call, budget " .. budget)
+    end)
+end
+
+--------------------------------------------------------------------------------
+-- instruction counts after a takeover
+--------------------------------------------------------------------------------
+
+-- Loaded with T.loadCopy, so the current code alone is never itself a
+-- takeover when the suite runs in takeover mode.
+local function loadCurrentAlone()
+    return T.loadCopy({ root = T.foundryRoot, files = T.FOUNDRY_FILES })
+end
+
+-- Instruction counts for one hot path: on the current code alone, and on
+-- objects made before and after the current code takes over the layout-1 copy.
+local function measureTakeover(path, n)
+    local counts = {}
+    for _, when in ipairs({ "alone", "before", "after" }) do
+        T.installMocks("@project-version@")
+        local call
+        if when == "alone" then
+            call = path.setup(loadCurrentAlone())
+        else
+            local F = T.loadOldCopy("layout1")
+            if when == "before" then call = path.setup(F) end
+            loadCurrentAlone()
+            T.eq(rawget(F[path.unit], "_build"), T.libraryBuild(), path.name .. ": " .. path.unit .. " took over")
+            if when == "after" then call = path.setup(F) end
+        end
+        call()
+        counts[when] = instructions(call, n)
+    end
+    if os.getenv("FOUNDRY_PERF_REPORT") then
+        report(string.format("perf  %-34s alone %7d  made before takeover %7d  made after %7d",
+            path.name, counts.alone, counts.before, counts.after))
+    end
+    return counts
+end
+
+for _, path in ipairs(HOT_PATHS) do
+    test("a " .. path.name .. " on objects made before or after a takeover of the layout-1 copy costs the same number of instructions as on the current code alone", function()
+        local counts = measureTakeover(path, ITERATIONS)
+        T.truthy(counts.alone > ITERATIONS, "the count hook saw the path run")
+        T.eq(counts.before, counts.alone, path.name .. ": object made before the takeover, instructions over "
+            .. ITERATIONS .. " calls")
+        T.eq(counts.after, counts.alone, path.name .. ": object made after the takeover, instructions over "
+            .. ITERATIONS .. " calls")
     end)
 end
 

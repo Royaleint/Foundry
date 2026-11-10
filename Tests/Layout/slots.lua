@@ -25,9 +25,11 @@ end
 
 -- Calls visit(holder, key, value, kind) for every edge reachable from roots:
 -- table keys, values (except under the mock call logs) and metatables, and the
--- upvalues of library functions. kind is "key", "field", "metatable" or
--- "upvalue". Returns the set of everything visited.
-local function eachEdge(roots, visit)
+-- upvalues of library functions, or of every function expand(fn) accepts when
+-- it is given. kind is "key", "field", "metatable" or "upvalue". Returns the
+-- set of everything visited.
+local function eachEdge(roots, visit, expand)
+    expand = expand or isLibraryFunction
     local seen, stack, n = {}, {}, 0
     local function push(v)
         local kind = type(v)
@@ -45,7 +47,7 @@ local function eachEdge(roots, visit)
             end
             local mt = getmetatable(item)
             if mt ~= nil then visit(item, "(metatable)", mt, "metatable"); push(mt) end
-        elseif isLibraryFunction(item) then
+        elseif expand(item) then
             local i = 1
             while true do
                 local name, value = debug.getupvalue(item, i)
@@ -116,21 +118,130 @@ local function describeEdge(holder, key, kind)
     return kind .. " '" .. tostring(key) .. "' of a table"
 end
 
+-- The slots that may still hold an older copy's function after a newer copy
+-- takes over in place, read just before the takeover. Each function found is
+-- recorded with its holder and key, and afterwards only that exact function in
+-- that exact place is allowed: an object made after the takeover has no
+-- allowance. The slots are
+--   * the frame script of each events controller (the frame mock keeps the
+--     script twice, as the script and as _onEvent);
+--   * the callback of each bucket timer still pending;
+--   * the /foundry command, which stays with the first copy;
+--   * the relays, which call their implementation function by name: the
+--     identity poll, the Lifecycle dispatcher's script, the DB logout entry,
+--     each Commands slash entry, the List row initializer and extent, the
+--     tooltip post-calls, the settings launcher clicks, the menu generator
+--     wherever it was handed out, and each window handle's drag scripts.
+-- Each record is { holder, key, value, what }, and a relay's record also has
+-- unit and target, the implementation function it calls (a path below _impl).
+local function takeoverSlots(F, s)
+    local records = {}
+    local function add(holder, key, what, unit, target)
+        local value = holder and rawget(holder, key)
+        if type(value) == "function" then
+            records[#records + 1] = {
+                holder = holder, key = key, value = value, what = what, unit = unit, target = target,
+            }
+        end
+    end
+    for c in pairs(F.Events._state.instances) do
+        add(c._frame._scripts, "OnEvent", "an events controller's frame script")
+        add(c._frame, "_onEvent", "an events controller's frame script")
+    end
+    for _, handle in ipairs(T.timers) do
+        if not handle._cancelled and not handle._fired then
+            add(handle, "_callback", "a pending bucket timer")
+        end
+    end
+    add(_G.SlashCmdList, "FOUNDRY", "the /foundry command")
+
+    for _, entry in ipairs(T.afters) do
+        if not entry.fired then add(entry, "cb", "the identity poll", "Lifecycle", "pollTick") end
+    end
+    local lifecycleState, dbState = F.Lifecycle._state, F.DB._state
+    local dispatcher = lifecycleState.dispatcher
+    if dispatcher then
+        add(dispatcher._scripts, "OnEvent", "the Lifecycle dispatcher's script", "Lifecycle", "onEvent")
+        add(dispatcher, "_onEvent", "the Lifecycle dispatcher's script", "Lifecycle", "onEvent")
+    end
+    for i, fn in ipairs(lifecycleState.postLogout) do
+        if rawequal(fn, dbState.postLogoutEntry) then
+            add(lifecycleState.postLogout, i, "the DB logout entry", "DB", "onLogout")
+        end
+    end
+    add(dbState, "postLogoutEntry", "the DB logout entry", "DB", "onLogout")
+    for c in pairs(F.Commands._state.instances) do
+        if c._slashListKey then add(_G.SlashCmdList, c._slashListKey, "a slash entry", "Commands", "Controller.Dispatch") end
+    end
+    for c in pairs(F.List._state.instances) do
+        local view = c:GetNativeHandles().view
+        add(view, "_initializer", "a list row initializer", "List", "initRow")
+        add(view, "_calc", "a list row extent", "List", "extent")
+    end
+    for i = 1, #s.processor.postCalls do
+        add(s.processor.postCalls[i], "fn", "a tooltip post-call", "Tooltip", "dispatch")
+    end
+    for i = 1, #s.panel.clicks do
+        add(s.panel.clicks, i, "a settings launcher click", "Settings", "launcherClick")
+    end
+    for c in pairs(F.Menu._state.instances) do
+        add(c, "_generatorWrapper", "a menu generator", "Menu", "generate")
+    end
+    for i = 1, #s.button.setups do
+        add(s.button.setups, i, "a menu generator", "Menu", "generate")
+    end
+    for i = 1, #s.menuUtil.createCalls do
+        add(s.menuUtil.createCalls[i], "generator", "a menu generator", "Menu", "generate")
+    end
+    for _, record in pairs(F.Window._state.attached) do
+        add(record.handle._scripts, "OnDragStart", "a window drag script", "Window", "dragStart")
+        add(record.handle._scripts, "OnDragStop", "a window drag script", "Window", "dragStop")
+    end
+    return records
+end
+
+-- isSlot(holder, key, value) for a list of takeover slot records.
+local function recordedSlots(records)
+    local byHolder = {}
+    for _, record in ipairs(records) do
+        byHolder[record.holder] = byHolder[record.holder] or {}
+        byHolder[record.holder][record.key] = record.value
+    end
+    return function(holder, key, value)
+        local keys = byHolder[holder]
+        return keys ~= nil and keys[key] ~= nil and rawequal(keys[key], value)
+    end
+end
+
 -- First-load functions still reachable after the swap anywhere but a named
 -- slot or limit, or as a function's own upvalue (a closure that reschedules
 -- itself).
-local function oldFunctionsOutsideSlots(F, s, old, firstGuard)
-    local isSlot, isLimit = namedSlots(F, s), namedLimits(F, firstGuard)
+--   old         the first load's functions: a set, or a predicate
+--   opts        optional; opts.takeover is a list from takeoverSlots, read
+--               before a newer copy took over in place. Its records are then
+--               the only slots, there is no limit, and the upvalues of the old
+--               functions are followed too, so an old function held only by
+--               another old one is found.
+local function oldFunctionsOutsideSlots(F, s, old, firstGuard, opts)
+    local isOld = type(old) == "function" and old or function(fn) return old[fn] == true end
+    local isSlot, isLimit, expand
+    if opts and opts.takeover then
+        isSlot = recordedSlots(opts.takeover)
+        isLimit = function() return false end
+        expand = function(fn) return isLibraryFunction(fn) or isOld(fn) end
+    else
+        isSlot, isLimit = namedSlots(F, s), namedLimits(F, firstGuard)
+    end
     local found = {}
     eachEdge(rootsOf(F, s), function(holder, key, value, kind)
-        if type(value) == "function" and old[value] then
+        if type(value) == "function" and isOld(value) then
             local allowed = (kind == "field" and (isSlot(holder, key, value) or isLimit(holder, key, value)))
                 or (kind == "upvalue" and rawequal(value, holder))
             if not allowed then
                 found[#found + 1] = siteOf(value) .. " held by " .. describeEdge(holder, key, kind)
             end
         end
-    end)
+    end, expand)
     table.sort(found)
     return found
 end
@@ -179,6 +290,7 @@ return {
     namedSlots = namedSlots,
     namedLimits = namedLimits,
     describeEdge = describeEdge,
+    takeoverSlots = takeoverSlots,
     oldFunctionsOutsideSlots = oldFunctionsOutsideSlots,
     countCalls = countCalls,
     countOf = countOf,

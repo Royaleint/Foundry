@@ -29,3 +29,6 @@ jobs:
 
       - name: Run test suite with a second copy installed
         run: lua Tests/run.lua --rehearse
+
+      - name: Run test suite with the current copy taking over an older one
+        run: lua Tests/run.lua --takeover
