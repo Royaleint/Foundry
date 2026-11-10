@@ -108,7 +108,8 @@ function S.run(F)
 
     -- Window: one attached frame.
     local win = _G.CreateFrame("Frame", nil, _G.UIParent)
-    F.Window:Attach(win, { handle = win, geometry = {}, default = { "CENTER", "CENTER", 0, 0 } })
+    s.windowGeometry = {}
+    F.Window:Attach(win, { handle = win, geometry = s.windowGeometry, default = { "CENTER", "CENTER", 0, 0 } })
     s.inst.windowFrame = win
 
     -- List: a calculator and an initializer, each its own function so neither

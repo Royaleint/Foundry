@@ -400,7 +400,20 @@ end)
 -- Instances built before the swap
 --------------------------------------------------------------------------------
 
--- Drives every instance the scenario built; returns what happened, as lines.
+-- A table as text, keys sorted, so two runs compare line for line.
+local function describe(value)
+    if type(value) == "string" then return string.format("%q", value) end
+    if type(value) ~= "table" then return tostring(value) end
+    local keys = {}
+    for k in pairs(value) do keys[#keys + 1] = k end
+    table.sort(keys, function(a, b) return describe(a) < describe(b) end)
+    local parts = {}
+    for _, k in ipairs(keys) do parts[#parts + 1] = "[" .. describe(k) .. "]=" .. describe(value[k]) end
+    return "{" .. table.concat(parts, ",") .. "}"
+end
+
+-- Drives every instance the scenario built; returns what happened, as lines,
+-- ending with the window's saved geometry and the saved data after logout.
 local function exercise(F, s)
     local firstCall, firstOutput = #s.calls + 1, #T.output + 1
     local ev = s.inst.events
@@ -421,30 +434,44 @@ local function exercise(F, s)
     view._initializer({}, {})
     local win = s.inst.windowFrame
     win._scripts.OnDragStart(win)
+    win:SetPoint("TOPLEFT", _G.UIParent, "TOPLEFT", 12, -34)
     win._scripts.OnDragStop(win)
+    local geometry = describe(s.windowGeometry)
     s.panel.clicks[#s.panel.clicks]({}, "LeftButton", false)
     -- A dev build raises the size warning after the callbacks run.
     local ok, sizeErr = pcall(T.Fire, F.DB._state.sizeWarningEvents._frame, "SAVED_VARIABLES_TOO_LARGE", "ScenarioAddon")
     T.falsy(ok, "the size warning raises in a dev build")
     T.identity = { name = "Tester", realm = T.identity.realm }
     T.RunAfters()
+    s.inst.db.profile.a = 7
     T.Fire(surfaces.dispatcherFrame(), "PLAYER_LOGOUT")
 
     local lines = { "raised " .. surfaces.normalise(sizeErr) }
     for i = firstCall, #s.calls do lines[#lines + 1] = "call " .. s.calls[i] end
     for i = firstOutput, #T.output do lines[#lines + 1] = "print " .. T.output[i] end
+    lines[#lines + 1] = "geometry " .. geometry
+    lines[#lines + 1] = "saved TestDB " .. describe(_G.TestDB)
+    lines[#lines + 1] = "saved TestDB2 " .. describe(_G.TestDB2)
     return lines
 end
 
 test("instances built before the swap behave as they would without it", function()
     local F, s = prepared()
     local plain = exercise(F, s)
+    T.eq(s.windowGeometry.point, "TOPLEFT", "the drag stop saved the window's point")
+    T.eq(s.windowGeometry.x, 12, "the drag stop saved the window's offset")
+    local saved = _G.TestDB
+    T.eq(saved.profiles.Default.a, 7, "the changed profile value is saved")
+    T.eq(saved.global.g, nil, "the default-equal global value is stripped")
+    T.eq(saved.global.schemaStamp, 1, "the schema stamp is saved")
 
     F, s = prepared()
     swap(F)
     local swapped = exercise(F, s)
 
-    T.eq(table.concat(swapped, "\n"), table.concat(plain, "\n"), "what the instances did")
+    for i = 1, math.max(#plain, #swapped) do
+        T.eq(swapped[i], plain[i], "what the instances did, line " .. i)
+    end
     for _, label in ipairs({
         "events once", "events plain", "events bucket", "command go", "tooltip first", "tooltip second",
         "tooltip other type", "menu builder", "list calculator", "list initializer", "settings launch",
