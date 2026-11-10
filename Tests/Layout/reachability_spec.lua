@@ -282,6 +282,7 @@ end)
 --   moduleToo  whether the module table is among its upvalues
 local SITES = {
     { id = "poll timer", module = "Lifecycle", body = "return Lifecycle._impl.pollTick()", others = 0 },
+    { id = "lifecycle dispatcher", module = "Lifecycle", body = "return Lifecycle._impl.onEvent(...)", others = 0 },
     { id = "logout strip entry", module = "DB", body = "return DB._impl.onLogout()", others = 0 },
     -- The slash handler keeps its original body: one method call on the
     -- controller it was made for, resolved through the swappable method table.
@@ -291,6 +292,8 @@ local SITES = {
     { id = "menu generator", module = "Menu", body = "return Menu._impl.generate(c, owner, rootDescription, ...)", others = 1 },
     { id = "list row initializer", module = "List", body = "return List._impl.initRow(c, frame, elementData)", others = 1 },
     { id = "list row extent", module = "List", body = "return List._impl.extent(c, index, elementData)", others = 1 },
+    { id = "window drag start", module = "Window", body = "return Window._impl.dragStart(record)", others = 1 },
+    { id = "window drag stop", module = "Window", body = "return Window._impl.dragStop(record)", others = 1 },
 }
 
 local function readLines(text)
@@ -420,7 +423,7 @@ test("every callback relay is in place once its module has moved its state", fun
 end)
 
 test("no callback relay can stay unchecked after every module has moved", function()
-    T.eq(#SITES, 8, "the eight relay sites")
+    T.eq(#SITES, 11, "the eleven relay sites")
     local seen = {}
     for _, site in ipairs(SITES) do
         T.falsy(seen[site.id], "site listed twice: " .. site.id)

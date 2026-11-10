@@ -20,7 +20,8 @@
 --              naming the function's file:line and the upvalue. Each rebound
 --              function then runs in the real global table.
 --   4. Re-point what the client holds through a handle, using the new
---              factories.
+--              factories. The Lifecycle dispatcher and Window drag scripts
+--              are relays, so their frames keep the scripts they have.
 --   5. Check   the shadow environment holds only Foundry_1_0 and _G.
 -- Any failure raises before the next step; nothing is skipped.
 
@@ -199,11 +200,6 @@ function INS.install(opts)
     if #failures > 0 then raise(failures) end
 
     -- 4. Re-point, with the factories now on the serving tables.
-    local Lifecycle = modules.Lifecycle
-    if Lifecycle and Lifecycle._state.dispatcher then
-        Lifecycle._state.dispatcher:SetScript("OnEvent", Lifecycle._impl.onEvent)
-    end
-
     local DB = modules.DB
     if DB then
         local sizeEvents = DB._state.sizeWarningEvents
@@ -216,15 +212,6 @@ function INS.install(opts)
         end
         for _, store in ipairs(DB._state.stores) do
             store.onMismatch = DB._impl.makeOnMismatch()
-        end
-    end
-
-    local Window = modules.Window
-    if Window then
-        for _, record in pairs(Window._state.attached) do
-            local onDragStart, onDragStop = Window._impl.makeDragScripts(record)
-            record.handle:SetScript("OnDragStart", onDragStart)
-            record.handle:SetScript("OnDragStop", onDragStop)
         end
     end
 
