@@ -933,6 +933,47 @@ test("every frozen cross-module name exists in the layout-1 copy and in the curr
     end
 end)
 
+-- A bucket flush still pending at a takeover is the older copy's closure: it
+-- re-arms itself and reads these fields on the bucket object, so the newer
+-- code has to keep creating and using them under these names.
+test("an events bucket carries and uses the fields an older pending flush reads, in the layout-1 copy and in the current code", function()
+    local copies = {
+        { "the layout-1 copy", function() return T.loadOldCopy("layout1") end },
+        { "the current code", loadCurrent },
+    }
+    for _, copy in ipairs(copies) do
+        for _, edge in ipairs({ "trailing", "leading" }) do
+            T.installMocks(DEV)
+            local F = copy[2]()
+            local who = copy[1] .. ", " .. edge .. ": "
+            local handler = function() end
+            local ev = F.Events:New("BucketFields" .. edge)
+            local bucket = ev:RegisterBucket({ events = "BUCKET_FIELDS", interval = 5, edge = edge, handler = handler })
+            T.eq(rawget(bucket, "_interval"), 5, who .. "_interval")
+            T.eq(rawget(bucket, "_edge"), edge, who .. "_edge")
+            T.truthy(rawequal(rawget(bucket, "_handler"), handler), who .. "_handler")
+            T.eq(rawget(bucket, "_cancelled"), false, who .. "_cancelled starts false")
+            T.eq(rawget(bucket, "_timer"), nil, who .. "_timer starts empty")
+            T.eq(rawget(bucket, "_deadline"), nil, who .. "_deadline starts empty")
+            T.falsy(bucket:IsPending(), who .. "not pending before an event")
+
+            T.Fire(ev._frame, "BUCKET_FIELDS")
+            T.truthy(rawget(bucket, "_timer") ~= nil, who .. "an event sets _timer")
+            T.truthy(bucket:IsPending(), who .. "IsPending reads _timer")
+            if edge == "trailing" then
+                T.eq(type(rawget(bucket, "_deadline")), "number", who .. "a trailing event sets _deadline")
+            else
+                T.eq(rawget(bucket, "_deadline"), nil, who .. "a leading event sets no _deadline")
+            end
+
+            bucket:Cancel()
+            T.eq(rawget(bucket, "_cancelled"), true, who .. "Cancel sets _cancelled")
+            T.eq(rawget(bucket, "_timer"), nil, who .. "Cancel clears _timer")
+            T.eq(rawget(bucket, "_deadline"), nil, who .. "Cancel clears _deadline")
+        end
+    end
+end)
+
 --------------------------------------------------------------------------------
 -- The loader behind the takeover run of the suite
 --------------------------------------------------------------------------------
