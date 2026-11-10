@@ -18,6 +18,16 @@ local Commands = {}
 Commands.API_VERSION = 2
 Commands.Guards = {}
 
+-- All module state lives on the module table.
+Commands._layoutVersion = 1
+Commands._source = ...
+Commands._state = {
+    -- Live controllers, held weakly so a dropped controller can be collected.
+    instances = setmetatable({}, { __mode = "k" }),
+}
+Commands._impl = {}
+local S, I = Commands._state, Commands._impl
+
 local restrictionTypes = {
     { key = "Combat", name = "combat" },
     { key = "Encounter", name = "encounter" },
@@ -61,6 +71,7 @@ end
 
 local Controller = {}
 Controller.__index = Controller
+I.Controller = Controller
 
 function Controller:_print(line)
     if self._printer then
@@ -351,6 +362,7 @@ end
 -- Tears down every slash registration this controller owns. Idempotent.
 function Controller:Destroy()
     if self._destroyed then return end
+    S.instances[self] = nil
     if self._restrictionEvents then
         self._restrictionEvents:Destroy()
         self._restrictionEvents = nil
@@ -370,6 +382,28 @@ end
 --------------------------------------------------------------------------------
 -- Factory
 --------------------------------------------------------------------------------
+
+-- Builds the handler that prints a notice when a restriction is about to
+-- activate.
+local function makeRestrictionHandler(c)
+    return function(_, restrictionType, state)
+        local enum = _G.Enum
+        local states = enum and enum.AddOnRestrictionState
+        if states and state == states.Activating then
+            local name = "addon"
+            local types = enum.AddOnRestrictionType
+            for i = 1, #restrictionTypes do
+                local restriction = restrictionTypes[i]
+                if types and types[restriction.key] == restrictionType then
+                    name = restriction.name
+                    break
+                end
+            end
+            c:_print("Commands are about to be paused while " .. name .. " restrictions activate.")
+        end
+    end
+end
+I.makeRestrictionHandler = makeRestrictionHandler
 
 -- Creates a controller scoped to one consumer. config.name and
 -- config.slashes are required; defaultHandler, guard, printer, description,
@@ -477,26 +511,12 @@ function Commands:New(config)
         if eventUtils and type(eventUtils.IsEventValid) == "function"
             and eventUtils.IsEventValid("ADDON_RESTRICTION_STATE_CHANGED") then
             local eventController = F.Events:New("Commands:" .. config.name)
-            eventController:Register("ADDON_RESTRICTION_STATE_CHANGED", function(_, restrictionType, state)
-                local enum = _G.Enum
-                local states = enum and enum.AddOnRestrictionState
-                if states and state == states.Activating then
-                    local name = "addon"
-                    local types = enum.AddOnRestrictionType
-                    for i = 1, #restrictionTypes do
-                        local restriction = restrictionTypes[i]
-                        if types and types[restriction.key] == restrictionType then
-                            name = restriction.name
-                            break
-                        end
-                    end
-                    c:_print("Commands are about to be paused while " .. name .. " restrictions activate.")
-                end
-            end)
+            eventController:Register("ADDON_RESTRICTION_STATE_CHANGED", makeRestrictionHandler(c))
             c._restrictionEvents = eventController
         end
     end
 
+    S.instances[c] = true
     return c
 end
 

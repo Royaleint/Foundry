@@ -14,12 +14,23 @@ if F:HasModule("Events") then return end
 local Events = {}
 Events.API_VERSION = 2
 
+-- All module state lives on the module table.
+Events._layoutVersion = 1
+Events._source = ...
+Events._state = {
+    -- Live controllers, held weakly so a dropped controller can be collected.
+    instances = setmetatable({}, { __mode = "k" }),
+}
+Events._impl = {}
+local S, I = Events._state, Events._impl
+
 --------------------------------------------------------------------------------
 -- Controller
 --------------------------------------------------------------------------------
 
 local Controller = {}
 Controller.__index = Controller
+I.Controller = Controller
 
 -- Register* call the native register before any bookkeeping, so a throw
 -- leaves the controller unchanged. Without C_EventUtils an invalid event
@@ -103,6 +114,16 @@ function Controller:RegisterUnit(event, handler, unit1, unit2)
     self._handlers[event] = handler
 end
 
+-- Builds the handler stored for a RegisterOnce event: unregisters the event,
+-- then calls the consumer handler.
+local function makeOnce(c, handler)
+    return function(ev, ...)
+        c:Unregister(ev)
+        handler(ev, ...)
+    end
+end
+I.makeOnce = makeOnce
+
 -- Registers a handler that fires once, then unregisters itself (safe to
 -- re-register the same event from inside the handler).
 function Controller:RegisterOnce(event, handler)
@@ -129,13 +150,12 @@ function Controller:RegisterOnce(event, handler)
         return
     end
 
-    local function once(ev, ...)
-        self:Unregister(ev)
-        handler(ev, ...)
-    end
+    local once = makeOnce(self, handler)
 
     self._frame:RegisterEvent(event)
     self._handlers[event] = once
+    if not self._onceHandlers then self._onceHandlers = {} end
+    self._onceHandlers[event] = handler
 end
 
 --------------------------------------------------------------------------------
@@ -145,6 +165,7 @@ end
 -- A bucket coalesces a burst of events into one delayed handler call.
 local Bucket = {}
 Bucket.__index = Bucket
+I.Bucket = Bucket
 
 -- Whether a flush is currently scheduled.
 function Bucket:IsPending()
@@ -182,6 +203,47 @@ function Bucket:_teardown()
         self._timer = nil
     end
 end
+
+-- Builds the flush and per-event closures for one bucket. The client timer
+-- and clock functions are captured per call.
+local function makeBucketFns(bucket)
+    local newTimer = C_Timer.NewTimer
+    local getTime = GetTime
+
+    local function flush()
+        if bucket._cancelled then return end
+        local deadline = bucket._deadline
+        if deadline then
+            local remaining = deadline - getTime()
+            if remaining > 0 then
+                -- Trailing re-arms one timer per window, never one per event.
+                bucket._timer = newTimer(remaining, flush)
+                return
+            end
+        end
+        -- Clear pending state before invoking: a re-trigger from inside the
+        -- handler must open a new window.
+        bucket._timer = nil
+        bucket._deadline = nil
+        bucket._handler()
+    end
+
+    local function onFire()
+        if bucket._cancelled then return end
+        if bucket._edge == "leading" then
+            if bucket._timer then return end
+            bucket._timer = newTimer(bucket._interval, flush)
+        else
+            bucket._deadline = getTime() + bucket._interval
+            if not bucket._timer then
+                bucket._timer = newTimer(bucket._interval, flush)
+            end
+        end
+    end
+
+    return flush, onFire
+end
+I.makeBucketFns = makeBucketFns
 
 -- Coalesces a burst of one or more events into one handler() call per
 -- quiet-window. spec fields:
@@ -282,39 +344,7 @@ function Controller:RegisterBucket(spec)
     bucket._deadline = nil
     bucket._cancelled = false
 
-    local newTimer = C_Timer.NewTimer
-    local getTime = GetTime
-
-    local function flush()
-        if bucket._cancelled then return end
-        local deadline = bucket._deadline
-        if deadline then
-            local remaining = deadline - getTime()
-            if remaining > 0 then
-                -- Trailing re-arms one timer per window, never one per event.
-                bucket._timer = newTimer(remaining, flush)
-                return
-            end
-        end
-        -- Clear pending state before invoking: a re-trigger from inside the
-        -- handler must open a new window.
-        bucket._timer = nil
-        bucket._deadline = nil
-        bucket._handler()
-    end
-
-    local function onFire()
-        if bucket._cancelled then return end
-        if edge == "leading" then
-            if bucket._timer then return end
-            bucket._timer = newTimer(bucket._interval, flush)
-        else
-            bucket._deadline = getTime() + bucket._interval
-            if not bucket._timer then
-                bucket._timer = newTimer(bucket._interval, flush)
-            end
-        end
-    end
+    local _, onFire = makeBucketFns(bucket)
 
     -- Without C_EventUtils a bad name can still throw here; roll back what
     -- registered so the controller is unchanged.
@@ -358,6 +388,7 @@ function Controller:Unregister(event)
         return
     end
     self._handlers[event] = nil
+    if self._onceHandlers then self._onceHandlers[event] = nil end
     self._frame:UnregisterEvent(event)
 end
 
@@ -376,6 +407,11 @@ function Controller:UnregisterAll()
     end
     for event in pairs(self._handlers) do
         self._handlers[event] = nil
+    end
+    if self._onceHandlers then
+        for event in pairs(self._onceHandlers) do
+            self._onceHandlers[event] = nil
+        end
     end
     self._frame:UnregisterAllEvents()
 end
@@ -411,6 +447,7 @@ function Controller:Destroy()
         F:RaiseDevError("Events:Destroy called on a destroyed controller")
         return
     end
+    S.instances[self] = nil
     local frame = self._frame
     frame:UnregisterAllEvents()
     for i = #self._buckets, 1, -1 do
@@ -423,6 +460,11 @@ function Controller:Destroy()
     for event in pairs(self._handlers) do
         self._handlers[event] = nil
     end
+    if self._onceHandlers then
+        for event in pairs(self._onceHandlers) do
+            self._onceHandlers[event] = nil
+        end
+    end
     frame:SetScript("OnEvent", nil)
     frame:Hide()
     self._destroyed = true
@@ -431,6 +473,17 @@ end
 --------------------------------------------------------------------------------
 -- Factory
 --------------------------------------------------------------------------------
+
+-- Builds a controller's frame event script: looks the handler up at fire time.
+local function makeOnEvent(c)
+    return function(_, event, ...)
+        local handler = c._handlers[event]
+        if handler then
+            handler(event, ...)
+        end
+    end
+end
+I.makeOnEvent = makeOnEvent
 
 -- Creates a controller scoped to one consumer; owner is a stored label only.
 -- No event is registered until the first :Register call.
@@ -451,13 +504,9 @@ function Events:New(owner)
     frame:Hide()
     c._frame = frame
 
-    frame:SetScript("OnEvent", function(_, event, ...)
-        local handler = c._handlers[event]
-        if handler then
-            handler(event, ...)
-        end
-    end)
+    frame:SetScript("OnEvent", makeOnEvent(c))
 
+    S.instances[c] = true
     return c
 end
 

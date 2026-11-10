@@ -421,6 +421,266 @@ test("this DB loaded after a 1.0.114 DB stands down and adds no logout entry", f
 end)
 
 --------------------------------------------------------------------------------
+-- Events and Commands
+--------------------------------------------------------------------------------
+
+local function countKeys(t)
+    local n = 0
+    for _ in pairs(t) do n = n + 1 end
+    return n
+end
+
+test("Events carries the layout header, its state and its implementation", function()
+    local F = T.fresh()
+    local E = F.Events
+    T.eq(E._layoutVersion, 1, "layout version")
+    T.eq(E._source, "Foundry-1.0", "source addon name")
+    T.eq(E._build, nil, "no build stamp yet")
+    T.eq(type(E._state), "table", "state table")
+    T.eq(type(E._impl), "table", "implementation table")
+    for _, name in ipairs({ "Controller", "Bucket" }) do
+        T.eq(type(E._impl[name]), "table", "implementation " .. name)
+    end
+    for _, name in ipairs({ "makeOnEvent", "makeOnce", "makeBucketFns" }) do
+        T.eq(type(E._impl[name]), "function", "implementation " .. name)
+    end
+    local c = E:New("LayoutEventsHeader")
+    T.eq(getmetatable(c), E._impl.Controller, "controllers use the published method table")
+    local b = c:RegisterBucket({ events = "E", interval = 1, handler = function() end })
+    T.eq(getmetatable(b), E._impl.Bucket, "buckets use the published method table")
+end)
+
+test("Commands carries the layout header, its state and its implementation", function()
+    local F = T.fresh()
+    local C = F.Commands
+    T.eq(C._layoutVersion, 1, "layout version")
+    T.eq(C._source, "Foundry-1.0", "source addon name")
+    T.eq(C._build, nil, "no build stamp yet")
+    T.eq(type(C._state), "table", "state table")
+    T.eq(type(C._impl), "table", "implementation table")
+    T.eq(type(C._impl.Controller), "table", "implementation Controller")
+    T.eq(type(C._impl.makeRestrictionHandler), "function", "implementation makeRestrictionHandler")
+    local c = C:New({ name = "LayoutCmdHeader", slashes = { "/layoutcmdheader" } })
+    T.eq(getmetatable(c), C._impl.Controller, "controllers use the published method table")
+end)
+
+test("a second copy of Events or Commands stands down and leaves the first one's tables alone", function()
+    local F = T.fresh()
+    for _, name in ipairs({ "Events", "Commands" }) do
+        local M = F[name]
+        local state, impl, instances = M._state, M._impl, M._state.instances
+        T.loadModule("Modules/" .. name .. ".lua")
+        T.eq(F[name], M, name .. " keeps serving")
+        T.eq(M._state, state, name .. " state table unchanged")
+        T.eq(M._impl, impl, name .. " implementation table unchanged")
+        T.eq(M._state.instances, instances, name .. " registry unchanged")
+    end
+end)
+
+test("the Events registry holds a live controller and drops it on Destroy", function()
+    local F = T.fresh()
+    local E = F.Events
+    local reg = E._state.instances
+    T.eq(getmetatable(reg).__mode, "k", "weak keys")
+    T.eq(countKeys(reg), 0, "empty before any controller")
+    local a, b = E:New("LayoutRegA"), E:New("LayoutRegB")
+    T.eq(reg[a], true, "first listed")
+    T.eq(reg[b], true, "second listed")
+    T.eq(countKeys(reg), 2, "two listed")
+    a:Destroy()
+    T.eq(reg[a], nil, "destroyed controller dropped")
+    T.eq(reg[b], true, "the other stays")
+    pcall(function() a:Destroy() end)
+    T.eq(countKeys(reg), 1, "one left after a repeated destroy")
+end)
+
+test("the Commands registry holds a live controller and drops it on Destroy", function()
+    local F = T.fresh()
+    local C = F.Commands
+    local reg = C._state.instances
+    T.eq(getmetatable(reg).__mode, "k", "weak keys")
+    T.eq(countKeys(reg), 0, "empty before any controller")
+    local a = C:New({ name = "LayoutRegCmdA", slashes = { "/layoutrega" } })
+    local b = C:New({ name = "LayoutRegCmdB", slashes = { "/layoutregb" } })
+    T.eq(reg[a], true, "first listed")
+    T.eq(reg[b], true, "second listed")
+    a:Destroy()
+    T.eq(reg[a], nil, "destroyed controller dropped")
+    T.eq(reg[b], true, "the other stays")
+    a:Destroy()
+    T.eq(countKeys(reg), 1, "one left after a repeated destroy")
+end)
+
+test("a refused Events or Commands construction lists nothing", function()
+    local F = T.fresh("1.0.114")
+    F.Events:New("")
+    F.Commands:New({ name = "LayoutRefused" })
+    T.eq(countKeys(F.Events._state.instances), 0, "Events registry empty")
+    T.eq(countKeys(F.Commands._state.instances), 0, "Commands registry empty")
+end)
+
+test("controllers nobody references any more are not kept alive by the registries", function()
+    local F = T.fresh()
+    local E, C = F.Events, F.Commands
+    do
+        local e = E:New("LayoutGcEvents")
+        C:New({ name = "LayoutGcCmd", slashes = { "/layoutgc" } })
+        T.eq(countKeys(E._state.instances), 1, "event controller listed")
+        T.eq(countKeys(C._state.instances), 1, "command controller listed")
+        T.truthy(e, "held")
+    end
+    T.frames = {}
+    _G.SlashCmdList.LAYOUTGCCMD = nil
+    collectgarbage()
+    collectgarbage()
+    T.eq(countKeys(E._state.instances), 0, "Events registry empty after collection")
+    T.eq(countKeys(C._state.instances), 0, "Commands registry empty after collection")
+end)
+
+-- Run on a release-mode core, where a call on a destroyed controller is
+-- silent, so a closure taken from a snapshot behaves as in the 1.0.114 release.
+local function onceSnapshotSteps(F)
+    local log = {}
+    local function handler(ev, ...)
+        log[#log + 1] = ev .. ":" .. select("#", ...) .. ":" .. tostring((...))
+    end
+    local c = F.Events:New("LayoutOnceSnap")
+    c:RegisterOnce("E_ONE", handler)
+    local first = c:GetNativeHandles().handlers.E_ONE
+    c:Unregister("E_ONE")
+    log[#log + 1] = "registered:" .. tostring(c:IsRegistered("E_ONE"))
+    first("E_ONE", "a", "b")
+    c:RegisterOnce("E_TWO", handler)
+    local second = c:GetNativeHandles().handlers.E_TWO
+    c:Destroy()
+    second("E_TWO", "z")
+    c = F.Events:New("LayoutOnceSnapFire")
+    c:RegisterOnce("E_THREE", handler)
+    local third = c:GetNativeHandles().handlers.E_THREE
+    T.Fire(c:GetNativeHandles().frame, "E_THREE", 7)
+    third("E_THREE", 8)
+    return table.concat(log, "|")
+end
+
+test("a once-handler snapshot still calls the consumer handler after Unregister and after Destroy, as in the 1.0.114 release", function()
+    local F = T.fresh("1.0.114")
+    local current = onceSnapshotSteps(F)
+    T.installMocks("@project-version@")
+    local old = T.loadOldCopy("v1.0.114", "OldHost", "1.0.114")
+    local released = onceSnapshotSteps(old)
+    T.eq(current, released, "observable calls differ from the release")
+    T.eq(current, "registered:false|E_ONE:2:a|E_TWO:1:z|E_THREE:1:7|E_THREE:1:8", "calls made")
+end)
+
+test("a once-handler is recorded next to the stored closure and cleared by Unregister", function()
+    local F = T.fresh("1.0.114")
+    local c = F.Events:New("LayoutOnce")
+    T.eq(c._onceHandlers, nil, "nothing before the first RegisterOnce")
+    local h = function() end
+    c:RegisterOnce("E_ONE", h)
+    T.eq(c._onceHandlers.E_ONE, h, "consumer handler recorded")
+    T.truthy(c._handlers.E_ONE ~= h, "the stored handler is the wrapper")
+    c:Unregister("E_ONE")
+    T.eq(c._onceHandlers.E_ONE, nil, "cleared by Unregister")
+end)
+
+test("a once-handler record is cleared by UnregisterAll, Destroy and the once firing", function()
+    local F = T.fresh("1.0.114")
+    local c = F.Events:New("LayoutOnce")
+    local h = function() end
+    c:RegisterOnce("E_ONE", h)
+    c:RegisterOnce("E_TWO", h)
+    c:Register("E_PLAIN", h)
+    c:UnregisterAll()
+    T.eq(next(c._onceHandlers), nil, "cleared by UnregisterAll")
+
+    c:RegisterOnce("E_ONE", h)
+    c:RegisterOnce("E_TWO", h)
+    T.Fire(c._frame, "E_ONE")
+    T.eq(c._onceHandlers.E_ONE, nil, "cleared by the firing")
+    T.eq(c._onceHandlers.E_TWO, h, "another event's record kept")
+    c:Destroy()
+    T.eq(next(c._onceHandlers), nil, "cleared by Destroy")
+end)
+
+test("a once-handler may register itself again and the new record is kept", function()
+    local F = T.fresh("1.0.114")
+    local c = F.Events:New("LayoutOnce")
+    local hits = 0
+    local function again()
+        hits = hits + 1
+        if hits == 1 then c:RegisterOnce("E_ONE", again) end
+    end
+    c:RegisterOnce("E_ONE", again)
+    T.Fire(c._frame, "E_ONE")
+    T.eq(c._onceHandlers.E_ONE, again, "re-armed record present")
+    T.Fire(c._frame, "E_ONE")
+    T.eq(hits, 2, "ran twice")
+    T.eq(c._onceHandlers.E_ONE, nil, "cleared after the second firing")
+end)
+
+test("a refused RegisterOnce, and one whose native register throws, leave the record untouched", function()
+    local F = T.fresh("1.0.114")
+    local c = F.Events:New("LayoutOnce")
+    local h = function() end
+
+    -- Nothing recorded yet: every refusal leaves the table absent.
+    c:Register("E_TAKEN", h)
+    c:RegisterOnce("E_TAKEN", h)
+    c:RegisterOnce("", h)
+    c:RegisterOnce("E_NEW", "not a function")
+    T.eq(c._onceHandlers, nil, "refusals created no record")
+
+    T.throwOnRegister = { E_BAD = true }
+    local ok = pcall(function() c:RegisterOnce("E_BAD", h) end)
+    T.falsy(ok, "native register threw")
+    T.eq(c._onceHandlers, nil, "a throwing native register created no record")
+    T.eq(c._handlers.E_BAD, nil, "and stored no handler")
+
+    -- With a record present: refusals and throws change nothing in it.
+    local kept = function() end
+    c:RegisterOnce("E_KEPT", kept)
+    local record = c._onceHandlers
+    c:RegisterOnce("E_KEPT", h)
+    pcall(function() c:RegisterOnce("E_BAD", h) end)
+    T.eq(c._onceHandlers, record, "same table")
+    T.eq(record.E_KEPT, kept, "existing entry untouched")
+    T.eq(record.E_BAD, nil, "no entry for the throwing event")
+    T.eq(record.E_TAKEN, nil, "no entry for the refused event")
+end)
+
+test("a bucket's closures read the edge stored on the bucket", function()
+    local F = T.fresh("1.0.114")
+    local c = F.Events:New("LayoutBucket")
+    local fired = 0
+    local b = c:RegisterBucket({ events = "E_ONE", interval = 1, edge = "trailing", handler = function() fired = fired + 1 end })
+    T.eq(b._edge, "trailing", "edge stored")
+    T.Fire(c._frame, "E_ONE")
+    T.truthy(b._deadline ~= nil, "trailing arms a deadline")
+    b._edge = "leading"
+    b._deadline = nil
+    b._timer:Cancel()
+    b._timer = nil
+    T.Fire(c._frame, "E_ONE")
+    T.eq(b._deadline, nil, "the stored edge decides the branch")
+    T.truthy(b._timer, "leading armed a timer")
+    T.eq(fired, 0, "nothing fired yet")
+end)
+
+test("the slash command closure dispatches to its controller and returns nothing", function()
+    local F = T.fresh()
+    local out = {}
+    local c = F.Commands:New({
+        name = "LayoutSlash", slashes = { "/layoutslash" }, printer = function(line) out[#out + 1] = line end,
+    })
+    local fn = _G.SlashCmdList.LAYOUTSLASH
+    T.eq(type(fn), "function", "closure registered")
+    T.eq(c:GetNativeHandles().handler, fn, "handles expose the same closure")
+    T.eq(select("#", fn("hello")), 0, "the closure returns nothing")
+    T.eq(out[1], "Unknown command: hello", "dispatched to the controller")
+end)
+
+--------------------------------------------------------------------------------
 -- state never declared as a file-level local
 --------------------------------------------------------------------------------
 
