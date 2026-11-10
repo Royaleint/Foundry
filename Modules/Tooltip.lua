@@ -25,6 +25,7 @@ Tooltip._state = {
 }
 Tooltip._impl = {}
 local S, I = Tooltip._state, Tooltip._impl
+local liveKeys, dispatchers = S.liveKeys, S.dispatchers
 
 --------------------------------------------------------------------------------
 -- Feature detection (checked at :New, never at file scope)
@@ -34,12 +35,6 @@ local function hasTooltipDataProcessor()
     return type(_G.TooltipDataProcessor) == "table"
         and type(_G.TooltipDataProcessor.AddTooltipPostCall) == "function"
 end
-
---------------------------------------------------------------------------------
--- Module-level live-key registry
---------------------------------------------------------------------------------
-
-local liveKeys = S.liveKeys
 
 --------------------------------------------------------------------------------
 -- Per-type dispatchers
@@ -64,8 +59,6 @@ local liveKeys = S.liveKeys
 --      A destroyed tail is unlinked by a later sweep, once something follows it.
 --------------------------------------------------------------------------------
 
-local dispatchers = S.dispatchers
-
 -- Unlinks destroyed controllers, except the tail (rule 2 above). Runs from
 -- New and after each dispatch; the rules above make it safe while a walk is
 -- in progress.
@@ -81,7 +74,6 @@ local function sweep(list)
         c = nextC
     end
 end
-
 I.sweep = sweep
 
 -- Runs every live controller of one tooltip type whose filter matches.

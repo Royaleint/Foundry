@@ -27,6 +27,7 @@ Window._state = {
 }
 Window._impl = {}
 local S, I = Window._state, Window._impl
+local attached = S.attached
 
 --------------------------------------------------------------------------------
 -- Anchor whitelist and geometry validation
@@ -62,12 +63,6 @@ local function apply(win, point, relPoint, x, y)
     win:ClearAllPoints()
     win:SetPoint(point, _G.UIParent, relPoint, x, y)
 end
-
---------------------------------------------------------------------------------
--- Module-local registry (frame -> record)
---------------------------------------------------------------------------------
-
-local attached = S.attached
 
 --------------------------------------------------------------------------------
 -- Save (OnDragStop)

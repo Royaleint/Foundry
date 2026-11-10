@@ -30,16 +30,11 @@ Settings._state = {
 }
 Settings._impl = {}
 local S, I = Settings._state, Settings._impl
+local liveKeys = S.liveKeys
+local registeredCategories = S.registeredCategories
 
 -- true lets the Settings search find a launcher entry by its title and button text.
 local LAUNCHER_ADD_SEARCH_TAGS = true
-
---------------------------------------------------------------------------------
--- Module-level live-key registry
---------------------------------------------------------------------------------
-
-local liveKeys = S.liveKeys
-local registeredCategories = S.registeredCategories
 
 --------------------------------------------------------------------------------
 -- API detection (feature detection, not version checks or pcall)

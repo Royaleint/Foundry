@@ -27,6 +27,7 @@ Menu._state = {
 }
 Menu._impl = {}
 local S, I = Menu._state, Menu._impl
+local liveKeys = S.liveKeys
 
 --------------------------------------------------------------------------------
 -- Feature detection (checked at :New, never at file scope)
@@ -36,12 +37,6 @@ local function hasMenuUtil()
     return type(_G.MenuUtil) == "table"
         and type(_G.MenuUtil.CreateContextMenu) == "function"
 end
-
---------------------------------------------------------------------------------
--- Module-level live-key registry
---------------------------------------------------------------------------------
-
-local liveKeys = S.liveKeys
 
 --------------------------------------------------------------------------------
 -- Controller
