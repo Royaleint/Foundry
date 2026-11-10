@@ -684,6 +684,7 @@ local suites = {
     { label = "Foundry.DB.equivalence", cases = assert(loadfile(testsDir .. "/DB/equivalence_spec.lua"))(T) },
     { label = "Foundry.Layout.perf", cases = assert(loadfile(testsDir .. "/Layout/perf_spec.lua"))(T) },
     { label = "Foundry.Layout.errors", cases = assert(loadfile(testsDir .. "/Layout/error_levels_spec.lua"))(T) },
+    { label = "Foundry.Layout.reachability", cases = assert(loadfile(testsDir .. "/Layout/reachability_spec.lua"))(T) },
 }
 
 local anyFailed = false
