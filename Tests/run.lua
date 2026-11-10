@@ -840,7 +840,10 @@ function T.outputContains(substr, msg)
         .. "' (output: " .. table.concat(T.output, " | ") .. ")", 2)
 end
 
--- Suites that make no takeover in takeover mode, each with the reason.
+-- Suites that make no takeover in takeover mode, each with the reason. The
+-- takeover run mode takes over a layout-1 copy that holds no live objects yet,
+-- so it shows the suites pass on tables the newer code bound to; adopting live
+-- state is covered by the two takeover spec files.
 T.TAKEOVER_EXEMPT = {
     ["Foundry.Bootstrap"] = "loads the bootstrap file alone against library tables it builds by hand",
     ["Foundry.Packaging"] = "reads the packaging files and loads no library",

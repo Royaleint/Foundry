@@ -463,6 +463,51 @@ test("a newer DB over a Lifecycle with no layout declines and changes nothing", 
     end
 end)
 
+-- The v1.0.4 copy serves the core and four modules; the layout-1 copy then loads
+-- and fills in the modules v1.0.4 lacks, so those are layout-1 modules under a
+-- core that carries no layout marker. A newer copy must leave all of it alone.
+test("a newer copy over layout-1 modules sitting under a core with no layout takes over no unit and changes nothing", function()
+    local FILLED = { List = "New", Settings = "New", Tooltip = "New", Menu = "New", Window = "Attach" }
+    local KEPT = { "Commands", "Events", "Lifecycle", "DB" }
+    for _, mode in ipairs({ "release", "dev" }) do
+        T.installMocks(releaseMode(mode) and "1.0.0" or "@project-version@")
+        local version = releaseMode(mode) and "1.0.1" or nil
+        local old4, layout1 = T.testsDir .. "/OldCopies/v1.0.4", T.testsDir .. "/OldCopies/layout1"
+        T.loadCopy({ root = old4, files = T.OLD_COPIES["v1.0.4"], addonName = "ServingHost", version = version })
+        local errors = {}
+        for _, rel in ipairs(T.OLD_COPIES.layout1) do
+            local ok, err = pcall(T.loadCopy, { root = layout1, files = { rel }, addonName = "FillerHost", version = version })
+            if not ok then errors[rel] = tostring(err) end
+        end
+        -- the layout-1 core stands down, and says so only in a development build
+        T.eq(errors["Foundry.lua"] ~= nil, not releaseMode(mode), mode .. ": the layout-1 core's stand-down raises in development only")
+        errors["Foundry.lua"] = nil
+        T.eq(next(errors), nil, mode .. ": no layout-1 module raised: " .. firstError(errors))
+        local F = _G.Foundry_1_0
+        T.eq(rawget(F, "_layoutVersion"), nil, mode .. ": the core carries no layout marker")
+        for unit, method in pairs(FILLED) do
+            T.eq(rawget(F[unit], "_layoutVersion"), 1, mode .. ": " .. unit .. " is a layout-1 module")
+            T.truthy(isOlderFunction(F[unit][method]), mode .. ": " .. unit .. " serves the layout-1 code")
+        end
+        for _, unit in ipairs(KEPT) do
+            T.eq(rawget(F[unit], "_layoutVersion"), nil, mode .. ": " .. unit .. " stays the v1.0.4 module")
+        end
+        T.eq(#T.output, 0, mode .. ": loading the older copies prints nothing")
+        local before = SN.take(F)
+        errors = loadEach({ build = INCOMING_BUILD, addonName = "IncomingHost", version = incomingVersion(mode) })
+        T.eq(errors["Foundry.lua"] ~= nil, not releaseMode(mode), mode .. ": the newer core's stand-down raises in development only")
+        errors["Foundry.lua"] = nil
+        T.eq(next(errors), nil, mode .. ": no newer module raised: " .. firstError(errors))
+        local changes = SN.diff(before, SN.take(F))
+        T.eq(#changes, 0, mode .. ": nothing changes, but: " .. table.concat(changes, "; "))
+        T.eq(#T.output, 0, mode .. ": nothing is printed")
+        for unit, method in pairs(FILLED) do
+            T.eq(rawget(F[unit], "_build"), nil, mode .. ": " .. unit .. " was not taken over")
+            T.truthy(isOlderFunction(F[unit][method]), mode .. ": " .. unit .. " still serves the layout-1 code")
+        end
+    end
+end)
+
 -- A whole incoming copy, while the player is logged in or in combat: no unit
 -- is used, and nothing is printed.
 test("a whole newer copy loading while the player is logged in or in combat changes nothing", function()
@@ -729,8 +774,8 @@ local function framesRegistering(event)
     return n
 end
 
--- The functions an older copy's relays call by name, as unit and path. A relay
--- made by an older copy reaches the newer code only through these names, so
+-- The functions an older copy's relays and still-running code call by name, as
+-- unit and path. Older code reaches the newer code only through these names, so
 -- neither copy may rename them.
 local FROZEN_TARGETS = {
     { "Lifecycle", "_impl.pollTick" },
@@ -744,6 +789,19 @@ local FROZEN_TARGETS = {
     { "Menu", "_impl.generate" },
     { "Window", "_impl.dragStart" },
     { "Window", "_impl.dragStop" },
+    -- Private methods and functions that older code still running during a
+    -- takeover (an in-flight dispatch, a function a consumer kept) calls by
+    -- name through the serving tables.
+    { "Lifecycle", "_impl.Controller._fireAddonLoaded" },
+    { "Lifecycle", "_impl.Controller._fireLogin" },
+    { "Lifecycle", "_impl.Controller._fireLogout" },
+    { "Lifecycle", "_impl.Controller._fireUnloading" },
+    { "Commands", "_impl.Controller._print" },
+    { "Commands", "_impl.Controller._match" },
+    { "Commands", "_impl.Controller.PrintHelp" },
+    { "Events", "_impl.Controller.Unregister" },
+    { "Events", "_impl.Bucket._teardown" },
+    { "DB", "_impl.onSavedVariablesTooLarge" },
 }
 
 local function resolve(F, unit, path)
@@ -755,7 +813,7 @@ local function resolve(F, unit, path)
     return value
 end
 
-test("every function an older copy's relays call by name exists under that name in the layout-1 copy and in the current code", function()
+test("every function an older copy's relays or still-running code call by name exists under that name in the layout-1 copy and in the current code", function()
     local copies = {
         { "the layout-1 copy", function() return T.loadOldCopy("layout1", "ServingHost") end },
         { "the current code", function() return T.loadBuild({ build = INCOMING_BUILD }) end },
@@ -765,6 +823,51 @@ test("every function an older copy's relays call by name exists under that name 
         local F = copy[2]()
         for _, target in ipairs(FROZEN_TARGETS) do
             T.eq(type(resolve(F, target[1], target[2])), "function", copy[1] .. ": " .. target[1] .. "." .. target[2])
+        end
+    end
+end)
+
+local function pack(...) return { n = select("#", ...), ... } end
+
+-- The older dispatch reads two values from each fire method: whether the hook
+-- raised, and the error. A fire method with no hook, or on a destroyed
+-- controller, returns false; each hook fires once.
+test("the older and newer Lifecycle fire methods return whether the hook raised and its error, and fire a hook once", function()
+    local PHASES = {
+        { fire = "_fireAddonLoaded", register = "OnAddonLoaded" },
+        { fire = "_fireLogin", register = "OnLogin" },
+        { fire = "_fireLogout", register = "OnLogout" },
+        { fire = "_fireUnloading", register = "OnUnloading", arg = true },
+    }
+    local copies = {
+        { "the layout-1 copy", function() return T.loadOldCopy("layout1", "ServingHost") end },
+        { "the current code", function() return T.loadBuild({ build = INCOMING_BUILD }) end },
+    }
+    for _, copy in ipairs(copies) do
+        T.installMocks("@project-version@")
+        local F = copy[2]()
+        for _, phase in ipairs(PHASES) do
+            local who = copy[1] .. ", " .. phase.fire .. ": "
+            local ctrl = F.Lifecycle:New(nil, "Fire" .. phase.fire)
+            T.eq(select("#", ctrl[phase.fire](ctrl)), 1, who .. "no hook returns one value")
+            T.eq(ctrl[phase.fire](ctrl), false, who .. "no hook returns false")
+
+            local seen, count = nil, 0
+            ctrl[phase.register](ctrl, function(...) count = count + 1; seen = pack(...) end)
+            local result = pack(ctrl[phase.fire](ctrl, "closing"))
+            T.eq(result[1], false, who .. "a quiet hook returns false")
+            T.eq(count, 1, who .. "the hook ran")
+            T.eq(seen.n, phase.arg and 2 or 1, who .. "the hook's argument count")
+            T.eq(seen[2], phase.arg and "closing" or nil, who .. "the hook's second argument")
+            T.eq(ctrl[phase.fire](ctrl), false, who .. "a hook fires once")
+            T.eq(count, 1, who .. "and is not run again")
+
+            local other = F.Lifecycle:New(nil, "Raise" .. phase.fire)
+            other[phase.register](other, function() error("hook failed", 0) end)
+            local raised = pack(other[phase.fire](other))
+            T.eq(raised[1], true, who .. "a raising hook returns true")
+            T.eq(raised[2], "hook failed", who .. "and its error")
+            T.eq(other[phase.fire](other), false, who .. "a raised hook is not run again")
         end
     end
 end)
@@ -924,8 +1027,6 @@ test("a Lifecycle that fails partway through taking over leaves the version, bui
         end
     end
 end)
-
-local function pack(...) return { n = select("#", ...), ... } end
 
 test("the older and newer copies return the same player identity in every mocked identity state", function()
     local STATES = {
