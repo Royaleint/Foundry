@@ -99,6 +99,9 @@ local function namedSlots(F, s)
     local view = s.inst.list:GetNativeHandles().view
     local lifecycleState, dbState = F.Lifecycle._state, F.DB._state
     local menus = F.Menu._state.instances
+    local dispatcher = lifecycleState.dispatcher
+    local dragScripts = {}
+    for _, record in pairs(F.Window._state.attached) do dragScripts[record.handle._scripts] = true end
     return function(holder, key, value)
         return (holder == lifecycleState.postLogout and rawequal(value, dbState.postLogoutEntry))
             or (holder == dbState and key == "postLogoutEntry")
@@ -111,6 +114,9 @@ local function namedSlots(F, s)
             or (createEntries[holder] and key == "generator")
             or (holder == view and (key == "_initializer" or key == "_calc"))
             or (timerHandles[holder] and key == "_callback")
+            or (holder == dispatcher and key == "_onEvent")
+            or (holder == dispatcher._scripts and key == "OnEvent")
+            or (dragScripts[holder] and (key == "OnDragStart" or key == "OnDragStop"))
             or false
     end
 end
@@ -378,6 +384,29 @@ test("the list's initializer and calculator reach the swapped-in wrappers", func
     T.eq(countCalls(F.List._impl, "initRow", function() initializer({}, {}) end), 1, "swapped-in initRow calls")
     T.eq(countCalls(F.List._impl, "extent", function() T.eq(calculator(1, {}), 20, "extent") end), 1,
         "swapped-in extent calls")
+end)
+
+test("the Lifecycle dispatcher's script reaches the swapped-in event handler", function()
+    local F = prepared()
+    local frame = F.Lifecycle._state.dispatcher
+    local script = slotBeforeSwap(frame:GetScript("OnEvent"), "the dispatcher script")
+    swap(F)
+    T.truthy(rawequal(frame:GetScript("OnEvent"), script), "the swap leaves the dispatcher script in place")
+    T.eq(countCalls(F.Lifecycle._impl, "onEvent", function() script(frame, "ADDON_LOADED", "Nothing") end), 1,
+        "swapped-in event handler calls")
+end)
+
+test("the window's drag scripts reach the swapped-in drag handlers", function()
+    local F = prepared()
+    local _, record = next(F.Window._state.attached)
+    local handle = record.handle
+    local onDragStart = slotBeforeSwap(handle:GetScript("OnDragStart"), "the drag start script")
+    local onDragStop = slotBeforeSwap(handle:GetScript("OnDragStop"), "the drag stop script")
+    swap(F)
+    T.truthy(rawequal(handle:GetScript("OnDragStart"), onDragStart), "the swap leaves the drag start script in place")
+    T.truthy(rawequal(handle:GetScript("OnDragStop"), onDragStop), "the swap leaves the drag stop script in place")
+    T.eq(countCalls(F.Window._impl, "dragStart", function() onDragStart(handle) end), 1, "swapped-in drag start calls")
+    T.eq(countCalls(F.Window._impl, "dragStop", function() onDragStop(handle) end), 1, "swapped-in drag stop calls")
 end)
 
 -- The pending flush is the one closure a swap leaves running as it was: the

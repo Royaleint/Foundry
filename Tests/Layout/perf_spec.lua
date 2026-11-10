@@ -194,6 +194,25 @@ local RELAY_PATHS = {
             return function() calculator(1, data) end
         end,
     },
+    {
+        name = "lifecycle event dispatch",
+        setup = function(F)
+            -- Another addon's ADDON_LOADED: the dispatcher's script runs and
+            -- the event handler finds nothing to do for this controller.
+            F.Lifecycle:New(nil, "PerfLifecycle")
+            local frame = surfaces.dispatcherFrame()
+            return function() T.Fire(frame, "ADDON_LOADED", "SomeOtherAddon") end
+        end,
+    },
+    {
+        name = "window drag stop",
+        setup = function(F)
+            local win = CreateFrame("Frame", nil, UIParent)
+            F.Window:Attach(win, { handle = win, geometry = {}, default = { "CENTER", "CENTER", 0, 0 } })
+            local onDragStop = win:GetScript("OnDragStop")
+            return function() onDragStop(win) end
+        end,
+    },
 }
 
 --------------------------------------------------------------------------------

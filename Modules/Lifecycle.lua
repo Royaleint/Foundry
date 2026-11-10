@@ -324,12 +324,18 @@ local function onEvent(_, event, ...)
 end
 I.onEvent = onEvent
 
+-- The dispatcher frame holds this rather than onEvent, so the frame keeps one
+-- script for the session and each event runs the onEvent on the module table.
+local function dispatcherRelay(...)
+    return Lifecycle._impl.onEvent(...)
+end
+
 local function ensureDispatcher()
     if S.dispatcher then return end
 
     local frame = CreateFrame("Frame")
     frame:Hide()
-    frame:SetScript("OnEvent", I.onEvent)
+    frame:SetScript("OnEvent", dispatcherRelay)
 
     frame:RegisterEvent("ADDON_LOADED")
     frame:RegisterEvent("PLAYER_LOGIN")

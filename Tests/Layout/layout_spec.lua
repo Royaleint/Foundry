@@ -96,7 +96,13 @@ test("Lifecycle's dispatcher runs the event handler published on the module tabl
     local frame = L._state.dispatcher
     T.truthy(frame, "dispatcher created by the first controller")
     T.eq(frame, T.frames[1], "the one dispatcher frame")
-    T.eq(frame:GetScript("OnEvent"), L._impl.onEvent, "OnEvent is the published handler")
+    local published, seen = L._impl.onEvent, nil
+    L._impl.onEvent = function(...) seen = { ... } end
+    frame:GetScript("OnEvent")(frame, "ADDON_LOADED", "Nothing")
+    L._impl.onEvent = published
+    T.eq(seen and seen[1], frame, "OnEvent forwards the frame to the published handler")
+    T.eq(seen and seen[2], "ADDON_LOADED", "and the event")
+    T.eq(seen and seen[3], "Nothing", "and its arguments")
     T.eq(c:GetNativeHandles().frame, frame, "consumers are handed the same frame")
     L:New(nil, "LayoutDispatcherTwo")
     T.eq(L._state.dispatcher, frame, "a second controller keeps the frame")
@@ -718,7 +724,9 @@ test("List, Menu, Tooltip, Settings and Window carry the layout header, their st
     checkHeader(F.Settings, "Settings", { Controller = "table", launcherClick = "function" })
     T.eq(type(F.Settings._state.liveKeys), "table", "Settings live keys")
     T.eq(type(F.Settings._state.registeredCategories), "table", "Settings registered categories")
-    checkHeader(F.Window, "Window", { saveGeometry = "function", makeDragScripts = "function" })
+    checkHeader(F.Window, "Window", {
+        saveGeometry = "function", dragStart = "function", dragStop = "function", makeDragScripts = "function",
+    })
     T.eq(type(F.Window._state.attached), "table", "Window attached frames")
 end)
 

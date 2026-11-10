@@ -88,17 +88,28 @@ local function saveGeometry(win, geometry)
 end
 I.saveGeometry = saveGeometry
 
--- Builds the OnDragStart and OnDragStop scripts for one attached window,
--- reading the window and its geometry table from the record.
+local function dragStart(record)
+    record.win:StartMoving()
+end
+I.dragStart = dragStart
+
+local function dragStop(record)
+    record.win:StopMovingOrSizing()
+    -- Again after every drag, so the game's layout cache does not take over the position.
+    record.win:SetUserPlaced(false)
+    saveGeometry(record.win, record.geometry)
+end
+I.dragStop = dragStop
+
+-- Builds the OnDragStart and OnDragStop scripts for one attached window. The
+-- handle keeps them for the session, so each forwards to the implementation
+-- on the module table.
 local function makeDragScripts(record)
     local function onDragStart()
-        record.win:StartMoving()
+        return Window._impl.dragStart(record)
     end
     local function onDragStop()
-        record.win:StopMovingOrSizing()
-        -- Again after every drag, so the game's layout cache does not take over the position.
-        record.win:SetUserPlaced(false)
-        saveGeometry(record.win, record.geometry)
+        return Window._impl.dragStop(record)
     end
     return onDragStart, onDragStop
 end
