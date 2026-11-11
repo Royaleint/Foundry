@@ -8,18 +8,112 @@ if not F then
     error("Foundry-1.0: Events.lua requires the Foundry-1.0 bootstrap (Foundry.lua) "
         .. "to have loaded first; _G.Foundry_1_0 is missing.", 0)
 end
--- Already registered by another embedded copy: load nothing.
-if F:HasModule("Events") then return end
 
-local Events = {}
-Events.API_VERSION = 2
+local BUILD = 1
+local API_VERSION = 2
+
+-- An older Events already serving is taken over in place when this copy is
+-- newer and the moment is safe; otherwise it keeps serving and this file loads
+-- nothing. The checks only read, in a fixed order, and the first to fail names
+-- the outcome; nil means this copy takes over. BUILD, API_VERSION, served and
+-- takingOver are read at file scope only: no function below may capture them.
+local served = F:HasModule("Events") and F.Events or nil
+if served == nil and F:HasModule("Events") then return end
+if served ~= nil then
+    -- rawget: a current copy reads none of the newer layout fields on an older
+    -- library table through a normal lookup.
+    if rawget(F, "_layoutVersion") ~= 1 then return end
+    local outcome
+    local build = rawget(served, "_build")
+    local api = rawget(served, "API_VERSION")
+    if rawget(served, "_layoutVersion") ~= 1 then
+        outcome = "layout"
+    elseif build ~= nil and (type(build) ~= "number" or build ~= math.floor(build)
+        or build < 1 or build == math.huge or BUILD <= build) then
+        outcome = "not used"
+    elseif type(api) ~= "number" or api > API_VERSION then
+        outcome = "refused: api version"
+    elseif type(IsLoggedIn) ~= "function" or IsLoggedIn() then
+        outcome = "after login"
+    elseif type(InCombatLockdown) ~= "function" or InCombatLockdown() then
+        outcome = "combat"
+    else
+        -- Every controller by the fields the takeover below reads and writes;
+        -- buckets are the only thing that needs the client's timer and clock.
+        local state, impl = rawget(served, "_state"), rawget(served, "_impl")
+        local anyBucket = false
+        if type(state) ~= "table" or type(state.instances) ~= "table" or type(impl) ~= "table"
+            or type(impl.Controller) ~= "table" or type(impl.Bucket) ~= "table" then
+            outcome = "refused: shape"
+        else
+            for c in pairs(state.instances) do
+                local handlers, once, buckets, bucketEvents
+                if type(c) == "table" then
+                    handlers, once = rawget(c, "_handlers"), rawget(c, "_onceHandlers")
+                    buckets, bucketEvents = rawget(c, "_buckets"), rawget(c, "_bucketEvents")
+                end
+                if type(handlers) ~= "table" or type(buckets) ~= "table" or type(bucketEvents) ~= "table"
+                    or (once ~= nil and type(once) ~= "table") then
+                    outcome = "refused: shape"
+                else
+                    for event, handler in pairs(once or {}) do
+                        if type(handler) ~= "function" or type(handlers[event]) ~= "function" then
+                            outcome = "refused: shape"
+                        end
+                    end
+                    for _, bucket in ipairs(buckets) do
+                        anyBucket = true
+                        local events = type(bucket) == "table" and rawget(bucket, "_events") or nil
+                        if type(events) ~= "table" then
+                            outcome = "refused: shape"
+                        else
+                            for _, event in ipairs(events) do
+                                if type(event) ~= "string" or type(handlers[event]) ~= "function" then
+                                    outcome = "refused: shape"
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+            if not outcome and anyBucket and (type(_G.C_Timer) ~= "table"
+                or type(_G.C_Timer.NewTimer) ~= "function" or type(_G.GetTime) ~= "function") then
+                outcome = "refused: timer"
+            end
+        end
+    end
+    if outcome then
+        if outcome:sub(1, 9) == "refused: " and F.IS_DEV_BUILD then
+            F:RaiseDevError("Events: a newer copy from " .. tostring((...))
+                .. " did not take over (" .. outcome .. ")")
+        end
+        return
+    end
+end
+local takingOver = served ~= nil
+
+-- On a takeover every definition below lands in the serving tables, so the
+-- older copy's controllers, buckets and frames reach the newer code.
+local Events = served or {}
+
+-- All module state lives on the module table.
+if not takingOver then
+    Events._layoutVersion = 1
+    Events._state = {
+        -- Live controllers, held weakly so a dropped controller can be collected.
+        instances = setmetatable({}, { __mode = "k" }),
+    }
+    Events._impl = {}
+end
+local S, I = Events._state, Events._impl
 
 --------------------------------------------------------------------------------
 -- Controller
 --------------------------------------------------------------------------------
 
-local Controller = {}
+local Controller = I.Controller or {}
 Controller.__index = Controller
+I.Controller = Controller
 
 -- Register* call the native register before any bookkeeping, so a throw
 -- leaves the controller unchanged. Without C_EventUtils an invalid event
@@ -103,6 +197,16 @@ function Controller:RegisterUnit(event, handler, unit1, unit2)
     self._handlers[event] = handler
 end
 
+-- Builds the handler stored for a RegisterOnce event: unregisters the event,
+-- then calls the consumer handler.
+local function makeOnce(c, handler)
+    return function(ev, ...)
+        c:Unregister(ev)
+        handler(ev, ...)
+    end
+end
+I.makeOnce = makeOnce
+
 -- Registers a handler that fires once, then unregisters itself (safe to
 -- re-register the same event from inside the handler).
 function Controller:RegisterOnce(event, handler)
@@ -129,13 +233,12 @@ function Controller:RegisterOnce(event, handler)
         return
     end
 
-    local function once(ev, ...)
-        self:Unregister(ev)
-        handler(ev, ...)
-    end
+    local once = makeOnce(self, handler)
 
     self._frame:RegisterEvent(event)
     self._handlers[event] = once
+    if not self._onceHandlers then self._onceHandlers = {} end
+    self._onceHandlers[event] = handler
 end
 
 --------------------------------------------------------------------------------
@@ -143,8 +246,9 @@ end
 --------------------------------------------------------------------------------
 
 -- A bucket coalesces a burst of events into one delayed handler call.
-local Bucket = {}
+local Bucket = I.Bucket or {}
 Bucket.__index = Bucket
+I.Bucket = Bucket
 
 -- Whether a flush is currently scheduled.
 function Bucket:IsPending()
@@ -182,6 +286,47 @@ function Bucket:_teardown()
         self._timer = nil
     end
 end
+
+-- Builds the flush and per-event closures for one bucket. The client timer
+-- and clock functions are captured per call.
+local function makeBucketFns(bucket)
+    local newTimer = C_Timer.NewTimer
+    local getTime = GetTime
+
+    local function flush()
+        if bucket._cancelled then return end
+        local deadline = bucket._deadline
+        if deadline then
+            local remaining = deadline - getTime()
+            if remaining > 0 then
+                -- Trailing re-arms one timer per window, never one per event.
+                bucket._timer = newTimer(remaining, flush)
+                return
+            end
+        end
+        -- Clear pending state before invoking: a re-trigger from inside the
+        -- handler must open a new window.
+        bucket._timer = nil
+        bucket._deadline = nil
+        bucket._handler()
+    end
+
+    local function onFire()
+        if bucket._cancelled then return end
+        if bucket._edge == "leading" then
+            if bucket._timer then return end
+            bucket._timer = newTimer(bucket._interval, flush)
+        else
+            bucket._deadline = getTime() + bucket._interval
+            if not bucket._timer then
+                bucket._timer = newTimer(bucket._interval, flush)
+            end
+        end
+    end
+
+    return flush, onFire
+end
+I.makeBucketFns = makeBucketFns
 
 -- Coalesces a burst of one or more events into one handler() call per
 -- quiet-window. spec fields:
@@ -282,39 +427,7 @@ function Controller:RegisterBucket(spec)
     bucket._deadline = nil
     bucket._cancelled = false
 
-    local newTimer = C_Timer.NewTimer
-    local getTime = GetTime
-
-    local function flush()
-        if bucket._cancelled then return end
-        local deadline = bucket._deadline
-        if deadline then
-            local remaining = deadline - getTime()
-            if remaining > 0 then
-                -- Trailing re-arms one timer per window, never one per event.
-                bucket._timer = newTimer(remaining, flush)
-                return
-            end
-        end
-        -- Clear pending state before invoking: a re-trigger from inside the
-        -- handler must open a new window.
-        bucket._timer = nil
-        bucket._deadline = nil
-        bucket._handler()
-    end
-
-    local function onFire()
-        if bucket._cancelled then return end
-        if edge == "leading" then
-            if bucket._timer then return end
-            bucket._timer = newTimer(bucket._interval, flush)
-        else
-            bucket._deadline = getTime() + bucket._interval
-            if not bucket._timer then
-                bucket._timer = newTimer(bucket._interval, flush)
-            end
-        end
-    end
+    local _, onFire = makeBucketFns(bucket)
 
     -- Without C_EventUtils a bad name can still throw here; roll back what
     -- registered so the controller is unchanged.
@@ -358,6 +471,7 @@ function Controller:Unregister(event)
         return
     end
     self._handlers[event] = nil
+    if self._onceHandlers then self._onceHandlers[event] = nil end
     self._frame:UnregisterEvent(event)
 end
 
@@ -376,6 +490,11 @@ function Controller:UnregisterAll()
     end
     for event in pairs(self._handlers) do
         self._handlers[event] = nil
+    end
+    if self._onceHandlers then
+        for event in pairs(self._onceHandlers) do
+            self._onceHandlers[event] = nil
+        end
     end
     self._frame:UnregisterAllEvents()
 end
@@ -411,6 +530,7 @@ function Controller:Destroy()
         F:RaiseDevError("Events:Destroy called on a destroyed controller")
         return
     end
+    S.instances[self] = nil
     local frame = self._frame
     frame:UnregisterAllEvents()
     for i = #self._buckets, 1, -1 do
@@ -423,6 +543,11 @@ function Controller:Destroy()
     for event in pairs(self._handlers) do
         self._handlers[event] = nil
     end
+    if self._onceHandlers then
+        for event in pairs(self._onceHandlers) do
+            self._onceHandlers[event] = nil
+        end
+    end
     frame:SetScript("OnEvent", nil)
     frame:Hide()
     self._destroyed = true
@@ -431,6 +556,17 @@ end
 --------------------------------------------------------------------------------
 -- Factory
 --------------------------------------------------------------------------------
+
+-- Builds a controller's frame event script: looks the handler up at fire time.
+local function makeOnEvent(c)
+    return function(_, event, ...)
+        local handler = c._handlers[event]
+        if handler then
+            handler(event, ...)
+        end
+    end
+end
+I.makeOnEvent = makeOnEvent
 
 -- Creates a controller scoped to one consumer; owner is a stored label only.
 -- No event is registered until the first :Register call.
@@ -451,14 +587,36 @@ function Events:New(owner)
     frame:Hide()
     c._frame = frame
 
-    frame:SetScript("OnEvent", function(_, event, ...)
-        local handler = c._handlers[event]
-        if handler then
-            handler(event, ...)
-        end
-    end)
+    frame:SetScript("OnEvent", makeOnEvent(c))
 
+    S.instances[c] = true
     return c
 end
 
-F:RegisterModule("Events", Events)
+-- The older copy's frames keep their scripts, which look the handler up in the
+-- controller's handler table at fire time. Only the closures stored in that
+-- table are rebuilt, so the table and the handler(event, ...) call shape stay
+-- as they are for the other modules that write handlers into it.
+if takingOver then
+    for c in pairs(S.instances) do
+        for event, handler in pairs(c._onceHandlers or {}) do
+            c._handlers[event] = makeOnce(c, handler)
+        end
+        for _, bucket in ipairs(c._buckets) do
+            local _, onFire = makeBucketFns(bucket)
+            for _, event in ipairs(bucket._events) do
+                c._handlers[event] = onFire
+            end
+        end
+    end
+end
+
+-- Written last, so a copy that fails before this point leaves the serving
+-- Events reporting what it did before.
+Events.API_VERSION = API_VERSION
+Events._source = ...
+Events._build = BUILD
+
+if not takingOver then
+    F:RegisterModule("Events", Events)
+end

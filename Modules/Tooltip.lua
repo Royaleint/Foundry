@@ -10,11 +10,69 @@ if not F then
     error("Foundry-1.0: Tooltip.lua requires the Foundry-1.0 bootstrap (Foundry.lua) "
         .. "to have loaded first; _G.Foundry_1_0 is missing.", 0)
 end
--- Another copy of the library already registered this module: load nothing.
-if F:HasModule("Tooltip") then return end
 
-local Tooltip = {}
-Tooltip.API_VERSION = 1
+local BUILD = 1
+local API_VERSION = 1
+
+-- An older Tooltip already serving is taken over in place when this copy is
+-- newer and the moment is safe; otherwise it keeps serving and this file loads
+-- nothing. The checks only read, in a fixed order, and the first to fail names
+-- the outcome; nil means this copy takes over. BUILD, API_VERSION, served and
+-- takingOver are read at file scope only: no function below may capture them.
+local served = F:HasModule("Tooltip") and F.Tooltip or nil
+if served == nil and F:HasModule("Tooltip") then return end
+if served ~= nil then
+    -- rawget: a current copy reads none of the newer layout fields on an older
+    -- library table through a normal lookup.
+    if rawget(F, "_layoutVersion") ~= 1 then return end
+    local outcome
+    local build = rawget(served, "_build")
+    local api = rawget(served, "API_VERSION")
+    if rawget(served, "_layoutVersion") ~= 1 then
+        outcome = "layout"
+    elseif build ~= nil and (type(build) ~= "number" or build ~= math.floor(build)
+        or build < 1 or build == math.huge or BUILD <= build) then
+        outcome = "not used"
+    elseif type(api) ~= "number" or api > API_VERSION then
+        outcome = "refused: api version"
+    elseif type(IsLoggedIn) ~= "function" or IsLoggedIn() then
+        outcome = "after login"
+    elseif type(InCombatLockdown) ~= "function" or InCombatLockdown() then
+        outcome = "combat"
+    else
+        -- The state and implementation tables the definitions below write into.
+        local state, impl = rawget(served, "_state"), rawget(served, "_impl")
+        if type(state) ~= "table" or type(state.liveKeys) ~= "table"
+            or type(state.dispatchers) ~= "table" or type(impl) ~= "table"
+            or type(impl.Controller) ~= "table" then
+            outcome = "refused: shape"
+        end
+    end
+    if outcome then
+        if outcome:sub(1, 9) == "refused: " and F.IS_DEV_BUILD then
+            F:RaiseDevError("Tooltip: a newer copy from " .. tostring((...))
+                .. " did not take over (" .. outcome .. ")")
+        end
+        return
+    end
+end
+local takingOver = served ~= nil
+
+-- On a takeover every definition below lands in the serving tables, so the
+-- older copy's controllers and post-calls reach the newer code.
+local Tooltip = served or {}
+
+-- All module state lives on the module table.
+if not takingOver then
+    Tooltip._layoutVersion = 1
+    Tooltip._state = {
+        liveKeys = {},
+        dispatchers = {},   -- tooltipType -> { head = controller, tail = controller }
+    }
+    Tooltip._impl = {}
+end
+local S, I = Tooltip._state, Tooltip._impl
+local liveKeys, dispatchers = S.liveKeys, S.dispatchers
 
 --------------------------------------------------------------------------------
 -- Feature detection (checked at :New, never at file scope)
@@ -24,12 +82,6 @@ local function hasTooltipDataProcessor()
     return type(_G.TooltipDataProcessor) == "table"
         and type(_G.TooltipDataProcessor.AddTooltipPostCall) == "function"
 end
-
---------------------------------------------------------------------------------
--- Module-level live-key registry
---------------------------------------------------------------------------------
-
-local liveKeys = {}
 
 --------------------------------------------------------------------------------
 -- Per-type dispatchers
@@ -54,8 +106,6 @@ local liveKeys = {}
 --      A destroyed tail is unlinked by a later sweep, once something follows it.
 --------------------------------------------------------------------------------
 
-local dispatchers = {}   -- tooltipType -> { head = controller, tail = controller }
-
 -- Unlinks destroyed controllers, except the tail (rule 2 above). Runs from
 -- New and after each dispatch; the rules above make it safe while a walk is
 -- in progress.
@@ -71,6 +121,21 @@ local function sweep(list)
         c = nextC
     end
 end
+I.sweep = sweep
+
+-- Runs every live controller of one tooltip type whose filter matches.
+local function dispatch(list, tooltip, data)
+    local c = list.head
+    while c do
+        if not c._destroyed and (not c._filter or c._filter[tooltip]) then
+            c._handler(tooltip, data)
+        end
+        -- Read after the handler: it may have appended to the tail.
+        c = c._next
+    end
+    sweep(list)
+end
+I.dispatch = dispatch
 
 local function ensureDispatcher(tooltipType)
     local list = dispatchers[tooltipType]
@@ -79,19 +144,12 @@ local function ensureDispatcher(tooltipType)
     -- Register before recording: if AddTooltipPostCall throws, no dispatcher
     -- entry is left behind for this type.
     _G.TooltipDataProcessor.AddTooltipPostCall(tooltipType, function(tooltip, data)
-        local c = list.head
-        while c do
-            if not c._destroyed and (not c._filter or c._filter[tooltip]) then
-                c._handler(tooltip, data)
-            end
-            -- Read after the handler: it may have appended to the tail.
-            c = c._next
-        end
-        sweep(list)
+        return Tooltip._impl.dispatch(list, tooltip, data)
     end)
     dispatchers[tooltipType] = list
     return list
 end
+I.ensureDispatcher = ensureDispatcher
 
 --------------------------------------------------------------------------------
 -- Line emitters (module-level helpers)
@@ -111,8 +169,9 @@ end
 -- Controller
 --------------------------------------------------------------------------------
 
-local Controller = {}
+local Controller = I.Controller or {}
 Controller.__index = Controller
+I.Controller = Controller
 
 local function refuseIfDestroyed(self, method)
     if self._destroyed then
@@ -235,4 +294,12 @@ function Tooltip:New(config)
     return c
 end
 
-F:RegisterModule("Tooltip", Tooltip)
+-- Written last, so a copy that fails before this point leaves the serving
+-- Tooltip reporting what it did before.
+Tooltip.API_VERSION = API_VERSION
+Tooltip._source = ...
+Tooltip._build = BUILD
+
+if not takingOver then
+    F:RegisterModule("Tooltip", Tooltip)
+end

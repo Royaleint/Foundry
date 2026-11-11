@@ -10,11 +10,71 @@ if not F then
     error("Foundry-1.0: Menu.lua requires the Foundry-1.0 bootstrap (Foundry.lua) "
         .. "to have loaded first; _G.Foundry_1_0 is missing.", 0)
 end
--- Another copy of the library already registered this module: load nothing.
-if F:HasModule("Menu") then return end
 
-local Menu = {}
-Menu.API_VERSION = 1
+local BUILD = 1
+local API_VERSION = 1
+
+-- An older Menu already serving is taken over in place when this copy is newer
+-- and the moment is safe; otherwise it keeps serving and this file loads
+-- nothing. The checks only read, in a fixed order, and the first to fail names
+-- the outcome; nil means this copy takes over. BUILD, API_VERSION, served and
+-- takingOver are read at file scope only: no function below may capture them.
+local served = F:HasModule("Menu") and F.Menu or nil
+if served == nil and F:HasModule("Menu") then return end
+if served ~= nil then
+    -- rawget: a current copy reads none of the newer layout fields on an older
+    -- library table through a normal lookup.
+    if rawget(F, "_layoutVersion") ~= 1 then return end
+    local outcome
+    local build = rawget(served, "_build")
+    local api = rawget(served, "API_VERSION")
+    if rawget(served, "_layoutVersion") ~= 1 then
+        outcome = "layout"
+    elseif build ~= nil and (type(build) ~= "number" or build ~= math.floor(build)
+        or build < 1 or build == math.huge or BUILD <= build) then
+        outcome = "not used"
+    elseif type(api) ~= "number" or api > API_VERSION then
+        outcome = "refused: api version"
+    elseif type(IsLoggedIn) ~= "function" or IsLoggedIn() then
+        outcome = "after login"
+    elseif type(InCombatLockdown) ~= "function" or InCombatLockdown() then
+        outcome = "combat"
+    else
+        -- The state and implementation tables the definitions below write into.
+        local state, impl = rawget(served, "_state"), rawget(served, "_impl")
+        if type(state) ~= "table" or type(state.instances) ~= "table" or type(state.liveKeys) ~= "table"
+            or type(state.anonCounter) ~= "number" or type(impl) ~= "table"
+            or type(impl.Controller) ~= "table" then
+            outcome = "refused: shape"
+        end
+    end
+    if outcome then
+        if outcome:sub(1, 9) == "refused: " and F.IS_DEV_BUILD then
+            F:RaiseDevError("Menu: a newer copy from " .. tostring((...))
+                .. " did not take over (" .. outcome .. ")")
+        end
+        return
+    end
+end
+local takingOver = served ~= nil
+
+-- On a takeover every definition below lands in the serving tables, so the
+-- older copy's controllers and menu generators reach the newer code.
+local Menu = served or {}
+
+-- All module state lives on the module table.
+if not takingOver then
+    Menu._layoutVersion = 1
+    Menu._state = {
+        -- Live controllers, held weakly so a dropped controller can be collected.
+        instances = setmetatable({}, { __mode = "k" }),
+        liveKeys = {},
+        anonCounter = 0,
+    }
+    Menu._impl = {}
+end
+local S, I = Menu._state, Menu._impl
+local liveKeys = S.liveKeys
 
 --------------------------------------------------------------------------------
 -- Feature detection (checked at :New, never at file scope)
@@ -26,23 +86,12 @@ local function hasMenuUtil()
 end
 
 --------------------------------------------------------------------------------
--- Module-level live-key registry
---------------------------------------------------------------------------------
-
-local liveKeys = {}
-
---------------------------------------------------------------------------------
--- Anonymous-name counter
---------------------------------------------------------------------------------
-
-local anonCounter = 0
-
---------------------------------------------------------------------------------
 -- Controller
 --------------------------------------------------------------------------------
 
-local Controller = {}
+local Controller = I.Controller or {}
 Controller.__index = Controller
+I.Controller = Controller
 
 local function refuseIfDestroyed(self, method)
     if self._destroyed then
@@ -70,6 +119,7 @@ end
 -- attached but builds nothing after Destroy.
 function Controller:Destroy()
     if self._destroyed then return end
+    S.instances[self] = nil
     liveKeys[self._name] = nil
     self._destroyed = true
     self._builder          = nil
@@ -101,6 +151,14 @@ end
 -- Factory
 --------------------------------------------------------------------------------
 
+-- Builds the menu for a controller: nothing once it is destroyed, otherwise
+-- the consumer's builder.
+local function generate(c, owner, rootDescription, ...)
+    if c._destroyed then return end
+    c._builder(owner, rootDescription, ...)
+end
+I.generate = generate
+
 -- Creates a menu controller.
 -- Config fields:
 --   builder (required) -- function(owner, rootDescription, ...), called each
@@ -126,8 +184,8 @@ function Menu:New(config)
             return
         end
     else
-        anonCounter = anonCounter + 1
-        name = "F.Menu.anon." .. anonCounter
+        S.anonCounter = S.anonCounter + 1
+        name = "F.Menu.anon." .. S.anonCounter
     end
 
     if liveKeys[name] then
@@ -150,15 +208,22 @@ function Menu:New(config)
     c._builder   = builder
     c._destroyed = false
 
-    local function generatorWrapper(owner, rootDescription, ...)
-        if c._destroyed then return end
-        c._builder(owner, rootDescription, ...)
+    c._generatorWrapper = function(owner, rootDescription, ...)
+        return Menu._impl.generate(c, owner, rootDescription, ...)
     end
-    c._generatorWrapper = generatorWrapper
 
     liveKeys[name] = true
 
+    S.instances[c] = true
     return c
 end
 
-F:RegisterModule("Menu", Menu)
+-- Written last, so a copy that fails before this point leaves the serving
+-- Menu reporting what it did before.
+Menu.API_VERSION = API_VERSION
+Menu._source = ...
+Menu._build = BUILD
+
+if not takingOver then
+    F:RegisterModule("Menu", Menu)
+end

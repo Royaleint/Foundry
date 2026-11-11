@@ -10,13 +10,97 @@ if not F then
     error("Foundry-1.0: Commands.lua requires the Foundry-1.0 bootstrap (Foundry.lua) "
         .. "to have loaded first; _G.Foundry_1_0 is missing.", 0)
 end
--- If this module is already registered on the winning copy, this is a
--- redundant embedded copy; load nothing.
-if F:HasModule("Commands") then return end
 
-local Commands = {}
-Commands.API_VERSION = 2
-Commands.Guards = {}
+local BUILD = 1
+local API_VERSION = 2
+
+-- An older Commands already serving is taken over in place when this copy is
+-- newer and the moment is safe; otherwise it keeps serving and this file loads
+-- nothing. The checks only read, in a fixed order, and the first to fail names
+-- the outcome; nil means this copy takes over. BUILD, API_VERSION, served and
+-- takingOver are read at file scope only: no function below may capture them.
+local served = F:HasModule("Commands") and F.Commands or nil
+if served == nil and F:HasModule("Commands") then return end
+if served ~= nil then
+    -- rawget: a current copy reads none of the newer layout fields on an older
+    -- library table through a normal lookup.
+    if rawget(F, "_layoutVersion") ~= 1 then return end
+    local outcome
+    local build = rawget(served, "_build")
+    local api = rawget(served, "API_VERSION")
+    if rawget(served, "_layoutVersion") ~= 1 then
+        outcome = "layout"
+    elseif build ~= nil and (type(build) ~= "number" or build ~= math.floor(build)
+        or build < 1 or build == math.huge or BUILD <= build) then
+        outcome = "not used"
+    elseif type(api) ~= "number" or api > API_VERSION then
+        outcome = "refused: api version"
+    elseif type(IsLoggedIn) ~= "function" or IsLoggedIn() then
+        outcome = "after login"
+    elseif type(InCombatLockdown) ~= "function" or InCombatLockdown() then
+        outcome = "combat"
+    else
+        -- Every controller by the fields the takeover below reads and writes.
+        -- The restriction handler is written into an Events controller, so
+        -- that Events must have the layout this copy knows.
+        local state, impl = rawget(served, "_state"), rawget(served, "_impl")
+        local guards = rawget(served, "Guards")
+        local anyRestriction = false
+        if type(state) ~= "table" or type(state.instances) ~= "table" or type(impl) ~= "table"
+            or type(impl.Controller) ~= "table" or type(guards) ~= "table"
+            or type(guards.NotRestricted) ~= "function" then
+            outcome = "refused: shape"
+        else
+            for c in pairs(state.instances) do
+                local restriction = type(c) == "table" and rawget(c, "_restrictionEvents") or nil
+                if type(c) ~= "table" then
+                    outcome = "refused: shape"
+                elseif restriction ~= nil then
+                    anyRestriction = true
+                    local handlers = type(restriction) == "table" and rawget(restriction, "_handlers") or nil
+                    if type(handlers) ~= "table"
+                        or type(handlers.ADDON_RESTRICTION_STATE_CHANGED) ~= "function" then
+                        outcome = "refused: shape"
+                    end
+                end
+            end
+            if not outcome and anyRestriction then
+                local events = F.Events
+                if type(events) ~= "table" or rawget(events, "_layoutVersion") ~= 1 then
+                    outcome = "refused: events layout"
+                end
+            end
+        end
+    end
+    if outcome then
+        if outcome:sub(1, 9) == "refused: " and F.IS_DEV_BUILD then
+            F:RaiseDevError("Commands: a newer copy from " .. tostring((...))
+                .. " did not take over (" .. outcome .. ")")
+        end
+        return
+    end
+end
+local takingOver = served ~= nil
+
+-- On a takeover every definition below lands in the serving tables, so the
+-- older copy's controllers and slash entries reach the newer code.
+local Commands = served or {}
+
+-- All module state lives on the module table.
+if not takingOver then
+    Commands._layoutVersion = 1
+    Commands._state = {
+        -- Live controllers, held weakly so a dropped controller can be collected.
+        instances = setmetatable({}, { __mode = "k" }),
+    }
+    Commands._impl = {}
+    Commands.Guards = {}
+end
+local S, I = Commands._state, Commands._impl
+
+-- The serving built-in guard, read before it is redefined below: a controller
+-- still holding it is moved to the new one, a consumer's own guard is not.
+local priorGuard = takingOver and Commands.Guards.NotRestricted or nil
 
 local restrictionTypes = {
     { key = "Combat", name = "combat" },
@@ -59,8 +143,9 @@ end
 -- Controller
 --------------------------------------------------------------------------------
 
-local Controller = {}
+local Controller = I.Controller or {}
 Controller.__index = Controller
+I.Controller = Controller
 
 function Controller:_print(line)
     if self._printer then
@@ -351,6 +436,7 @@ end
 -- Tears down every slash registration this controller owns. Idempotent.
 function Controller:Destroy()
     if self._destroyed then return end
+    S.instances[self] = nil
     if self._restrictionEvents then
         self._restrictionEvents:Destroy()
         self._restrictionEvents = nil
@@ -370,6 +456,28 @@ end
 --------------------------------------------------------------------------------
 -- Factory
 --------------------------------------------------------------------------------
+
+-- Builds the handler that prints a notice when a restriction is about to
+-- activate.
+local function makeRestrictionHandler(c)
+    return function(_, restrictionType, state)
+        local enum = _G.Enum
+        local states = enum and enum.AddOnRestrictionState
+        if states and state == states.Activating then
+            local name = "addon"
+            local types = enum.AddOnRestrictionType
+            for i = 1, #restrictionTypes do
+                local restriction = restrictionTypes[i]
+                if types and types[restriction.key] == restrictionType then
+                    name = restriction.name
+                    break
+                end
+            end
+            c:_print("Commands are about to be paused while " .. name .. " restrictions activate.")
+        end
+    end
+end
+I.makeRestrictionHandler = makeRestrictionHandler
 
 -- Creates a controller scoped to one consumer. config.name and
 -- config.slashes are required; defaultHandler, guard, printer, description,
@@ -477,27 +585,35 @@ function Commands:New(config)
         if eventUtils and type(eventUtils.IsEventValid) == "function"
             and eventUtils.IsEventValid("ADDON_RESTRICTION_STATE_CHANGED") then
             local eventController = F.Events:New("Commands:" .. config.name)
-            eventController:Register("ADDON_RESTRICTION_STATE_CHANGED", function(_, restrictionType, state)
-                local enum = _G.Enum
-                local states = enum and enum.AddOnRestrictionState
-                if states and state == states.Activating then
-                    local name = "addon"
-                    local types = enum.AddOnRestrictionType
-                    for i = 1, #restrictionTypes do
-                        local restriction = restrictionTypes[i]
-                        if types and types[restriction.key] == restrictionType then
-                            name = restriction.name
-                            break
-                        end
-                    end
-                    c:_print("Commands are about to be paused while " .. name .. " restrictions activate.")
-                end
-            end)
+            eventController:Register("ADDON_RESTRICTION_STATE_CHANGED", makeRestrictionHandler(c))
             c._restrictionEvents = eventController
         end
     end
 
+    S.instances[c] = true
     return c
 end
 
-F:RegisterModule("Commands", Commands)
+-- The older copy's slash entries call the controller's Dispatch by name, and
+-- its restriction controllers call the handler held in their handler table;
+-- both are table writes, with no register or unregister.
+if takingOver then
+    for c in pairs(S.instances) do
+        if c._restrictionEvents then
+            c._restrictionEvents._handlers.ADDON_RESTRICTION_STATE_CHANGED = makeRestrictionHandler(c)
+        end
+        if rawequal(c._guard, priorGuard) then
+            c._guard = Commands.Guards.NotRestricted
+        end
+    end
+end
+
+-- Written last, so a copy that fails before this point leaves the serving
+-- Commands reporting what it did before.
+Commands.API_VERSION = API_VERSION
+Commands._source = ...
+Commands._build = BUILD
+
+if not takingOver then
+    F:RegisterModule("Commands", Commands)
+end
