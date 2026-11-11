@@ -633,7 +633,7 @@ end
 -- Takeover mode (--takeover): every T.loadFoundry that could be a real
 -- takeover loads the pinned layout-1 copy first and the current files over
 -- it, under the same addon name, so the whole suite runs against code that
--- took over an older copy in place. It cannot be combined with --rehearse
+-- upgraded an older copy in place. It cannot be combined with --rehearse
 -- (parsed with it, above).
 
 -- Loads of the library in the running suite, by kind; the runner resets and
@@ -650,14 +650,14 @@ end
 
 -- Every unit of the serving library must carry the current build after a
 -- takeover; a unit left on the older copy would let the suite pass against
--- code that never took over.
+-- code that never upgraded.
 local function assertTookOver(F)
     local build = T.libraryBuild()
     local units = { { "the core", F } }
     for name, module in pairs(F._state.modules) do units[#units + 1] = { name, module } end
     for _, unit in ipairs(units) do
         if rawget(unit[2], "_build") ~= build then
-            error("takeover mode: " .. unit[1] .. " did not take over the layout-1 copy", 3)
+            error("takeover mode: " .. unit[1] .. " did not upgrade the layout-1 copy", 3)
         end
     end
 end

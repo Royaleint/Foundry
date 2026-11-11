@@ -218,7 +218,7 @@ end
 -- itself).
 --   old         the first load's functions: a set, or a predicate
 --   opts        optional; opts.takeover is a list from takeoverSlots, read
---               before a newer copy took over in place. Its records are then
+--               before a newer copy upgraded in place. Its records are then
 --               the only slots, there is no limit, and the upvalues of the old
 --               functions are followed too, so an old function held only by
 --               another old one is found.

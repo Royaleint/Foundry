@@ -89,7 +89,7 @@ end
 
 -- A predicate for the functions a newer copy at `build` replaced: those of the
 -- layout-1 copy and of any lower build, limited to the units in `units` (all
--- units when nil), the ones that took over.
+-- units when nil), the ones that upgraded.
 local function olderThan(build, units)
     return function(fn)
         if type(fn) ~= "function" then return false end
@@ -1013,9 +1013,9 @@ test("in takeover mode the loader takes over the layout-1 copy when nothing serv
     T.truthy(isLayout1(_G.SlashCmdList.FOUNDRY), "the /foundry command is the layout-1 copy's")
     local tookOver = 0
     for _, entry in ipairs(F._state.copies) do
-        if entry.outcome == "took over" then tookOver = tookOver + 1 end
+        if entry.outcome == "upgraded to" then tookOver = tookOver + 1 end
     end
-    T.eq(tookOver, 1, "the core records one took over entry")
+    T.eq(tookOver, 1, "the core records one upgraded entry")
 end)
 
 test("in takeover mode the loader makes a plain load when a library already serves, the player is logged in, or in combat", function()

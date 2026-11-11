@@ -18,13 +18,13 @@ if not F then
         .. "to have loaded first; _G.Foundry_1_0 is missing.", 0)
 end
 
-local BUILD = 1
+local BUILD = 2
 local API_VERSION = 4
 
--- An older Lifecycle already serving is taken over in place when this copy is
+-- An older Lifecycle already serving is upgraded in place when this copy is
 -- newer and the moment is safe; otherwise it keeps serving and this file loads
 -- nothing. The checks only read, in a fixed order, and the first to fail names
--- the outcome; nil means this copy takes over. BUILD, API_VERSION, served and
+-- the outcome; nil means this copy upgrades. BUILD, API_VERSION, served and
 -- takingOver are read at file scope only: no function below may capture them.
 local served = F:HasModule("Lifecycle") and F.Lifecycle or nil
 if served == nil and F:HasModule("Lifecycle") then return end
@@ -75,14 +75,14 @@ if served ~= nil then
     if outcome then
         if outcome:sub(1, 9) == "refused: " and F.IS_DEV_BUILD then
             F:RaiseDevError("Lifecycle: a newer copy from " .. tostring((...))
-                .. " did not take over (" .. outcome .. ")")
+                .. " did not upgrade the active copy (" .. outcome .. ")")
         end
         return
     end
 end
 local takingOver = served ~= nil
 
--- On a takeover every definition below lands in the serving tables, so the
+-- On an upgrade every definition below lands in the serving tables, so the
 -- older copy's frame, timers and controllers reach the newer code.
 local Lifecycle = served or {}
 

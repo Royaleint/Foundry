@@ -9,13 +9,13 @@ if not F then
         .. "to have loaded first; _G.Foundry_1_0 is missing.", 0)
 end
 
-local BUILD = 1
+local BUILD = 2
 local API_VERSION = 2
 
--- An older Events already serving is taken over in place when this copy is
+-- An older Events already serving is upgraded in place when this copy is
 -- newer and the moment is safe; otherwise it keeps serving and this file loads
 -- nothing. The checks only read, in a fixed order, and the first to fail names
--- the outcome; nil means this copy takes over. BUILD, API_VERSION, served and
+-- the outcome; nil means this copy upgrades. BUILD, API_VERSION, served and
 -- takingOver are read at file scope only: no function below may capture them.
 local served = F:HasModule("Events") and F.Events or nil
 if served == nil and F:HasModule("Events") then return end
@@ -38,7 +38,7 @@ if served ~= nil then
     elseif type(InCombatLockdown) ~= "function" or InCombatLockdown() then
         outcome = "combat"
     else
-        -- Every controller by the fields the takeover below reads and writes;
+        -- Every controller by the fields the upgrade below reads and writes;
         -- buckets are the only thing that needs the client's timer and clock.
         local state, impl = rawget(served, "_state"), rawget(served, "_impl")
         local anyBucket = false
@@ -85,14 +85,14 @@ if served ~= nil then
     if outcome then
         if outcome:sub(1, 9) == "refused: " and F.IS_DEV_BUILD then
             F:RaiseDevError("Events: a newer copy from " .. tostring((...))
-                .. " did not take over (" .. outcome .. ")")
+                .. " did not upgrade the active copy (" .. outcome .. ")")
         end
         return
     end
 end
 local takingOver = served ~= nil
 
--- On a takeover every definition below lands in the serving tables, so the
+-- On an upgrade every definition below lands in the serving tables, so the
 -- older copy's controllers, buckets and frames reach the newer code.
 local Events = served or {}
 

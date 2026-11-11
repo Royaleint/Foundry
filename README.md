@@ -103,15 +103,30 @@ files. The manifest carries the same runtime load order as the standalone TOC.
 
 ### Which copy runs
 
-Several addons can each carry a copy of Foundry. Only the first copy to load
-is the active copy; it owns `_G.Foundry_1_0`, and every later copy stands down,
-and a release copy does so silently. A later copy is not thrown away entirely:
-for each module the active copy does not have, the later copy supplies its
-own, so a newer copy fills in modules an older, trimmed copy lacks. DB joins
+Several addons can each carry a copy of Foundry. The first copy to load is the
+active copy; it owns `_G.Foundry_1_0`. A later copy of 1.0.115 or newer can
+upgrade it in place: when the later copy is a newer build, its API version is
+not lower than the active copy's, loading is still in progress (the player has
+not logged in yet), and the player is not in combat, it replaces the active
+copy's core and each module it carries, in place, so addons that use Foundry run
+the newer copy's code for everything that copy carries. This works only when the
+active copy is itself 1.0.115 or newer. A 1.0.114 or earlier copy that loads
+first is never upgraded and keeps serving as before. An addon loaded on demand
+after login never triggers an upgrade. Copies that are the same build never
+upgrade each other, so the first upgrade happens with the release after
+1.0.115.
+
+When an upgrade does not happen, the first copy keeps serving and the later copy
+loads nothing, and a release copy does so silently. The per-module fill-in still
+applies: for each module the active copy does not have, the later copy supplies
+its own, so a newer copy fills in modules an older, trimmed copy lacks. DB joins
 when the shared library has the Lifecycle and Events support it needs at the
 moment DB loads, whether from the active copy or filled in by a later one;
-otherwise DB stays out and says why (that message prints in release builds
-too).
+otherwise DB stays out and says why (that message prints in release builds too).
+
+The upgrade is a safety net, not a replacement for load order. Copies from
+1.0.114 and earlier are never upgraded, so keep `## OptionalDeps: Foundry-1.0`
+in your TOC to make the standalone addon load first.
 
 Because the active copy may be older than the copy you shipped, call
 `F:RequireModule("Name", minVersion)` for anything newer. If the module is
@@ -119,13 +134,28 @@ missing, the error names the active copy: its addon folder, version and API
 version.
 
 Type `/foundry copies` in game to see what is running. It prints the active
-copy, any module that was filled in from a different copy, and each copy that
-was not used. A copy that was not used can still appear as the source of a
-module it filled in. Copies older than this version are not listed. The copy
-record is never printed unless you run the command, and any other `/foundry`
-text prints a one-line hint. The command comes from the active copy when it is
-current enough to offer it, and it is skipped if the `FOUNDRY` slash key or
-`SLASH_FOUNDRY1` is already taken.
+copy, any module that comes from a different copy, and each other copy with its
+outcome:
+
+- `upgraded to`: this copy replaced the active copy's core.
+- `not used`: the active copy was left alone, either because it is 1.0.114 or
+  earlier or because this copy was not a newer build.
+- `refused: api version`: this copy's API version is lower than the active
+  copy's.
+- `after login`: this copy loaded after the player had logged in.
+- `combat`: this copy loaded during combat.
+- `refused: module list`: the active copy's module list did not match what it
+  was serving, so it was left alone.
+- `layout`: the active copy has an internal layout this copy does not
+  recognize.
+
+After an upgrade, the active copy line still shows the first copy's addon
+folder and version, but the API version is the newer copy's. The `upgraded to`
+line names the copy that replaced its code. Copies older than this version are not listed. The copy record is never printed
+unless you run the command, and any other `/foundry` text prints a one-line
+hint. The command comes from the active copy when it is current enough to offer
+it, and it is skipped if the `FOUNDRY` slash key or `SLASH_FOUNDRY1` is already
+taken.
 
 ## Adding new modules
 

@@ -11,13 +11,13 @@ if not F then
     error("Foundry-1.0: DB.lua requires the Foundry-1.0 bootstrap (Foundry.lua) "
         .. "to have loaded first; _G.Foundry_1_0 is missing.", 0)
 end
-local BUILD = 1
+local BUILD = 2
 local API_VERSION = 2
 
--- An older DB already serving is taken over in place when this copy is newer
+-- An older DB already serving is upgraded in place when this copy is newer
 -- and the moment is safe; otherwise it keeps serving and this file loads
 -- nothing. The checks only read, in a fixed order, and the first to fail names
--- the outcome; nil means this copy takes over. BUILD, API_VERSION, served and
+-- the outcome; nil means this copy upgrades. BUILD, API_VERSION, served and
 -- takingOver are read at file scope only: no function below may capture them.
 local served = F:HasModule("DB") and F.DB or nil
 if served == nil and F:HasModule("DB") then return end
@@ -123,7 +123,7 @@ if served ~= nil then
     if outcome then
         if outcome:sub(1, 9) == "refused: " and F.IS_DEV_BUILD then
             F:RaiseDevError("DB: a newer copy from " .. tostring((...))
-                .. " did not take over (" .. outcome .. ")")
+                .. " did not upgrade the active copy (" .. outcome .. ")")
         end
         return
     end
@@ -159,7 +159,7 @@ if not takingOver then
     end
 end
 
--- On a takeover every definition below lands in the serving tables, so the
+-- On an upgrade every definition below lands in the serving tables, so the
 -- older copy's controllers, stores and logout entry reach the newer code.
 local DB = served or {}
 

@@ -7,7 +7,7 @@
 
 local ADDON_NAME = ...
 
-local BUILD = 1
+local BUILD = 2
 local API_VERSION = 7
 
 -- Built by concatenation: a literal token here would get rewritten by the
@@ -35,10 +35,10 @@ local isDevBuild = (tocVersion == nil)
 local VERSION = isStamped and tocVersion or (isDevBuild and DEV_VERSION or tocVersion)
 local LOAD_TOKEN = {}   -- per-load identity token
 
--- An older copy already serving is taken over in place when this copy is newer
+-- An older copy already serving is upgraded in place when this copy is newer
 -- and the moment is safe; otherwise it keeps serving and this copy loads
 -- nothing. The checks only read, in a fixed order, and the first to fail names
--- the outcome; nil means this copy takes over. BUILD, API_VERSION and these
+-- the outcome; nil means this copy upgrades. BUILD, API_VERSION and these
 -- locals are read here and nowhere else: no function below may capture them.
 local existing = _G.Foundry_1_0
 local outcome
@@ -101,7 +101,7 @@ if outcome then
         end
     elseif outcome:sub(1, 9) == "refused: " and existing.IS_DEV_BUILD then
         existing:RaiseDevError("a newer copy from " .. tostring(ADDON_NAME)
-            .. " did not take over (" .. outcome .. ")")
+            .. " did not upgrade the active copy (" .. outcome .. ")")
     end
     return
 end
@@ -181,7 +181,7 @@ if takingOver then
     if type(copies) == "table" then
         copies[#copies + 1] = {
             source = ADDON_NAME, version = VERSION, apiVersion = API_VERSION, build = BUILD,
-            unit = "core", outcome = "took over",
+            unit = "core", outcome = "upgraded to",
         }
     end
 else

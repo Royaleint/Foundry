@@ -277,7 +277,7 @@ local function measureTakeover(path, n)
             local F = T.loadOldCopy("layout1")
             if when == "before" then call = path.setup(F) end
             loadCurrentAlone()
-            T.eq(rawget(F[path.unit], "_build"), T.libraryBuild(), path.name .. ": " .. path.unit .. " took over")
+            T.eq(rawget(F[path.unit], "_build"), T.libraryBuild(), path.name .. ": " .. path.unit .. " upgraded")
             if when == "after" then call = path.setup(F) end
         end
         call()

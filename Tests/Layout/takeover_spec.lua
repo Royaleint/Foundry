@@ -340,10 +340,10 @@ local function row(case, kind, mode, unit)
                 .. "': " .. tostring(err))
             if unit == "core" then
                 T.eq(#copies, appendedBefore + 1, who .. "the record is written before the error")
-                T.truthy(tostring(err):find("Foundry-1.0: a newer copy from IncomingHost did not take over ("
+                T.truthy(tostring(err):find("Foundry-1.0: a newer copy from IncomingHost did not upgrade the active copy ("
                     .. case.outcome .. ")", 1, true), who .. "the error text: " .. tostring(err))
             else
-                T.truthy(tostring(err):find("Foundry-1.0: " .. unit .. ": a newer copy from IncomingHost did not take over ("
+                T.truthy(tostring(err):find("Foundry-1.0: " .. unit .. ": a newer copy from IncomingHost did not upgrade the active copy ("
                     .. case.outcome .. ")", 1, true), who .. "the error text: " .. tostring(err))
             end
         end
@@ -587,7 +587,7 @@ test("a newer copy takes over the library core: the four methods are new, the li
             T.eq(F._source, "IncomingHost", who .. "the newer copy's addon is named")
             T.eq(F._layoutVersion, 1, who .. "layout version")
             T.eq(#F._state.copies, copies + 1, who .. "one entry is recorded")
-            T.eq(F._state.copies[copies + 1].outcome, "took over", who .. "outcome")
+            T.eq(F._state.copies[copies + 1].outcome, "upgraded to", who .. "outcome")
             T.eq(#T.output, 0, who .. "nothing is printed")
             local probe = {}
             T.truthy(rawequal(F:RegisterModule("TakeoverProbe", probe), probe), who .. "the new RegisterModule works")
@@ -614,14 +614,14 @@ test("a newer copy declines a library whose module list does not match its field
     end
 end)
 
-test("the core records one entry per loading copy with its build, and a took over entry carries the incoming copy's own version and source", function()
+test("the core records one entry per loading copy with its build, and a upgraded entry carries the incoming copy's own version and source", function()
     T.installMocks("1.0.0")
     local F = T.loadBuild({ build = SERVING_BUILD, addonName = "HostA", version = "1.0.1" })
     local steps = {
-        { build = 3, name = "HostB", version = "1.0.2", outcome = "took over" },
+        { build = 3, name = "HostB", version = "1.0.2", outcome = "upgraded to" },
         { build = 3, name = "HostC", version = "1.0.3", outcome = "not used" },
         { build = 2, name = "HostD", version = "1.0.4", outcome = "not used" },
-        { build = 4, name = "HostE", version = "1.0.5", outcome = "took over" },
+        { build = 4, name = "HostE", version = "1.0.5", outcome = "upgraded to" },
     }
     for _, step in ipairs(steps) do
         loadCore({ build = step.build, addonName = step.name, version = step.version })
@@ -652,7 +652,7 @@ test("a newer copy over a layout-1 core takes it over and records it, and over a
     T.eq(#F._state.copies, 0, "no entries yet")
     loadCore({ version = "1.0.2" })
     T.eq(#F._state.copies, 1, "the layout-1 core keeps a record")
-    T.eq(F._state.copies[1].outcome, "took over", "outcome")
+    T.eq(F._state.copies[1].outcome, "upgraded to", "outcome")
     T.installMocks("1.0.0")
     local old = T.loadOldCopy("v1.0.114", "ServingHost", "1.0.114")
     loadCore({ version = "1.0.2" })
@@ -700,7 +700,7 @@ test("the two suppression messages fire for a 1.0.114 core and for an equal buil
     T.eq(#T.output, 0, "and prints nothing")
 end)
 
-test("a taken-over core leaves the /foundry command with the first copy, which lists the took over entry", function()
+test("a taken-over core leaves the /foundry command with the first copy, which lists the upgraded entry", function()
     local F = serve("current", "dev")
     local command = _G.SlashCmdList.FOUNDRY
     T.eq(type(command), "function", "the first copy registered the command")
@@ -711,7 +711,7 @@ test("a taken-over core leaves the /foundry command with the first copy, which l
     command("copies")
     T.outputContains("Foundry: active copy: ServingHost, version dev, API version 8", "the first copy stays the active copy")
     T.outputContains("Foundry: every module comes from the active copy", "no module has moved yet")
-    T.outputContains("Foundry: took over: IncomingHost, version dev, API version 8", "the record lists the takeover")
+    T.outputContains("Foundry: upgraded to: IncomingHost, version dev, API version 8", "the record lists the takeover")
     T.truthy(rawequal(_G.Foundry_1_0, F), "the library table is the same")
 end)
 
@@ -934,7 +934,7 @@ test("a Lifecycle taken over keeps how the player's identity was resolved and wh
         F.Lifecycle._identityResolvedBy = "POLL"
         F.Lifecycle._surnameLagObserved = true
         loadLifecycle()
-        T.eq(F.Lifecycle._build, INCOMING_BUILD, kind .. ": the newer copy took over")
+        T.eq(F.Lifecycle._build, INCOMING_BUILD, kind .. ": the newer copy upgraded")
         T.eq(F.Lifecycle._identityResolvedBy, "POLL", kind .. ": how identity was resolved")
         T.eq(F.Lifecycle._surnameLagObserved, true, kind .. ": a surname lag")
     end
@@ -949,7 +949,7 @@ test("a newer Lifecycle taking over before any dispatcher exists makes no SetScr
             T.eq(S.dispatcher, nil, who .. "no dispatcher yet")
             local frames, setScripts = #T.frames, setScriptCount()
             loadLifecycle({ version = incomingVersion(mode) })
-            T.eq(F.Lifecycle._build, INCOMING_BUILD, who .. "the newer copy took over")
+            T.eq(F.Lifecycle._build, INCOMING_BUILD, who .. "the newer copy upgraded")
             T.eq(#T.frames, frames, who .. "no frame is made")
             T.eq(setScriptCount(), setScripts, who .. "no SetScript")
             T.eq(S.dispatcher, nil, who .. "still no dispatcher")
@@ -1169,7 +1169,7 @@ test("a newer DB takes over with the same logout entry, stores, saved data and s
 
             local seamCalls, errors = loadOverWatchingLogoutSeam(F, mode)
             T.eq(next(errors), nil, who .. "the incoming copy raised nothing: " .. firstError(errors))
-            T.eq(D._build, INCOMING_BUILD, who .. "DB took over")
+            T.eq(D._build, INCOMING_BUILD, who .. "DB upgraded")
             T.eq(D._source, "IncomingHost", who .. "the newer copy's addon is named")
             T.eq(D.API_VERSION, 2, who .. "API version")
             T.eq(D._layoutVersion, 1, who .. "layout version")
@@ -1253,7 +1253,7 @@ test("a newer DB over a serving DB with no db yet takes over, and the first New 
             T.eq(S.postLogoutRegistered, false, who .. "nothing registered yet")
             local seamCalls, errors = loadOverWatchingLogoutSeam(F, mode)
             T.eq(next(errors), nil, who .. "the incoming copy raised nothing: " .. firstError(errors))
-            T.eq(F.DB._build, INCOMING_BUILD, who .. "DB took over")
+            T.eq(F.DB._build, INCOMING_BUILD, who .. "DB upgraded")
             T.eq(seamCalls, 0, who .. "the post-logout seam is not called")
             local postLogout = F.Lifecycle._state.postLogout
             local entries = #postLogout
@@ -1361,7 +1361,7 @@ test("a newer DB taking over from inside an older db's migration leaves that db 
             })
             T.eq(next(errors), nil, who .. "the incoming copy raised nothing: " .. firstError(errors))
             local D = F.DB
-            T.eq(D._build, INCOMING_BUILD, who .. "DB took over during the migration")
+            T.eq(D._build, INCOMING_BUILD, who .. "DB upgraded during the migration")
             T.eq(migrations, 1, who .. "the migration ran once")
             T.truthy(db ~= nil, who .. "New returned a db")
             T.eq(db.global.migratedFrom, 1, who .. "the migration saw the stored version")
@@ -1423,7 +1423,7 @@ local function sessionOver(file, globalName, how)
     if how == "taken over" then
         local errors = loadEach({ build = INCOMING_BUILD, addonName = "IncomingHost", version = "1.0.2" })
         T.eq(next(errors), nil, file .. ": the incoming copy raised nothing: " .. firstError(errors))
-        T.eq(F.DB._build, INCOMING_BUILD, file .. ": DB took over")
+        T.eq(F.DB._build, INCOMING_BUILD, file .. ": DB upgraded")
     end
     if ok then
         local profile, char, global = db.profile, db.char, db.global
@@ -1473,7 +1473,7 @@ test("a handler the newer copy writes into an events controller is called with t
                 files = events == "older" and withoutEvents or nil,
             })
             T.eq(next(errors), nil, who .. "the incoming copy raised nothing: " .. firstError(errors))
-            T.eq(F.DB._build, INCOMING_BUILD, who .. "DB took over")
+            T.eq(F.DB._build, INCOMING_BUILD, who .. "DB upgraded")
             if events == "older" then
                 T.truthy(rawequal(F.Events.New, olderNew), who .. "Events stays the older copy's")
             else
@@ -1588,7 +1588,7 @@ test("a newer Events takes over with the same controllers and frames, rebuilds t
 
             local ok, err = pcall(loadModule, "Events", { version = incomingVersion(mode) })
             T.truthy(ok, who .. "the incoming Events raised nothing: " .. tostring(err))
-            T.eq(E._build, INCOMING_BUILD, who .. "Events took over")
+            T.eq(E._build, INCOMING_BUILD, who .. "Events upgraded")
             T.eq(E._source, "IncomingHost", who .. "the newer copy's addon is named")
             T.eq(E.API_VERSION, 2, who .. "API version")
             T.truthy(rawequal(F.Events, E) and rawequal(E._state, S) and rawequal(E._impl, I),
@@ -1668,7 +1668,7 @@ test("a trailing bucket open at the takeover calls its handler exactly once, aft
         local first, timers = bucket._timer, #T.timers
         T.eq(timers, 1, who .. "one timer opened for the window")
         loadModule("Events", { version = "1.0.2" })
-        T.eq(F.Events._build, INCOMING_BUILD, who .. "Events took over")
+        T.eq(F.Events._build, INCOMING_BUILD, who .. "Events upgraded")
         T.now = 3
         T.Fire(c._frame, "TAKEOVER_TRAILING")
         T.eq(#T.timers, timers, who .. "the newer fire function adds no timer")
@@ -1810,7 +1810,7 @@ test("a newer Commands takes over, re-pointing the built-in guard and the restri
 
             local ok, err = pcall(loadModule, "Commands", { version = incomingVersion(mode) })
             T.truthy(ok, who .. "the incoming Commands raised nothing: " .. tostring(err))
-            T.eq(C._build, INCOMING_BUILD, who .. "Commands took over")
+            T.eq(C._build, INCOMING_BUILD, who .. "Commands upgraded")
             T.eq(C._source, "IncomingHost", who .. "the newer copy's addon is named")
             T.eq(C.API_VERSION, 2, who .. "API version")
             T.truthy(rawequal(F.Commands, C) and rawequal(C._state, S) and rawequal(C._impl, I),
@@ -1861,7 +1861,7 @@ test("an older slash entry calls the newer Dispatch once, by name", function()
             end
             loadModule("Commands", { version = incomingVersion(mode) })
             local C = F.Commands
-            T.eq(C._build, INCOMING_BUILD, who .. "Commands took over")
+            T.eq(C._build, INCOMING_BUILD, who .. "Commands upgraded")
             T.truthy(rawequal(_G.SlashCmdList.TAKEOVER, slot), who .. "the entry is kept")
             T.eq(buildOf(C._impl.Controller.Dispatch), tostring(INCOMING_BUILD), who .. "Dispatch is the newer copy's")
             T.output = {}
@@ -1924,7 +1924,7 @@ test("a newer Commands takes over an Events of another layout when no controller
         F.Commands:New({ name = "TakeoverPlain", slashes = { "/tkp" } })
         rawset(F.Events, "_layoutVersion", 2)
         loadModule("Commands", { version = "1.0.2" })
-        T.eq(F.Commands._build, INCOMING_BUILD, kind .. ": Commands took over")
+        T.eq(F.Commands._build, INCOMING_BUILD, kind .. ": Commands upgraded")
     end
 end)
 
@@ -2122,7 +2122,7 @@ test("a relay an older copy made reaches the newer implementation function by na
                 T.eq(buildOf(slot), tostring(SERVING_BUILD), who .. "the slot holds the serving build's relay")
             end
             loadModule(relay.unit, { version = nil })
-            T.eq(F[relay.unit]._build, INCOMING_BUILD, who .. "the unit took over")
+            T.eq(F[relay.unit]._build, INCOMING_BUILD, who .. "the unit upgraded")
             T.truthy(rawequal(relay.slot(inst), slot), who .. "the slot is unchanged")
             local impl = F[relay.unit]._impl
             T.eq(buildOf(impl[relay.target]), tostring(INCOMING_BUILD), who .. relay.target .. " is the newer copy's")
@@ -2142,7 +2142,7 @@ test("after a takeover a Settings New of an already registered category reuses i
             local launcher = inst.launcher:GetNativeHandles()
             local click = inst.panel.clicks[#inst.panel.clicks]
             loadModule("Settings", { version = incomingVersion(mode) })
-            T.eq(F.Settings._build, INCOMING_BUILD, who .. "Settings took over")
+            T.eq(F.Settings._build, INCOMING_BUILD, who .. "Settings upgraded")
             inst.settings:Destroy()
             inst.launcher:Destroy()
             local launched, again, launcherAgain = 0, nil, nil
@@ -2176,7 +2176,7 @@ test("after a takeover a Tooltip New of a known type adds no post-call, a new ty
             local postCalls = inst.processor.postCalls
             local posts = #postCalls
             loadModule("Tooltip", { version = incomingVersion(mode) })
-            T.eq(F.Tooltip._build, INCOMING_BUILD, who .. "Tooltip took over")
+            T.eq(F.Tooltip._build, INCOMING_BUILD, who .. "Tooltip upgraded")
             T.eq(#postCalls, posts, who .. "the takeover adds no post-call")
             local ran = 0
             F.Tooltip:New({ type = 1, name = "TakeoverSecond", handler = function() ran = ran + 1 end })
@@ -2201,7 +2201,7 @@ test("a window made before a takeover saves its position through the newer code 
             local setScripts = setScriptCount()
             loadModule("Window", { version = incomingVersion(mode) })
             local W = F.Window
-            T.eq(W._build, INCOMING_BUILD, who .. "Window took over")
+            T.eq(W._build, INCOMING_BUILD, who .. "Window upgraded")
             T.eq(setScriptCount(), setScripts, who .. "the takeover logs no SetScript")
             T.truthy(rawequal(win._scripts.OnDragStart, onStart) and rawequal(win._scripts.OnDragStop, onStop),
                 who .. "the drag scripts are kept")
@@ -2232,8 +2232,8 @@ test("controllers made before a takeover of List or Menu keep working with the n
         local inst = buildInstances(F)
         loadModule("List", { version = nil })
         loadModule("Menu", { version = nil })
-        T.eq(F.List._build, INCOMING_BUILD, who .. "List took over")
-        T.eq(F.Menu._build, INCOMING_BUILD, who .. "Menu took over")
+        T.eq(F.List._build, INCOMING_BUILD, who .. "List upgraded")
+        T.eq(F.Menu._build, INCOMING_BUILD, who .. "Menu upgraded")
         inst.list:SetData({ {}, {} })
         T.eq(inst.list:GetNativeHandles().dataProvider:GetSize(), 2, who .. "a list made before takes data")
         local list = F.List:New({
@@ -2264,7 +2264,7 @@ test("a whole newer copy loading over the layout-1 copy adds no slash name and l
     end
 end)
 
-test("after a whole newer copy loads over the layout-1 copy, /foundry copies lists every module as coming from it and one took over line", function()
+test("after a whole newer copy loads over the layout-1 copy, /foundry copies lists every module as coming from it and one upgraded line", function()
     for _, kind in ipairs({ "layout1", "current" }) do
         local F = serve(kind, "dev")
         buildInstances(F)
@@ -2282,10 +2282,10 @@ test("after a whole newer copy loads over the layout-1 copy, /foundry copies lis
         T.falsy(text:find("every module comes from the active copy", 1, true), kind .. ": the modules are not the active copy's")
         local tookOver = 0
         for _, line in ipairs(T.output) do
-            if line:find("Foundry: took over: ", 1, true) == 1 then tookOver = tookOver + 1 end
+            if line:find("Foundry: upgraded to: ", 1, true) == 1 then tookOver = tookOver + 1 end
         end
-        T.eq(tookOver, 1, kind .. ": one took over line")
-        T.truthy(text:find("\nFoundry: took over: IncomingHost, version dev, API version 7\n", 1, true),
+        T.eq(tookOver, 1, kind .. ": one upgraded line")
+        T.truthy(text:find("\nFoundry: upgraded to: IncomingHost, version dev, API version 7\n", 1, true),
             kind .. ": the line names the newer copy: " .. text)
     end
 end)
@@ -2302,7 +2302,7 @@ test("a trimmed newer copy without Window leaves Window on the older copy while 
     T.eq(next(errors), nil, "the trimmed copy raised nothing: " .. firstError(errors))
     for _, unit in ipairs(UNITS) do
         if unit ~= "core" and unit ~= "Window" then
-            T.eq(F[unit]._build, INCOMING_BUILD, unit .. " took over")
+            T.eq(F[unit]._build, INCOMING_BUILD, unit .. " upgraded")
         end
     end
     T.eq(rawget(F.Window, "_build"), nil, "Window has no build")

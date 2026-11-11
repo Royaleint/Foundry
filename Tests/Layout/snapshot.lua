@@ -90,7 +90,7 @@ end
 
 -- The differences between two snapshots, as lines; empty when nothing changed.
 -- ignore.copies = n allows up to n entries to be appended to F._state.copies
--- (the record of copies that did not take over), and nothing else.
+-- (the record of copies that did not upgrade the active copy), and nothing else.
 function SN.diff(a, b, ignore)
     ignore = ignore or {}
     local changes = {}

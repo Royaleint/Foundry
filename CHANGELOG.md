@@ -2,6 +2,22 @@
 
 All notable changes to Foundry-1.0 are recorded here.
 
+## [1.0.115] - 2026-11-11
+
+### Added
+- **A newer copy of Foundry can now upgrade an older one while the game is
+  loading.** Before, the first copy to load always kept running. Now, when a
+  later copy is a newer build, its API_VERSION is not lower, and it loads
+  before login and out of combat, addons that use Foundry run that copy's core
+  and the modules it carries. This only works when the copy that loaded first
+  is 1.0.115 or newer, so it first matters with the release after 1.0.115. A
+  1.0.114 or earlier copy that loads first is never upgraded. The upgrade is a
+  safety net, so keep `## OptionalDeps: Foundry-1.0` to make the standalone
+  load first.
+- **`/foundry copies`** lists the active copy, each module that comes from a
+  different copy, and each other copy with what happened to it (for example
+  `upgraded to` or `combat`). See "Which copy runs" in the README.
+
 ## [1.0.114] - 2026-10-31
 
 ### Added
