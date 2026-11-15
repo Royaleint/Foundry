@@ -56,9 +56,10 @@ if not ACE then
     -- The MANDATORY-VISIBLE skip path: one case that prints the reason and passes
     -- (so the suite never silently no-ops and never hard-requires Ace3 code).
     test("acedb-parity: SKIPPED (no Ace3 checkout resolved)", function()
-        print("  [acedb_parity] SKIPPED: no Ace3 checkout found via FOUNDRY_ACE_PATH "
+        -- Written to stdout directly: the test runner captures print.
+        io.stdout:write("  [acedb_parity] SKIPPED: no Ace3 checkout found via FOUNDRY_ACE_PATH "
             .. "(it must name a folder holding AceDB-3.0/, LibStub/, CallbackHandler-1.0/). "
-            .. "The dual-library parity proof did NOT run.")
+            .. "The dual-library parity proof did NOT run.\n")
     end)
     return tests
 end
