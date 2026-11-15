@@ -10,12 +10,13 @@
 -- observable state.
 --
 -- Clean-room boundary: AceDB is EXECUTED here as a verification oracle only, from
--- the consumer's external vendored copy -- never copied, never committed into
+-- the Ace3 checkout named by FOUNDRY_ACE_PATH -- never copied, never committed into
 -- Foundry, never linked into shipped code. The clean-room rule bars copying AceDB
 -- code, not testing against it.
 --
 -- Ace checkout: a local Ace3 checkout named by os.getenv("FOUNDRY_ACE_PATH"), a
--- folder holding AceDB-3.0/, LibStub/ and CallbackHandler-1.0/.
+-- folder holding AceDB-3.0/, LibStub/ and CallbackHandler-1.0/. Its AceDB-3.0 must be
+-- minor 39 or newer: the regional cases below assert that.
 -- If the variable is unset or the folder lacks them, the suite returns a SINGLE
 -- skip-notice case that PRINTS
 -- clearly that it was skipped and why (never a silent pass).
@@ -541,11 +542,11 @@ test("parity: the BawrSpam sanitized fixture -- post-strip raw SV matches AceDB 
 end)
 
 --------------------------------------------------------------------------------
--- regional full-name key parity (needs the vendored r39 AceDB oracle)
+-- regional full-name key parity (needs an AceDB-3.0 of minor 39 or newer in the checkout)
 --------------------------------------------------------------------------------
 
--- Stop rule: if the minor assertion fails, the r39 oracle has not been
--- vendored yet -- stop and report rather than proceeding. If any oracle error
+-- Stop rule: if the minor assertion fails, the checkout's AceDB-3.0 is older than
+-- minor 39 -- stop and report rather than proceeding. If any oracle error
 -- or mismatch occurs on any surname value, stop and report. Never edit the
 -- expected literals below, and never drop a surname value to make it pass.
 for _, case in ipairs({
