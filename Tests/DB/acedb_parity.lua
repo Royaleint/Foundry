@@ -14,17 +14,10 @@
 -- Foundry, never linked into shipped code. The clean-room rule bars copying AceDB
 -- code, not testing against it.
 --
--- Ace checkout resolution order (first match wins):
---   1. os.getenv("FOUNDRY_ACE_PATH")  -- a Libs/ dir holding AceDB-3.0/, LibStub/,
---                                        CallbackHandler-1.0/
---   2. the vendored AceLibs copy      -- a pinned oracle copy from a separate local dev checkout
---                                        (relative from the repo root, then the
---                                        absolute local path so worktree checkouts
---                                        resolve it too)
---   3. C:/Projects/Homestead/Libs     -- legacy: Homestead's packager-populated
---                                        Libs/ (gone since Homestead left Ace3;
---                                        kept as a harmless last candidate)
--- If nothing resolves, the suite returns a SINGLE skip-notice case that PRINTS
+-- Ace checkout: a local Ace3 checkout named by os.getenv("FOUNDRY_ACE_PATH"), a
+-- folder holding AceDB-3.0/, LibStub/ and CallbackHandler-1.0/.
+-- If the variable is unset or the folder lacks them, the suite returns a SINGLE
+-- skip-notice case that PRINTS
 -- clearly that it was skipped and why (never a silent pass).
 
 local T = ...
@@ -46,9 +39,6 @@ local function resolveAceLibs()
     local candidates = {}
     local env = os.getenv("FOUNDRY_ACE_PATH")
     if env and env ~= "" then candidates[#candidates + 1] = env end
-    candidates[#candidates + 1] = "Foundry_Dev/vendor/AceLibs"
-    candidates[#candidates + 1] = "C:/Projects/Foundry/Foundry_Dev/vendor/AceLibs"
-    candidates[#candidates + 1] = "C:/Projects/Homestead/Libs"
     for _, base in ipairs(candidates) do
         local ace = base .. "/AceDB-3.0/AceDB-3.0.lua"
         local stub = base .. "/LibStub/LibStub.lua"
@@ -66,10 +56,9 @@ if not ACE then
     -- The MANDATORY-VISIBLE skip path: one case that prints the reason and passes
     -- (so the suite never silently no-ops and never hard-requires Ace3 code).
     test("acedb-parity: SKIPPED (no Ace3 checkout resolved)", function()
-        print("  [acedb_parity] SKIPPED: no Ace3 checkout found via FOUNDRY_ACE_PATH, "
-            .. "Foundry_Dev/vendor/AceLibs, or C:/Projects/Homestead/Libs (need "
-            .. "AceDB-3.0/, LibStub/, CallbackHandler-1.0/). The dual-library parity "
-            .. "proof did NOT run.")
+        print("  [acedb_parity] SKIPPED: no Ace3 checkout found via FOUNDRY_ACE_PATH "
+            .. "(it must name a folder holding AceDB-3.0/, LibStub/, CallbackHandler-1.0/). "
+            .. "The dual-library parity proof did NOT run.")
     end)
     return tests
 end
