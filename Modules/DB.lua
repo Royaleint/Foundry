@@ -11,7 +11,7 @@ if not F then
     error("Foundry-1.0: DB.lua requires the Foundry-1.0 bootstrap (Foundry.lua) "
         .. "to have loaded first; _G.Foundry_1_0 is missing.", 0)
 end
-local BUILD = 2
+local BUILD = 3
 local API_VERSION = 2
 
 -- An older DB already serving is upgraded in place when this copy is newer

@@ -18,7 +18,7 @@ if not F then
         .. "to have loaded first; _G.Foundry_1_0 is missing.", 0)
 end
 
-local BUILD = 2
+local BUILD = 3
 local API_VERSION = 4
 
 -- An older Lifecycle already serving is upgraded in place when this copy is
@@ -130,7 +130,8 @@ I.surfaceHookError = surfaceHookError
 
 -- Returns (name, realm, key, legacyKey), or (nil, msg, reason) if identity
 -- has not resolved yet. On a region-wide-unique-names client, key is
--- name+surname rather than name+realm.
+-- name+surname rather than name+realm, and an unusable realm resolves as nil
+-- with no legacyKey.
 -- Foundry.DB keys each character's saved data on this return value; changing
 -- its format moves every consumer's per-character data.
 function Lifecycle._PlayerIdentity()
@@ -152,7 +153,10 @@ function Lifecycle._PlayerIdentity()
         return nil, "player identity is not available yet (UnitName returned '" .. tostring(name) .. "')"
     end
     if type(realm) ~= "string" or realm == "" or realm == "Unknown" or (unknown and realm == unknown) then
-        return nil, "realm identity is not available yet (GetRealmName returned '" .. tostring(realm) .. "')"
+        if not regionalName then
+            return nil, "realm identity is not available yet (GetRealmName returned '" .. tostring(realm) .. "')"
+        end
+        realm = nil
     end
 
     if not regionalName then
@@ -168,7 +172,7 @@ function Lifecycle._PlayerIdentity()
         return name, realm, name, nil
     end
 
-    return name, realm, name .. " " .. surname, name .. " - " .. realm
+    return name, realm, name .. " " .. surname, realm and name .. " - " .. realm
 end
 
 local function identityResolved()

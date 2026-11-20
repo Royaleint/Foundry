@@ -1946,4 +1946,138 @@ test("identity hold (regional): a post-login LoD catch-up with a nil surname hol
     T.eq(F.Lifecycle._surnameLagObserved, true, "traced by the catch-up's own identityResolved check")
 end)
 
+-- A region-wide-names client keys by name and surname alone, so an unusable
+-- realm resolves as nil there and never holds; there is then no legacyKey.
+-- Each case names one unusable realm; the placeholder case also installs the
+-- client's localized placeholder.
+local UNUSABLE_REALMS = {
+    { label = "nil realm" },
+    { label = "empty realm", realm = "" },
+    { label = "'Unknown' realm", realm = "Unknown" },
+    { label = "localized placeholder realm", realm = "Unbekannt", placeholder = "Unbekannt" },
+}
+
+local function freshUnusableRealm(case, surname)
+    local F = T.fresh()
+    if case.placeholder then _G.UNKNOWNOBJECT = case.placeholder end
+    T.SetRegional(true)
+    T.identity = { name = "Aldric", surname = surname, realm = case.realm }
+    return F
+end
+
+test("identity (regional): an unusable realm with a surname resolves to 'First Surname', nil realm and no legacyKey", function()
+    for _, case in ipairs(UNUSABLE_REALMS) do
+        local F = freshUnusableRealm(case, "Vane")
+        local name, realm, key, legacyKey = F.Lifecycle._PlayerIdentity()
+        T.eq(name, "Aldric", case.label .. ": name")
+        T.eq(realm, nil, case.label .. ": realm is nil")
+        T.eq(key, "Aldric Vane", case.label .. ": key is 'First Surname'")
+        T.eq(legacyKey, nil, case.label .. ": no legacyKey")
+    end
+end)
+
+test("identity (regional): an unusable realm with no surname refuses on the surname until settled, then resolves under the first name", function()
+    for _, case in ipairs(UNUSABLE_REALMS) do
+        local F = freshUnusableRealm(case, nil)
+        local name, msg, reason = F.Lifecycle._PlayerIdentity()
+        T.eq(name, nil, case.label .. ": unresolved before the settle")
+        T.truthy(msg and msg:find("surname", 1, true) ~= nil, case.label .. ": the surname message")
+        T.eq(reason, "surname", case.label .. ": reason is 'surname'")
+
+        T.Settle()
+        local name2, realm, key, legacyKey = F.Lifecycle._PlayerIdentity()
+        T.eq(name2, "Aldric", case.label .. ": name once settled")
+        T.eq(realm, nil, case.label .. ": realm is nil")
+        T.eq(key, "Aldric", case.label .. ": key is the first name alone")
+        T.eq(legacyKey, nil, case.label .. ": no legacyKey")
+    end
+end)
+
+test("identity: a realm-keyed client with an unusable realm still refuses on the realm", function()
+    for _, case in ipairs(UNUSABLE_REALMS) do
+        local F = T.fresh()
+        if case.placeholder then _G.UNKNOWNOBJECT = case.placeholder end
+        T.identity = { name = "Aldric", realm = case.realm }
+        local name, msg = F.Lifecycle._PlayerIdentity()
+        T.eq(name, nil, case.label .. ": unresolved")
+        T.truthy(msg and msg:find("realm identity", 1, true) ~= nil, case.label .. ": the realm message")
+    end
+end)
+
+test("identity: a regional client without UnitNameUnmodified keys by realm, so an unusable realm still refuses", function()
+    for _, case in ipairs(UNUSABLE_REALMS) do
+        local F = freshUnusableRealm(case, "Vane")
+        _G.UnitNameUnmodified = nil
+        local name, msg = F.Lifecycle._PlayerIdentity()
+        T.eq(name, nil, case.label .. ": unresolved")
+        T.truthy(msg and msg:find("realm identity", 1, true) ~= nil, case.label .. ": the realm message")
+    end
+end)
+
+test("identity hold (regional): an empty realm with the name ready fires at ADDON_LOADED; nothing is watched", function()
+    local F = T.fresh()
+    T.SetRegional(true)
+    T.identity = { name = "Aldric", surname = "Vane", realm = "" }
+    local c = F.Lifecycle:New(nil, "A")
+    local fired, keyAtFire = 0, nil
+    c:OnAddonLoaded(function()
+        fired = fired + 1
+        keyAtFire = select(3, F.Lifecycle._PlayerIdentity())
+    end)
+    local fr = dispatcherFrame()
+    T.Fire(fr, "ADDON_LOADED", "A")
+    T.eq(fired, 1, "fires immediately -- the realm is not part of the key")
+    T.eq(keyAtFire, "Aldric Vane", "key at hook time")
+    T.eq(countRegisterEvent(fr, "PLAYER_ENTERING_WORLD"), 0, "no PLAYER_ENTERING_WORLD registration")
+    T.eq(countRegisterEvent(fr, "PLAYER_REGEN_ENABLED"), 0, "no PLAYER_REGEN_ENABLED registration")
+    T.eq(#fr.calls.RegisterUnitEvent, 0, "no RegisterUnitEvent at all")
+    T.eq(#T.afters, 0, "no poll queued")
+    T.eq(F.Lifecycle._identityResolvedBy, nil, "no release trace -- nothing was ever held")
+end)
+
+test("identity hold (regional): an empty realm on a cold login releases on UNIT_NAME_UPDATE and leaves no poll armed", function()
+    local F = T.fresh()
+    T.SetRegional(true)
+    T.identity = { name = "Unknown", surname = nil, realm = "" }
+    local c = F.Lifecycle:New(nil, "A")
+    local al, lo = 0, 0
+    c:OnAddonLoaded(function() al = al + 1 end)
+    c:OnLogin(function() lo = lo + 1 end)
+    local fr = dispatcherFrame()
+    T.Fire(fr, "ADDON_LOADED", "A")
+    T.Fire(fr, "PLAYER_LOGIN")
+    T.Fire(fr, "PLAYER_ENTERING_WORLD")
+    T.eq(al, 0, "held while the name is unresolved")
+    T.eq(#T.afters, 1, "one poll tick queued")
+
+    T.identity = { name = "Aldric", surname = "Vane", realm = "" }
+    T.Fire(fr, "UNIT_NAME_UPDATE", "player")
+    T.eq(al, 1, "addon-loaded released by UNIT_NAME_UPDATE with the realm still empty")
+    T.eq(lo, 1, "login released in the same fan-out")
+    T.eq(F.Lifecycle._identityResolvedBy, "UNIT_NAME_UPDATE", "trace names the releasing event")
+    T.eq(countUnregisterEvent(fr, "PLAYER_ENTERING_WORLD"), 1, "watching stopped on release")
+
+    T.RunAfters()
+    T.eq(al, 1, "the stale tick fired nothing a second time")
+    T.eq(lo, 1, "nor login")
+    T.eq(#T.afters, 0, "and queued nothing")
+    T.eq(F.Lifecycle._state.pollScheduled, false, "no poll stays armed")
+end)
+
+test("identity hold: an empty realm still holds a regional client without UnitNameUnmodified", function()
+    local F = T.fresh()
+    T.SetRegional(true)
+    _G.UnitNameUnmodified = nil
+    T.identity = { name = "Aldric", realm = "" }
+    local c = F.Lifecycle:New(nil, "A")
+    local fired = 0
+    c:OnAddonLoaded(function() fired = fired + 1 end)
+    T.Fire(dispatcherFrame(), "ADDON_LOADED", "A")
+    T.eq(fired, 0, "held: this client keys by realm")
+
+    T.identity = { name = "Aldric", realm = "Test Realm" }
+    T.Fire(dispatcherFrame(), "UNIT_NAME_UPDATE", "player")
+    T.eq(fired, 1, "released once the realm resolves")
+end)
+
 return tests

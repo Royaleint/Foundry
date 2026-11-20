@@ -7,7 +7,7 @@
 
 local ADDON_NAME = ...
 
-local BUILD = 2
+local BUILD = 3
 local API_VERSION = 7
 
 -- Built by concatenation: a literal token here would get rewritten by the
