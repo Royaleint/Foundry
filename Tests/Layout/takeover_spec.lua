@@ -1028,7 +1028,7 @@ test("a Lifecycle that fails partway through taking over leaves the version, bui
     end
 end)
 
-test("the older and newer copies return the same player identity in every mocked identity state", function()
+test("the older and newer copies return the same player identity in every mocked identity state but an unusable realm under region-unique names, which only the newer resolves", function()
     local STATES = {
         { name = "a plain realm", identity = { name = "Tester", realm = "Test Realm" } },
         { name = "region-unique names with a surname", regional = true,
@@ -1039,6 +1039,11 @@ test("the older and newer copies return the same player identity in every mocked
             identity = { name = "Tester", realm = "Test Realm" } },
         { name = "a missing name", identity = { realm = "Test Realm" } },
         { name = "a missing realm", identity = { name = "Tester" } },
+        -- The older copy refuses on the realm; the newer keys by name and
+        -- surname, with a nil realm and no earlier key.
+        { name = "region-unique names with an empty realm", regional = true,
+            identity = { name = "Tester", realm = "", surname = "Smith" },
+            older = { n = 2, nil, "realm identity" }, newer = { n = 4, "Tester", nil, "Tester Smith", nil } },
     }
     T.installMocks("@project-version@")
     local F = T.loadOldCopy("layout1", "ServingHost")
@@ -1053,11 +1058,77 @@ test("the older and newer copies return the same player identity in every mocked
         T.SetRegional(state.regional)
         S.surnameSettled = state.settled == true
         local a, b = pack(older()), pack(newer())
-        T.eq(b.n, a.n, state.name .. ": number of returns")
-        for i = 1, a.n do
-            T.eq(b[i], a[i], state.name .. ": return " .. i)
+        if state.newer then
+            T.eq(a.n, state.older.n, state.name .. ": older number of returns")
+            T.eq(a[1], nil, state.name .. ": the older copy refuses")
+            T.truthy(tostring(a[2]):find(state.older[2], 1, true) ~= nil, state.name .. ": on the realm")
+            T.eq(b.n, state.newer.n, state.name .. ": newer number of returns")
+            for i = 1, state.newer.n do
+                T.eq(b[i], state.newer[i], state.name .. ": newer return " .. i)
+            end
+        else
+            T.eq(b.n, a.n, state.name .. ": number of returns")
+            for i = 1, a.n do
+                T.eq(b[i], a[i], state.name .. ": return " .. i)
+            end
         end
     end
+end)
+
+test("a newer copy loaded before login over a layout-1 copy holding on an empty realm under region-unique names releases on the next event and builds the db under the full name once", function()
+    T.installMocks("@project-version@")
+    T.SetRegional(true)
+    T.identity = { name = "Aldric", surname = "Vane", realm = "" }
+    local F = T.loadOldCopy("layout1", "ServingHost")
+    T.loadedAddons["HeldAddon"] = true
+    local c = F.Lifecycle:New(nil, "HeldAddon")
+    local al, lo, db = 0, 0, nil
+    c:OnAddonLoaded(function()
+        al = al + 1
+        db = F.DB:New({ name = "HeldAddon", sv = "TestDB", defaultProfile = true })
+    end)
+    c:OnLogin(function() lo = lo + 1 end)
+    local S = F.Lifecycle._state
+    local frame = S.dispatcher
+    T.Fire(frame, "ADDON_LOADED", "HeldAddon")
+    T.eq(al, 0, "the layout-1 copy holds on the empty realm")
+    T.eq(#S.identityHeld, 1, "one controller held")
+
+    local errors = loadEach({ build = INCOMING_BUILD, addonName = "IncomingHost" })
+    T.eq(next(errors), nil, "the incoming copy raised nothing: " .. firstError(errors))
+    T.eq(F.Lifecycle._build, INCOMING_BUILD, "Lifecycle upgraded")
+    T.eq(F.DB._build, INCOMING_BUILD, "DB upgraded")
+    T.eq(al, 0, "loading the newer copy releases nothing by itself")
+
+    T.Fire(frame, "ADDON_LOADED", "OtherAddon")
+    T.eq(al, 1, "the next ADDON_LOADED releases the held controller")
+    T.eq(F.Lifecycle._identityResolvedBy, "ADDON_LOADED", "trace names the releasing event")
+    T.truthy(db ~= nil, "the hook built the db")
+    T.eq(lo, 0, "login has not fired yet")
+
+    T.Fire(frame, "PLAYER_LOGIN")
+    T.Fire(frame, "PLAYER_ENTERING_WORLD")
+    T.eq(lo, 1, "login fires once")
+    T.eq(#T.afters, 0, "no poll queued")
+    T.eq(S.pollScheduled, false, "no poll armed")
+
+    local _ = db.char
+    local function keys(section)
+        local list = {}
+        for k in pairs(section or {}) do list[#list + 1] = tostring(k) end
+        table.sort(list)
+        return table.concat(list, ",")
+    end
+    T.eq(keys(_G.TestDB.profileKeys), "Aldric Vane", "profileKeys holds only the full name")
+    T.eq(keys(_G.TestDB.char), "Aldric Vane", "char holds only the full name")
+
+    T.identity = { name = "Aldric", surname = "Vane", realm = "Test Realm" }
+    T.Fire(frame, "UNIT_NAME_UPDATE", "player")
+    T.RunAfters()
+    T.eq(al, 1, "a valid realm later fires addon-loaded no second time")
+    T.eq(lo, 1, "nor login")
+    T.eq(keys(_G.TestDB.profileKeys), "Aldric Vane", "no key added to profileKeys")
+    T.eq(keys(_G.TestDB.char), "Aldric Vane", "no key added to char")
 end)
 
 --------------------------------------------------------------------------------
