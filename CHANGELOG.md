@@ -2,6 +2,25 @@
 
 All notable changes to Foundry-1.0 are recorded here.
 
+## [1.0.116] - 2026-11-20
+
+### Fixed
+- **WoW Forever: addons using Foundry start again.** Since the 2026-11-20
+  Forever patch, `GetRealmName()` returns an empty string there. Foundry was
+  waiting for a realm name before running `OnAddonLoaded` and `OnLogin` hooks
+  and before building any `Foundry.DB` database, so those never ran. On
+  clients where character names are unique across the region, Foundry no
+  longer waits for a realm: the character key is still the first name and
+  surname, so data already saved under that key is found as before. Clients
+  that key characters by realm are unchanged.
+
+### Changed
+- A copy of 1.0.115 that loads first is upgraded by this release if it loads
+  before login and out of combat. A 1.0.114 or earlier copy that loads first
+  is not, and on WoW Forever it keeps every addon using Foundry from
+  starting. Update the embedded copy in each addon you ship, and keep
+  `## OptionalDeps: Foundry-1.0` so the standalone loads first.
+
 ## [1.0.115] - 2026-11-11
 
 ### Added
