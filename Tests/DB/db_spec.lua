@@ -2342,6 +2342,57 @@ test("key: a regional client without UnitNameUnmodified takes the legacy key; an
     T.eq(_G.TestDB.char[N].y, 2, "N's char bucket unchanged")
 end)
 
+test("key: regional with an empty realm builds under N, moves nothing, and leaves an existing L entry untouched", function()
+    local F = freshLoaded()
+    T.SetRegional(true)
+    T.identity = { name = "Aldric", surname = "Vane", realm = "" }
+    local legacyBucket = { x = 1 }
+    _G.TestDB = {
+        profileKeys = { [L] = "Alt" },
+        char = { [L] = legacyBucket },
+        profiles = { Alt = {}, Default = {} },
+    }
+    local legacySnapshot = deepCopy({ profileKey = _G.TestDB.profileKeys[L], char = legacyBucket })
+    local db = newHS(F)
+    T.truthy(db ~= nil, "New returned a db")
+    local _ = db.char
+    T.eq(_G.TestDB.profileKeys[N], "Default", "N resolves to Default -- no move ran")
+    T.truthy(_G.TestDB.char[N] ~= nil, "the char bucket is under N")
+    T.eq(db.char.x, nil, "L's data did not move onto N")
+    T.truthy(rawequal(_G.TestDB.char[L], legacyBucket), "L's char bucket is the same table")
+    assertDeepEqual({ profileKey = _G.TestDB.profileKeys[L], char = _G.TestDB.char[L] }, legacySnapshot,
+        "L's profileKeys entry and char bucket are unchanged")
+    T.eq(keyCount(_G.TestDB.profileKeys), 2, "profileKeys holds only L and N")
+end)
+
+test("key: data under L stays put after a session built under N with an empty realm, even once the realm is valid again", function()
+    local F = freshLoaded()
+    T.SetRegional(true)
+    T.identity = { name = "Aldric", surname = "Vane", realm = "" }
+    _G.TestDB = { profileKeys = { [L] = "Alt" }, char = { [L] = { x = 1 } }, profiles = { Alt = {}, Default = {} } }
+    local legacySnapshot = deepCopy({ profileKey = _G.TestDB.profileKeys[L], char = _G.TestDB.char[L] })
+    local db = newHS(F)
+    local _ = db.char
+    T.eq(_G.TestDB.profileKeys[N], "Default", "session one: built under N")
+    fireLogout()
+    T.eq(keyCount(_G.TestDB.char), 1, "session one: logout leaves only L's char bucket")
+    local saved = _G.TestDB
+
+    local F2 = freshLoaded()
+    _G.TestDB = saved
+    setAldric("Vane")
+    local db2 = newHS(F2)
+    local _2 = db2.char
+    T.eq(db2.char.x, nil, "session two: L's data did not move onto N")
+    T.eq(_G.TestDB.profileKeys[N], "Default", "session two: N keeps its own profile choice")
+    assertDeepEqual({ profileKey = _G.TestDB.profileKeys[L], char = _G.TestDB.char[L] }, legacySnapshot,
+        "session two: L's profileKeys entry and char bucket are unchanged")
+    T.eq(keyCount(_G.TestDB.profileKeys), 2, "profileKeys holds only L and N")
+    fireLogout()
+    T.eq(keyCount(_G.TestDB.char), 1, "session two: logout leaves only L's char bucket")
+    assertDeepEqual(_G.TestDB.char[L], legacySnapshot.char, "session two: L's char bucket survives the logout")
+end)
+
 test("migration: a legacy L bucket and profile choice move onto N; a sibling P is untouched", function()
     local F = freshLoaded()
     setAldric("Vane")

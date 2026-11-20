@@ -13,7 +13,7 @@ if not F then
         .. "to have loaded first; _G.Foundry_1_0 is missing.", 0)
 end
 
-local BUILD = 2
+local BUILD = 3
 local API_VERSION = 2
 
 -- An older Settings already serving is upgraded in place when this copy is
